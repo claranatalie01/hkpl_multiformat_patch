@@ -1,0 +1,170 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: hkpl_postgres
+    environment:
+      POSTGRES_DB: hkpl_vector_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U postgres -d hkpl_vector_db"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  embedding:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: hkpl_embedding
+    ports:
+      - "8003:8080"
+    volumes:
+      - llama_cache:/root/.cache/llama.cpp
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "0"
+    command: >
+      -hf Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
+      --host 0.0.0.0
+      --port 8080
+      --embedding
+      --n-gpu-layers 99
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:8080/health"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  reranker:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: hkpl_reranker_cpp
+    ports:
+      - "8004:8080"
+    volumes:
+      - llama_cache:/root/.cache/llama.cpp
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "0"
+    command: >
+      -hf ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF:Q8_0
+      --reranking
+      --host 0.0.0.0
+      --port 8080
+      --n-gpu-layers 99
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:8080/health"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  llm:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: hkpl_llm
+    ports:
+      - "8081:8080"
+    volumes:
+      - llama_cache:/root/.cache/llama.cpp
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "1"
+    command: >
+      -hf unsloth/Qwen3.5-9B-GGUF:Q6_K
+      --host 0.0.0.0
+      --port 8080
+      --n-gpu-layers 99
+      --ctx-size 4096
+      --reasoning off
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:8080/health"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  langgraph-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: hkpl_agent
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./src:/app/src
+      - ./main.py:/app/main.py
+      - ./scripts:/app/scripts
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./storage:/app/storage
+    environment:
+      DB_URL: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/hkpl_vector_db
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: hkpl_vector_db
+      POSTGRES_USER: postgres
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+
+      EMBEDDING_URL: http://embedding:8080/v1/embeddings
+      RERANKER_URL: http://reranker:8080/reranking
+      LLM_URL: http://llm:8080/v1/chat/completions
+
+      VECTOR_TABLE: hkpl_knowledge
+      EMBED_DIM: "1024"
+      SIMILARITY_TOP_K: "10"
+      RERANK_TOP_N: "3"
+      RERANKER_THRESHOLD: "0.50"
+      MAX_CONTEXT_CHARS: "8000"
+
+      UPLOAD_DIR: /app/uploads
+      MAX_UPLOAD_BYTES: "26214400"
+      CHUNK_SIZE: "512"
+      CHUNK_OVERLAP: "64"
+      ATOMIC_MAX_TOKENS: "2048"
+      OCR_LANGUAGES: eng+chi_tra
+
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+      reranker:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  llama_cache:
