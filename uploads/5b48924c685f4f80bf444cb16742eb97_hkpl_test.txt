@@ -1,0 +1,10 @@
+HKPL Test Policy
+
+Borrowing Limit:
+Each registered reader may borrow 8 books.
+
+Loan Period:
+The loan period is 14 days.
+
+Renewal Rule:
+Readers may renew borrowed books twice.
