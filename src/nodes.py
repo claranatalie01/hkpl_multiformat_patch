@@ -456,7 +456,7 @@ def format_citations(sources: list[dict]) -> str:
     if not citation_lines:
         return ""
 
-    return "\n\nSources:\n" + "\n".join(citation_lines[:3])
+    return "\n\nSources:\n" + "\n".join(citation_lines[:1])
 
 
 async def faithfulness_check_node(state: LibraryBotState) -> dict:

@@ -121,6 +121,7 @@ services:
     ports:
       - "8001:8001"
     volumes:
+      - .env:/app/.env
       - ./src:/app/src
       - ./main.py:/app/main.py
       - ./scripts:/app/scripts
