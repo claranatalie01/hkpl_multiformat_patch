@@ -106,6 +106,10 @@ def register_upload(
     source_url: str = "",
     source_type: str = "admin_upload",
     access_level: str = "public",
+    category: str | None = None,
+    language: str | None = None,
+    effective_date: str | None = None,
+    source_kind: str = "upload",
     replace_document_id: str | None = None,
 ) -> dict:
     ensure_registry_schema()
@@ -141,6 +145,10 @@ def register_upload(
             source_url=source_url,
             source_type=source_type,
             access_level=access_level,
+            category=category,
+            language=language,
+            effective_date=effective_date,
+            source_kind=source_kind,
         )
     else:
         existing = get_document(
@@ -175,6 +183,10 @@ def register_upload(
             source_url=source_url,
             source_type=source_type,
             access_level=access_level,
+            category=category,
+            language=language,
+            effective_date=effective_date,
+            source_kind=source_kind,
         )
 
         if record is None:
@@ -239,6 +251,10 @@ def process_registered_document(
                 "content_hash"
             ],
             ocr_languages=OCR_LANGUAGES,
+            category=record.get("category"),
+            language=record.get("language"),
+            effective_date=str(record.get("effective_date") or ""),
+            source_kind=record.get("source_kind") or "upload",
         )
 
         if not documents:
@@ -335,6 +351,10 @@ def ingest_path_sync(
     source_url: str = "",
     source_type: str = "admin_upload",
     access_level: str = "public",
+    category: str | None = None,
+    language: str | None = None,
+    effective_date: str | None = None,
+    source_kind: str = "upload",
     replace_document_id: str | None = None,
 ) -> dict:
     registration = register_upload(
@@ -351,6 +371,11 @@ def ingest_path_sync(
         replace_document_id=(
             replace_document_id
         ),
+        category=category,
+        language=language,
+        effective_date=effective_date,
+        source_kind=source_kind
+        
     )
 
     if registration["duplicate"]:

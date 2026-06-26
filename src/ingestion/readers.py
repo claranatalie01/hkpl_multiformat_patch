@@ -55,6 +55,22 @@ def normalize_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
+def detect_document_type(text: str) -> str:
+    lower = text.lower()
+
+    if "question:" in lower and "answer:" in lower:
+        return "faq"
+
+    if "district" in lower and "public library" in lower and "tel:" in lower:
+        return "directory"
+
+    if any(word in lower for word in ["announcement", "notice", "temporary closure", "suspension"]):
+        return "announcement"
+
+    if any(word in lower for word in ["policy", "rules", "regulations", "guidelines"]):
+        return "policy"
+
+    return "general"
 
 def file_content_hash(path: Path) -> str:
     digest = hashlib.sha256()
@@ -76,6 +92,10 @@ def _base_metadata(
     document_version: int,
     content_hash: str,
     file_type: str,
+    category: str | None = None,
+    language: str | None = None,
+    effective_date: str | None = None,
+    source_kind: str = "upload",
 ) -> dict:
     return {
         "document_id": document_id,
@@ -90,6 +110,10 @@ def _base_metadata(
         "access_level": access_level,
         "document_version": document_version,
         "content_hash": content_hash,
+        "category": category or "",
+        "language": language or "",
+        "effective_date": effective_date or "",
+        "source_kind": source_kind,
     }
 
 
@@ -110,18 +134,23 @@ def _make_document(
         "section_index": section_index,
         "chunk_strategy": chunk_strategy,
     }
+
     if extra_metadata:
         metadata.update(extra_metadata)
+
+    metadata["document_type"] = metadata.get("document_type") or detect_document_type(clean)
 
     document = Document(
         text=clean,
         metadata=metadata,
     )
+
     document.id_ = (
         f"{base_metadata['document_id']}:"
         f"v{base_metadata['document_version']}:"
         f"section:{section_index}"
     )
+
     return document
 
 
@@ -134,6 +163,70 @@ def _ocr_image(image: Image.Image, languages: str) -> str:
         )
     )
 
+def _extract_pdf_text_with_layout_markers(page) -> str:
+    data = page.get_text("dict")
+    lines = []
+
+    for block in data.get("blocks", []):
+        for line in block.get("lines", []):
+            spans = line.get("spans", [])
+            if not spans:
+                continue
+
+            text = normalize_text(" ".join(span.get("text", "") for span in spans))
+            if not text:
+                continue
+
+            max_size = max(span.get("size", 0) for span in spans)
+            is_bold = any("bold" in span.get("font", "").lower() for span in spans)
+
+            lines.append(
+                {
+                    "text": text,
+                    "font_size": max_size,
+                    "is_bold": is_bold,
+                }
+            )
+
+    if not lines:
+        return ""
+
+    sizes = sorted(line["font_size"] for line in lines)
+    median_size = sizes[len(sizes) // 2]
+
+    output_lines = []
+
+    for item in lines:
+        text = item["text"]
+        word_count = len(text.split())
+        has_terminal_punctuation = text.endswith((".", "?", "!", ":"))
+        has_many_digits = sum(ch.isdigit() for ch in text) >= 3
+
+        heading_score = 0
+
+        if item["font_size"] > median_size + 1:
+            heading_score += 2
+
+        if item["is_bold"]:
+            heading_score += 1
+
+        if word_count <= 6:
+            heading_score += 1
+
+        if not has_terminal_punctuation:
+            heading_score += 1
+
+        if not has_many_digits:
+            heading_score += 1
+
+        # Layout/typography-based heading detection.
+        # Not based on district names or specific HKPL words.
+        if heading_score >= 4:
+            output_lines.append(f"## {text}")
+        else:
+            output_lines.append(text)
+
+    return normalize_text("\n".join(output_lines))
 
 def _load_pdf(
     path: Path,
@@ -146,8 +239,9 @@ def _load_pdf(
     try:
         for page_index, page in enumerate(pdf):
             page_number = page_index + 1
-            text = normalize_text(page.get_text("text"))
-            extraction_method = "native_text"
+
+            text = _extract_pdf_text_with_layout_markers(page)
+            extraction_method = "native_layout_text"
 
             if len(text) < 40:
                 pixmap = page.get_pixmap(
@@ -158,6 +252,7 @@ def _load_pdf(
                     io.BytesIO(pixmap.tobytes("png"))
                 )
                 ocr_text = _ocr_image(image, ocr_languages)
+
                 if len(ocr_text) > len(text):
                     text = ocr_text
                     extraction_method = "ocr"
@@ -172,6 +267,7 @@ def _load_pdf(
                     "extraction_method": extraction_method,
                 },
             )
+
             if document:
                 documents.append(document)
     finally:
@@ -658,7 +754,12 @@ def load_file(
     document_version: int = 1,
     content_hash: str | None = None,
     ocr_languages: str = "eng+chi_tra",
+    category: str | None = None,
+    language: str | None = None,
+    effective_date: str | None = None,
+    source_kind: str = "upload",
 ) -> list[Document]:
+    
     extension = path.suffix.lower()
 
     if extension in LEGACY_EXTENSIONS:
@@ -685,6 +786,10 @@ def load_file(
         document_version=document_version,
         content_hash=actual_hash,
         file_type=extension.lstrip("."),
+        category=category or "",
+        language=language or "",
+        effective_date=effective_date or "",
+        source_kind=source_kind,
     )
 
     if extension == ".pdf":

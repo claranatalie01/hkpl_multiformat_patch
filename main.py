@@ -17,6 +17,8 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
+
+from src.ingestion.webpage import save_webpage_to_uploads
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
@@ -32,6 +34,7 @@ from src.ingestion.service import (
     UPLOAD_DIR,
     delete_registered_document,
     process_registered_document,
+    ingest_path_sync,
     register_upload,
 )
 from src.memory import load_conversation_history
@@ -50,6 +53,20 @@ ADMIN_API_KEY = os.getenv(
     "ADMIN_API_KEY",
     "",
 )
+class UrlIndexRequest(BaseModel):
+    url: str
+    source_title: str = ""
+    category: str | None = None
+    language: str | None = None
+    effective_date: str | None = None
+    access_level: str = "public"
+
+
+class TestQueryRequest(BaseModel):
+    question: str
+    session_id: str = "admin-test-query"
+
+
 
 
 @asynccontextmanager
@@ -73,19 +90,6 @@ app = FastAPI(
     title="HKPL Agentic RAG Service",
     lifespan=lifespan,
 )
-
-
-class UserRequest(BaseModel):
-    input_string: str
-    session_id: str
-    is_voice: bool = False
-    stt_confidence: float = 1.0
-    library_code: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    user_memory: Optional[dict] = None
-
-
 def require_admin(
     x_admin_key: Optional[str] = Header(
         default=None,
@@ -106,6 +110,101 @@ def require_admin(
             status_code=401,
             detail="Invalid admin API key.",
         )
+
+@app.post("/admin/knowledge-base/test-query")
+async def admin_test_query(
+    payload: TestQueryRequest,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    require_admin(x_admin_key)
+
+    initial_state = {
+        "messages": [HumanMessage(content=payload.question)],
+        "session_id": payload.session_id,
+        "conversation_history": [],
+        "original_query": payload.question,
+        "rewritten_query": payload.question,
+        "input_type": "text",
+        "stt_confidence": 1.0,
+        "request_type": "rag_search",
+        "retrieved_context": "",
+        "retrieved_chunks": [],
+        "retrieved_scores": [],
+        "retrieved_sources": [],
+        "generated_answer": "",
+        "faithfulness_passed": True,
+        "faithfulness_reason": "",
+        "is_relevant": False,
+        "rewrite_count": 0,
+        "is_output_safe": True,
+        "end_conversation": False,
+        "tool_name": "",
+        "tool_args": {},
+        "current_library_code": None,
+        "current_library_name": None,
+        "current_datetime": get_current_datetime(),
+        "user_memory": {},
+    }
+
+    final_answer = ""
+    visited_nodes = []
+
+    async for chunk in compiled_workflow.astream(initial_state, stream_mode="updates"):
+        for node_name, updated in chunk.items():
+            visited_nodes.append(node_name)
+
+            if isinstance(updated, dict) and "messages" in updated:
+                for msg in updated["messages"]:
+                    if isinstance(msg, AIMessage):
+                        final_answer = msg.content
+
+    return {
+        "question": payload.question,
+        "answer": final_answer,
+        "visited_nodes": visited_nodes,
+    }
+
+
+@app.post("/admin/documents/index-url", status_code=202)
+async def index_url(
+    payload: UrlIndexRequest,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    require_admin(x_admin_key)
+
+    path, detected_title = save_webpage_to_uploads(
+        url=payload.url,
+        upload_dir=UPLOAD_DIR,
+    )
+
+    result = ingest_path_sync(
+        path,
+        original_file_name=path.name,
+        mime_type="text/html",
+        source_title=payload.source_title or detected_title,
+        source_url=payload.url,
+        source_type="webpage",
+        access_level=payload.access_level,
+        category=payload.category,
+        language=payload.language,
+        effective_date=payload.effective_date,
+        source_kind="webpage",
+    )
+
+    return result
+
+class UserRequest(BaseModel):
+    input_string: str
+    session_id: str
+    is_voice: bool = False
+    stt_confidence: float = 1.0
+    library_code: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    user_memory: Optional[dict] = None
+
+
+
 
 
 def safe_filename(filename: str) -> str:
@@ -366,6 +465,9 @@ async def upload_document(
     file: UploadFile = File(...),
     source_title: str = Form(""),
     source_url: str = Form(""),
+    category: str | None = Form(None),
+    language: str | None = Form(None),
+    effective_date: str | None = Form(None),
     access_level: str = Form("public"),
 ):
     stored_path, original_name, mime_type = (
@@ -381,6 +483,10 @@ async def upload_document(
             source_url=source_url,
             source_type="admin_upload",
             access_level=access_level,
+            category=category,
+            language=language,
+            effective_date=effective_date,
+            source_kind="upload",
         )
     except Exception:
         stored_path.unlink(
@@ -437,6 +543,9 @@ async def replace_document(
     source_title: str = Form(""),
     source_url: str = Form(""),
     access_level: str = Form("public"),
+    category: str | None = Form(None),
+    language: str | None = Form(None),
+    effective_date: str | None = Form(None),
 ):
     stored_path, original_name, mime_type = (
         await save_upload(file)
@@ -452,6 +561,10 @@ async def replace_document(
             source_type="admin_upload",
             access_level=access_level,
             replace_document_id=document_id,
+            category=category,
+            language=language,
+            effective_date=effective_date,
+            source_kind="upload",
         )
     except Exception:
         stored_path.unlink(

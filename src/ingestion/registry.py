@@ -51,6 +51,25 @@ def ensure_registry_schema() -> None:
                 """
             )
         )
+        connection.execute(text("""
+            ALTER TABLE knowledge_documents
+            ADD COLUMN IF NOT EXISTS category TEXT
+        """))
+
+        connection.execute(text("""
+            ALTER TABLE knowledge_documents
+            ADD COLUMN IF NOT EXISTS language TEXT
+        """))
+
+        connection.execute(text("""
+            ALTER TABLE knowledge_documents
+            ADD COLUMN IF NOT EXISTS effective_date DATE
+        """))
+
+        connection.execute(text("""
+            ALTER TABLE knowledge_documents
+            ADD COLUMN IF NOT EXISTS source_kind TEXT
+        """))
 
 
 def _row_to_dict(row: Any) -> dict:
@@ -89,6 +108,10 @@ def create_document(
     source_url: str,
     source_type: str,
     access_level: str,
+    category: str | None = None,
+    language: str | None = None,
+    effective_date: str | None = None,
+    source_kind: str = "upload",
 ) -> dict:
     document_id = str(uuid4())
 
@@ -108,7 +131,11 @@ def create_document(
                     source_type,
                     access_level,
                     version,
-                    status
+                    status,
+                    category,
+                    language,
+                    effective_date,
+                    source_kind
                 )
                 VALUES (
                     :document_id,
@@ -122,7 +149,11 @@ def create_document(
                     :source_type,
                     :access_level,
                     1,
-                    'uploaded'
+                    'uploaded',
+                    :category,
+                    :language,
+                    :effective_date,
+                    :source_kind
                 )
                 RETURNING *
                 """
@@ -138,6 +169,11 @@ def create_document(
                 "source_url": source_url,
                 "source_type": source_type,
                 "access_level": access_level,
+                "category": category,
+                "language": language,
+                "effective_date": effective_date or None,
+                "source_kind": source_kind,
+                
             },
         ).fetchone()
 
@@ -156,6 +192,10 @@ def prepare_replacement(
     source_url: str,
     source_type: str,
     access_level: str,
+    category: str | None = None,
+    language: str | None = None,
+    effective_date: str | None = None,
+    source_kind: str = "upload",
 ) -> Optional[dict]:
     with engine.begin() as connection:
         row = connection.execute(
@@ -172,6 +212,10 @@ def prepare_replacement(
                     source_url = :source_url,
                     source_type = :source_type,
                     access_level = :access_level,
+                    category = :category,
+                    language = :language,
+                    effective_date = :effective_date,
+                    source_kind = :source_kind,
                     version = version + 1,
                     status = 'uploaded',
                     chunk_count = 0,
@@ -193,6 +237,10 @@ def prepare_replacement(
                 "source_url": source_url,
                 "source_type": source_type,
                 "access_level": access_level,
+                "category": category,
+                "language": language,
+                "effective_date": effective_date or None,
+                "source_kind": source_kind,
             },
         ).fetchone()
 
