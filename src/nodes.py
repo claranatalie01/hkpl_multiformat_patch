@@ -68,7 +68,59 @@ def get_safety_model():
         safety_model = GLiNER2.from_pretrained("fastino/gliguard-LLMGuardrails-300M")
         safety_model.to("cpu")
     return safety_model
+def _history_to_text(history: list) -> str:
+    parts = []
+    for turn in history[-8:]:
+        if isinstance(turn, dict):
+            parts.append(str(turn.get("content", "")))
+        else:
+            parts.append(str(turn))
+    return " ".join(parts).lower()
 
+
+def is_library_follow_up(user_input: str, history: list) -> bool:
+    if not history:
+        return False
+
+    query = user_input.lower()
+    history_text = _history_to_text(history)
+
+    follow_up_terms = [
+        "that",
+        "it",
+        "this",
+        "again",
+        "same",
+        "that event",
+        "the event",
+        "details",
+        "detail",
+        "where",
+        "when",
+        "location",
+        "venue",
+        "what time",
+    ]
+
+    library_terms = [
+        "library",
+        "hkpl",
+        "event",
+        "public library",
+        "book",
+        "borrowing",
+        "opening hours",
+        "password",
+        "reference",
+        "e-resources",
+        "source",
+        "venue",
+    ]
+
+    return (
+        any(term in query for term in follow_up_terms)
+        and any(term in history_text for term in library_terms)
+    )
 async def safety_and_intent_node(state: LibraryBotState) -> dict:
     logger.info("[Node] Safety Classifier (GLiGuard)")
     user_input = state["messages"][-1].content
@@ -156,7 +208,6 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
             "multi_step_attack",
             "hypothetical_bypass",
             "roleplay_bypass",
-            "social_engineing",
             "social_engineering",
             "other",
         }
@@ -177,8 +228,6 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
         # - prompt_safety is kept for logging, but not trusted alone because
         #   GLiGuard can return contradictory outputs such as unsafe + benign.
         is_unsafe = len(hard_hits) > 0
-
-        # Keep this alias so the existing log_entry / debugging code remains clear.
         blocking_hits = hard_hits
 
         logger.info(
@@ -186,6 +235,19 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
             f"hard_hits={hard_hits}; soft_hits={soft_hits}; is_unsafe={is_unsafe}"
         )
 
+        conversation_history = state.get("conversation_history", [])
+
+        if (
+            not is_unsafe
+            and is_library_follow_up(user_input, conversation_history)
+        ):
+            logger.info(
+                "Allowing safe vague library follow-up based on conversation history."
+            )
+            return {
+                "is_output_safe": True,
+                "end_conversation": False,
+            }
     except Exception as e:
         logger.error(f"GLiGuard classification error: {e}")
         is_unsafe = False

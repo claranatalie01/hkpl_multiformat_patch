@@ -160,21 +160,29 @@ def chunk_documents(documents: List[Document]) -> List[BaseNode]:
 
         document_nodes = splitter.get_nodes_from_documents([document])
 
+        kb_document_id = str(
+            document.metadata.get("document_id", "")
+        ).split(":")[0]
+
         for local_index, node in enumerate(document_nodes):
             content = node.get_content()
+
+            if len(content.strip()) < 50:
+                continue
+
             digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
-            document_id = node.metadata["document_id"]
             version = node.metadata["document_version"]
             section_index = node.metadata.get("section_index", 0)
 
             node.id_ = (
-                f"{document_id}:v{version}:"
+                f"{kb_document_id}:v{version}:"
                 f"s{section_index}:c{local_index}:{digest}"
             )
 
             node.metadata.update(
                 {
+                    "kb_document_id": kb_document_id,
                     "chunk_id": node.id_,
                     "chunk_index": local_index,
                     "chunk_strategy": strategy,
@@ -183,7 +191,7 @@ def chunk_documents(documents: List[Document]) -> List[BaseNode]:
                 }
             )
 
-        nodes.extend(document_nodes)
+            nodes.append(node)
 
     return nodes
 

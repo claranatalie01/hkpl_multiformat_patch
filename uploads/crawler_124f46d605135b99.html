@@ -1,0 +1,977 @@
+<div id="content">
+<div class="top_color_bg_area">
+<div class="content-container">
+<div class="breadcrumb_area">
+<a href="/en/e-resources/index.html">Home</a> &gt; <span>e-Databases</span>
+</div>
+<p>Readers may use the e-databases via the following means:<br/>．access via Internet with the library account.<br/>．use the computers inside the Hong Kong Public Libraries via this webpage</p>
+<div class="clear"></div>
+</div>
+</div>
+<div class="content-container">
+<div class="search_area">
+<div class="txt_col search_title">Explore e-Databases</div>
+<div class="clear"></div>
+<div class="search_sub_area">
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3>By Subject</h3>
+<p>View Lists of e-Databases by Subject</p>
+<div class="search_btn_area">
+<form onsubmit="return false"><div class="selectBox">
+<label for="sub_search" style="display: none">Select the Subject</label>
+<input class="accessibility" id="sub_search" value="Select the Subject"/>
+<a class="field" id="by_subject-box">Select the Subject</a>
+<div class="optList">
+<ul>
+<li class="selectBox-selected"></li>
+<li><a data-value="Arts and Humanities" href="javascript:void(0)">Arts and Humanities</a></li>
+<li><a data-value="Business and Economics" href="javascript:void(0)">Business and Economics</a></li>
+<li><a data-value="Children's Resources" href="javascript:void(0)">Children's Resources</a></li>
+<li><a data-value="Hong Kong Resources" href="javascript:void(0)">Hong Kong Resources</a></li>
+<li><a data-value="Library and Information Science" href="javascript:void(0)">Library and Information Science</a></li>
+<li><a data-value="Magazines" href="javascript:void(0)">Magazines</a></li>
+<li><a data-value="Multi-disciplines" href="javascript:void(0)">Multi-disciplines</a></li>
+<li><a data-value="Newspapers and Periodicals" href="javascript:void(0)">Newspapers and Periodicals</a></li>
+<li><a data-value="Reference Tools" href="javascript:void(0)">Reference Tools</a></li>
+<li><a data-value="Science &amp; Technology" href="javascript:void(0)">Science &amp; Technology</a></li>
+<li><a data-value="Social Sciences" href="javascript:void(0)">Social Sciences</a></li>
+</ul>
+</div>
+</div>
+<button class="search_btn" name="key-button" onclick="searchBySubject('en','/en/e-resources/e-databases/subject')" title="SEARCH" type="submit"> </button>
+</form>
+</div>
+</div>
+<div class="search_az_area">
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3>By Title</h3>
+<p>Browse e-Databases and e-Journals by Alphabetical Order</p>
+<div class="search_btn_area" style="position: absolute; top: 85px; left: -10px;">
+<table>
+<tbody>
+<tr>
+<td style="position: absolute; left: 5px;"><a onclick="searchByAlphabet('en','/en/e-resources/e-databases/title')"><img alt="e-Databases" height="22" src="/common/e-resources/en/images/search_az_btn_edatabase.jpg" title="e-Databases" width="103"/></a></td>
+<td style="position: absolute; left: 115px;"><a href="https://webcat.hkpl.gov.hk/wicket/bookmarkable/com.vtls.chamo.webapp.component.subscription.AZListDisclaimerPage?&amp;locale=en" target="_blank"><img alt="e-journals" height="22" src="/common/e-resources/en/images/search_az_btn_ejournals.jpg" title="e-journals" width="101"/></a>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="search_key_area">
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3>By Keyword</h3>
+<p>Enter Keyword in e-Database Title, Description or Topic</p>
+<div class="search_btn_area" style="margin-bottom:3px;">
+<form onsubmit="return false">
+<label for="key-box" style="display: none">Eg. IELTS, sports, music</label> <input class="key-field" id="key-box" name="k" onblur="if (this.value == '') this.value='Eg. IELTS, sports, music';" onfocus="if(this.value==this.defaultValue) this.value='';" onkeypress="searchByKeywordPress(this,event)" title="keyword search" type="text" value="Eg. IELTS, sports, music"/>
+<button class="search_btn" id="by_key-button" name="key-button" onclick="searchByKeyword('en','/en/e-resources/e-databases/keyword')" title="SEARCH" type="submit"> </button>
+</form>
+</div>
+</div>
+<div class="search_ej_ar_area">
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<div style="line-height: 1;">
+<h3>
+<a href="/en/e-resources/e-resources-full-text-search.html" style="color: white; font-size: 0.8em;"> e-Resources
+									Full-text Search </a>
+</h3>
+</div>
+<p>Search on multiple e-resources in one go</p>
+<!--  
+						<div style="position: absolute; top: 65px;">
+							<a href="/en/e-resources/e-resources-full-text-search.html">
+								<img alt="Learn More" height="22" width="100"
+								src="/common/e-resources/en/images/search_more_btn.png">
+							</a>
+						</div> -->
+<div class="search_btn_area">
+<form onsubmit="return false">
+<label for="key-box" style="display: none">Eg. IELTS, sports, music</label> <input class="key-field" id="key-box" name="ftk" onblur="if (this.value == '') this.value='Eg. IELTS, sports, music';" onfocus="if(this.value==this.defaultValue) this.value='';" onkeypress="searchByKeywordPress(this,event)" title="full text search" type="text" value="Eg. IELTS, sports, music"/>
+<button class="search_btn" id="by_key-button" name="key-button" onclick="searchByFullTextSearch('en','/en/e-resources/access/full-text-search/disclaimer')" title="SEARCH" type="submit"> </button>
+</form>
+</div>
+</div>
+</div>
+<div class="tab-slider">
+<div class="tab-slide">
+<ul>
+<li class="currentTab">
+<div class="left-corner"></div> <div class="tab">
+<a class="tab-word" href="/en/e-resources/e-databases/home/all/1">All</a>
+</div></li>
+<li>
+<div class="left-corner"></div> <div class="tab">
+<a class="tab-word" href="/en/e-resources/e-databases/home/remote/1">Remote Access</a>
+</div></li>
+<li>
+<div class="left-corner"></div> <div class="tab">
+<a class="tab-word" href="/en/e-resources/e-databases/home/library/1">Library Access</a>
+</div></li>
+</ul>
+</div>
+<div class="tab-content">
+<!-- All tab -->
+<div class="tab-box">
+<p>
+<strong>Result list of e-databases available at Hong Kong Public Libraries.</strong><br/>The availability of e-databases is subject to change without prior notice.<br/>
+<b class="on_data_btn" style="font-weight: normal;">e-Databases</b>
+<!--<b class="cd_btn" style="font-weight:normal;">CD-ROM Databases</b>-->
+</p>
+<div class="search_item">
+<!-- Parameter -->
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+<a href="/en/e-resources/e-databases/disclaimer/8050/accessscience" target="_blank">AccessScience</a>
+<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/AccessScience%20User%20Guide_HKPL%20%28simple%20version%29.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span><a href="https://www.youtube.com/watch?v=XTcLog1WP_U" rel="noopener" target="_blank"><img alt="" src="/common/e-resources/common/images/e-database_material/RTHK.gif"/></a><br/>The AccessScience features the McGraw Hill Encyclopedia of Science &amp; Technology, McGraw-Hill Yearbook of Science &amp; Technology and weekly articles on the latest breaking news. It covers all areas of science and technology plus full-text features of biographies, news, learning resources, study guides and many other related sites.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/libraries.html" style="text-decoration: underline;">
+						All Hong Kong Public Libraries (excluding mobile libraries)
+					</a>
+					
+						 , 
+					
+				
+				
+				
+					<a href="/en/e-resources/e-databases/disclaimer/8050/accessscience" style="text-decoration: underline;">Remote Access</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Agriculture/all/1" style="text-decoration: underline;">
+						Agriculture
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Astronomy/all/1" style="text-decoration: underline;">
+						Astronomy
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Biography/all/1" style="text-decoration: underline;">
+						Biography
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Encyclopedia/all/1" style="text-decoration: underline;">
+						Encyclopedia
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Engineering/all/1" style="text-decoration: underline;">
+						Engineering
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Mathematics/all/1" style="text-decoration: underline;">
+						Mathematics
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/News/all/1" style="text-decoration: underline;">
+						News
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Science/all/1" style="text-decoration: underline;">
+						Science
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Technology/all/1" style="text-decoration: underline;">
+						Technology
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Video/all/1" style="text-decoration: underline;">
+						Video
+					</a>
+</p>
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+<a href="/en/e-resources/e-databases/disclaimer/175154/art-architecture-source" target="_blank">Art &amp; Architecture Source</a>
+<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/Arts and Architecture _user guide.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span><a href="https://youtu.be/lCIhShZVzXc" rel="noopener" target="_blank"><img alt="" src="/common/e-resources/common/images/e-database_material/RTHK.gif"/></a><a href="/common/e-resources/common/images/e-database_material/poster/Art &amp; Architecture.pdf" rel="noopener" target="_blank"><img alt="" height="29" src="/common/e-resources/common/images/e-database_material/eResources_Poster.jpg" width="29"/></a><br/>Art &amp; Architecture Source is a full-text art research database covering information on fine art, decorative art, commercial art, architecture and architectural design, etc. The database comprises academic journals, magazines, books, trade publications and images with the earliest content dating back to 1914.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/libraries.html" style="text-decoration: underline;">
+						All Hong Kong Public Libraries (excluding mobile libraries)
+					</a>
+					
+						 , 
+					
+				
+				
+				
+					<a href="/en/e-resources/e-databases/disclaimer/175154/art-architecture-source" style="text-decoration: underline;">Remote Access</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Architectural%20History/all/1" style="text-decoration: underline;">
+						Architectural History
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Architecture/all/1" style="text-decoration: underline;">
+						Architecture
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Art%20History/all/1" style="text-decoration: underline;">
+						Art History
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Arts/all/1" style="text-decoration: underline;">
+						Arts
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Craft/all/1" style="text-decoration: underline;">
+						Craft
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Design/all/1" style="text-decoration: underline;">
+						Design
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Landscape%20Architecture/all/1" style="text-decoration: underline;">
+						Landscape Architecture
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Painting/all/1" style="text-decoration: underline;">
+						Painting
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Photography/all/1" style="text-decoration: underline;">
+						Photography
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Sculpture/all/1" style="text-decoration: underline;">
+						Sculpture
+					</a>
+</p>
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+<a href="/en/e-resources/e-databases/disclaimer/8193/bookdata-online" target="_blank">BookData Online</a>
+<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/3%20folded_User%20Guide_BookData_202303.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span>BookData Online is an online bibliographic search database which contains English-language titles published in the U.K., the U.S., Australia, New Zealand and South Africa, including in-print and forthcoming titles as well as out-of-print records for access by users. Full bibliographic data is provided, and some records even contain descriptive contents and book cover images.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/libraries.html" style="text-decoration: underline;">
+						All Hong Kong Public Libraries (excluding mobile libraries)
+					</a>
+					
+						 , 
+					
+				
+				
+				
+					<a href="/en/e-resources/e-databases/disclaimer/8193/bookdata-online" style="text-decoration: underline;">Remote Access</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Bibliographical%20Description/all/1" style="text-decoration: underline;">
+						Bibliographical Description
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Book%20Searching/all/1" style="text-decoration: underline;">
+						Book Searching
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/ISBN/all/1" style="text-decoration: underline;">
+						ISBN
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Library%20Science/all/1" style="text-decoration: underline;">
+						Library Science
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Publisher/all/1" style="text-decoration: underline;">
+						Publisher
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Reference%20Tools/all/1" style="text-decoration: underline;">
+						Reference Tools
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Supplier/all/1" style="text-decoration: underline;">
+						Supplier
+					</a>
+</p>
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+<a href="/en/e-resources/e-databases/disclaimer/174991/britannica-library" target="_blank">Britannica Library </a>
+<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/Britannic Library_UserGuide_Final.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span><a href="https://www.youtube.com/watch?v=wd2bfTZuhK4"><img alt="" src="/common/e-resources/common/images/e-database_material/RTHK.gif"/></a><br/>Britannica Library is an online database that provides current trusted information on a range of topics for learners of all ages and abilities.  You can find a wealth of content in the database, such as articles, images and videos on history, literature, science, geography, arts and more.  You can also view daily news headlines from around the world.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/libraries.html" style="text-decoration: underline;">
+						All Hong Kong Public Libraries (excluding mobile libraries)
+					</a>
+					
+						 , 
+					
+				
+				
+				
+					<a href="/en/e-resources/e-databases/disclaimer/174991/britannica-library" style="text-decoration: underline;">Remote Access</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Arts/all/1" style="text-decoration: underline;">
+						Arts
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/History/all/1" style="text-decoration: underline;">
+						History
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Literature/all/1" style="text-decoration: underline;">
+						Literature
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Science/all/1" style="text-decoration: underline;">
+						Science
+					</a>
+</p>
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+<a href="/en/e-resources/e-databases/disclaimer/177828/business-book-summaries" target="_blank">Business Book Summaries</a>
+<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/Userguide_BusinessBookSummaries.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span><a href="https://youtu.be/rAKkIJuIEOs" rel="noopener" target="_blank"><img alt="" src="/common/e-resources/common/images/e-database_material/RTHK.gif"/></a><a href="/common/e-resources/common/images/e-database_material/poster/GR_BBS_A2_4C_Sep2020_v5.pdf" rel="noopener" target="_blank"><img alt="" height="29" src="/common/e-resources/common/images/e-database_material/eResources_Poster.jpg" width="29"/></a><br/>Business Book Summaries provides concise summaries of leading business books from prominent publishers. Various topics are covered, such as business biographies, change management, communication, entrepreneurship, leadership, marketing, personal growth, productivity and technology, with new topics being added regularly. Most of the book summaries are available in audio form.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/libraries.html" style="text-decoration: underline;">
+						All Hong Kong Public Libraries (excluding mobile libraries)
+					</a>
+					
+						 , 
+					
+				
+				
+				
+					<a href="/en/e-resources/e-databases/disclaimer/177828/business-book-summaries" style="text-decoration: underline;">Remote Access</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Bibliography/all/1" style="text-decoration: underline;">
+						Bibliography
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Book%20Summaries/all/1" style="text-decoration: underline;">
+						Book Summaries
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Business/all/1" style="text-decoration: underline;">
+						Business
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Enterprise/all/1" style="text-decoration: underline;">
+						Enterprise
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Human%20Resources/all/1" style="text-decoration: underline;">
+						Human Resources
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Management/all/1" style="text-decoration: underline;">
+						Management
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Marketing/all/1" style="text-decoration: underline;">
+						Marketing
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Sales/all/1" style="text-decoration: underline;">
+						Sales
+					</a>
+</p>
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+<a href="/en/e-resources/e-databases/disclaimer/8218/business-source-complete" target="_blank">Business Source Complete</a>
+<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/3folded_BusinessSourceComplete_UserGuide.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span><a href="/common/e-resources/common/images/e-database_material/poster/Business_Source_Complete.pdf" rel="noopener" target="_blank"><img alt="" height="29" src="/common/e-resources/common/images/e-database_material/eResources_Poster.jpg" width="29"/></a><br/>It is a scholarly business database which covers full-text journals and periodicals on marketing, management, economy, finance, accounting and other business subjects, and includes indexes and abstracts of the most important scholarly business journals dated back to 1886. In addition, there are full text of non-journal contents including financial data, books, monographs, major reference works, conference proceedings, case studies, investment research reports, industry reports, market research reports, country reports, company profiles and SWOT analysis.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/central-library/hong-kong-central.html" style="text-decoration: underline;">
+						Hong Kong Central Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/central-and-western/library/city-hall.html" style="text-decoration: underline;">
+						City Hall Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/kowloon-city/library/kowloon.html" style="text-decoration: underline;">
+						Kowloon Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/yuen-long/library/ping-shan-tin-shui-wai.html" style="text-decoration: underline;">
+						Ping Shan Tin Shui Wai Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/sha-tin/library/sha-tin.html" style="text-decoration: underline;">
+						Sha Tin Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/tsuen-wan/library/tsuen-wan.html" style="text-decoration: underline;">
+						Tsuen Wan Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/tuen-mun/library/tuen-mun.html" style="text-decoration: underline;">
+						Tuen Mun Public Library
+					</a>
+					 , 
+				
+				
+					<a href="/en/e-resources/e-databases/disclaimer/8218/business-source-complete" style="text-decoration: underline;">Remote Access</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Accounting/all/1" style="text-decoration: underline;">
+						Accounting
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Business/all/1" style="text-decoration: underline;">
+						Business
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Business%20Research/all/1" style="text-decoration: underline;">
+						Business Research
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Company%20Profile/all/1" style="text-decoration: underline;">
+						Company Profile
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Economy/all/1" style="text-decoration: underline;">
+						Economy
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Finance/all/1" style="text-decoration: underline;">
+						Finance
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Industry%20Report/all/1" style="text-decoration: underline;">
+						Industry Report
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Market%20Research/all/1" style="text-decoration: underline;">
+						Market Research
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Marketing/all/1" style="text-decoration: underline;">
+						Marketing
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/SWOT%20Analysis/all/1" style="text-decoration: underline;">
+						SWOT Analysis
+					</a>
+</p>
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+<a href="/en/e-resources/e-databases/disclaimer/8252/china-academic-journals-full-text-database-cjfd" target="_blank">China Academic Journals Full-text Database (CJFD)</a>
+<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/3folded_CJFD.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span>It offers access to thousands of full-text journals published in the Chinese Mainland dating back to 1994. The subjects covered include literature, history, philosophy, politics, military affairs, law, education and sociology, economics and management, basic sciences, engineering and technology, agriculture, medicine and hygiene, electronics and information science.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/central-library/hong-kong-central.html" style="text-decoration: underline;">
+						Hong Kong Central Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/central-and-western/library/city-hall.html" style="text-decoration: underline;">
+						City Hall Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/kowloon-city/library/kowloon.html" style="text-decoration: underline;">
+						Kowloon Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/yuen-long/library/ping-shan-tin-shui-wai.html" style="text-decoration: underline;">
+						Ping Shan Tin Shui Wai Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/sha-tin/library/sha-tin.html" style="text-decoration: underline;">
+						Sha Tin Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/tsuen-wan/library/tsuen-wan.html" style="text-decoration: underline;">
+						Tsuen Wan Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/tuen-mun/library/tuen-mun.html" style="text-decoration: underline;">
+						Tuen Mun Public Library
+					</a>
+					 , 
+				
+				
+					<a href="/en/e-resources/e-databases/disclaimer/8252/china-academic-journals-full-text-database-cjfd" style="text-decoration: underline;">Remote Access</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Economy/all/1" style="text-decoration: underline;">
+						Economy
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Education/all/1" style="text-decoration: underline;">
+						Education
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Engineering/all/1" style="text-decoration: underline;">
+						Engineering
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Health/all/1" style="text-decoration: underline;">
+						Health
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/History/all/1" style="text-decoration: underline;">
+						History
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Information%20Science/all/1" style="text-decoration: underline;">
+						Information Science
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Law/all/1" style="text-decoration: underline;">
+						Law
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/News/all/1" style="text-decoration: underline;">
+						News
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Politics/all/1" style="text-decoration: underline;">
+						Politics
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Social%20Science/all/1" style="text-decoration: underline;">
+						Social Science
+					</a>
+</p>
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+<a href="/en/e-resources/e-databases/disclaimer/8237/china-doctoral-dissertations-full-text-database" target="_blank">China Doctoral Dissertations Full-text Database</a>
+<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/3folded_CDFD.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span>It offers access to full-text doctoral dissertations from hundreds of academic institutions in the Chinese Mainland dating back to 1984. The subjects covered include literature, history, philosophy, politics, military affairs, law, education and sociology, economics and management.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/central-library/hong-kong-central.html" style="text-decoration: underline;">
+						Hong Kong Central Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/central-and-western/library/city-hall.html" style="text-decoration: underline;">
+						City Hall Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/kowloon-city/library/kowloon.html" style="text-decoration: underline;">
+						Kowloon Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/yuen-long/library/ping-shan-tin-shui-wai.html" style="text-decoration: underline;">
+						Ping Shan Tin Shui Wai Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/sha-tin/library/sha-tin.html" style="text-decoration: underline;">
+						Sha Tin Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/tsuen-wan/library/tsuen-wan.html" style="text-decoration: underline;">
+						Tsuen Wan Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/tuen-mun/library/tuen-mun.html" style="text-decoration: underline;">
+						Tuen Mun Public Library
+					</a>
+					 , 
+				
+				
+					<a href="/en/e-resources/e-databases/disclaimer/8237/china-doctoral-dissertations-full-text-database" style="text-decoration: underline;">Remote Access</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Economy/all/1" style="text-decoration: underline;">
+						Economy
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Education/all/1" style="text-decoration: underline;">
+						Education
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/History/all/1" style="text-decoration: underline;">
+						History
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Literature/all/1" style="text-decoration: underline;">
+						Literature
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Management/all/1" style="text-decoration: underline;">
+						Management
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Military%20Affairs/all/1" style="text-decoration: underline;">
+						Military Affairs
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Philosophy/all/1" style="text-decoration: underline;">
+						Philosophy
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Politics/all/1" style="text-decoration: underline;">
+						Politics
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Social%20Science/all/1" style="text-decoration: underline;">
+						Social Science
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Theses/all/1" style="text-decoration: underline;">
+						Theses
+					</a>
+</p>
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+<a href="/en/e-resources/e-databases/disclaimer/8273/china-masters-theses-full-text-database" target="_blank">China Masters' Theses Full-text Database</a>
+<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/3folded_CMFD.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span>It offers access to full-text masters' theses from hundreds of academic institutions in the Chinese Mainland dating back to 1984. The subjects covered include literature, history, philosophy, politics, military affairs, law, education and sociology, economics and management.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/central-library/hong-kong-central.html" style="text-decoration: underline;">
+						Hong Kong Central Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/central-and-western/library/city-hall.html" style="text-decoration: underline;">
+						City Hall Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/kowloon-city/library/kowloon.html" style="text-decoration: underline;">
+						Kowloon Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/yuen-long/library/ping-shan-tin-shui-wai.html" style="text-decoration: underline;">
+						Ping Shan Tin Shui Wai Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/sha-tin/library/sha-tin.html" style="text-decoration: underline;">
+						Sha Tin Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/tsuen-wan/library/tsuen-wan.html" style="text-decoration: underline;">
+						Tsuen Wan Public Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/tuen-mun/library/tuen-mun.html" style="text-decoration: underline;">
+						Tuen Mun Public Library
+					</a>
+					 , 
+				
+				
+					<a href="/en/e-resources/e-databases/disclaimer/8273/china-masters-theses-full-text-database" style="text-decoration: underline;">Remote Access</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Economy/all/1" style="text-decoration: underline;">
+						Economy
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Education/all/1" style="text-decoration: underline;">
+						Education
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/History/all/1" style="text-decoration: underline;">
+						History
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Literature/all/1" style="text-decoration: underline;">
+						Literature
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Management/all/1" style="text-decoration: underline;">
+						Management
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Military%20Affairs/all/1" style="text-decoration: underline;">
+						Military Affairs
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Philosophy/all/1" style="text-decoration: underline;">
+						Philosophy
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Politics/all/1" style="text-decoration: underline;">
+						Politics
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Social%20Science/all/1" style="text-decoration: underline;">
+						Social Science
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Theses/all/1" style="text-decoration: underline;">
+						Theses
+					</a>
+</p>
+<h1 style="display:none;"> </h1>
+<h2 style="display:none;"> </h2>
+<h3 class="cd_title">
+				
+					
+					
+						China Standards Document Database
+					
+					
+				
+				<!-- PDF download link -->
+<a class="user_dl_btn" href="/en/common/attachments/e-resources/e-databases/China%20Standard_A4_UserGuide.pdf" target="_blank">
+<img alt="Download User Guide" height="20" src="/common/e-resources/en/images/download_ug_btn.png" title="Download User Guide" width="155"/>
+</a>
+</h3>
+<span>The database contains over 100 000 full-text documents on Chinese standards, including national and industry standards, promulgated by the relevant state authorities of China. Apart from using different criteria, such as standard title, standard number, issuing authority, date of issue and key word for searching, users may also browse the required information by the Chinese Classification for Standards (CCS) and the International Classification for Standards (ICS). Bibliographic information of standards from other countries is also available for searching.</span>
+<!-- Available Locations -->
+<p class="blue_link">
+<strong>Available at:</strong>
+<a href="/en/locations/central-library/hong-kong-central.html" style="text-decoration: underline;">
+						Hong Kong Central Library
+					</a>
+					 , 
+				
+					<a href="/en/locations/central-and-western/library/city-hall.html" style="text-decoration: underline;">
+						City Hall Public Library
+					</a>
+</p>
+<!-- Tags -->
+<p class="orange_link">
+<strong>Tag:</strong>
+<a href="/en/e-resources/e-databases/tag/Analysis/all/1" style="text-decoration: underline;">
+						Analysis
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Chinese%20Classification%20for%20Standards/all/1" style="text-decoration: underline;">
+						Chinese Classification for Standards
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Evaluation/all/1" style="text-decoration: underline;">
+						Evaluation
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/International%20Classification%20for%20Standards/all/1" style="text-decoration: underline;">
+						International Classification for Standards
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Measurement/all/1" style="text-decoration: underline;">
+						Measurement
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Quality/all/1" style="text-decoration: underline;">
+						Quality
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Regulation/all/1" style="text-decoration: underline;">
+						Regulation
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Safety/all/1" style="text-decoration: underline;">
+						Safety
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Standards/all/1" style="text-decoration: underline;">
+						Standards
+					</a>
+					 ,
+				
+					<a href="/en/e-resources/e-databases/tag/Standards%20Number/all/1" style="text-decoration: underline;">
+						Standards Number
+					</a>
+</p>
+</div>
+</div>
+<!-- Remote Tab -->
+<div class="tab-box">
+<p>
+<strong>The following e-databases are available for access via Internet with the library account.</strong><br/>The availability of e-databases is subject to change without prior notice.<br/>
+<b class="on_data_btn" style="font-weight: normal;">e-Databases</b>
+</p>
+<div class="search_item">
+</div>
+</div>
+<!-- Branch tab -->
+<div class="tab-box">
+<p>
+<strong>The following e-databases are available for access via this webpage only. </strong><br/>The availability of e-databases is subject to change without prior notice.<br/>
+<b class="on_data_btn" style="font-weight: normal;">e-Databases</b>
+</p>
+<div class="search_item">
+</div>
+</div>
+</div>
+</div>
+<div class="clear"></div>
+<div class="page_no_area">
+<a class="current">1</a>
+<a href="/en/e-resources/e-databases/home/all/2">2</a>
+<a href="/en/e-resources/e-databases/home/all/3">3</a>
+<a href="/en/e-resources/e-databases/home/all/4">4</a> 
+...
+<form onsubmit='javascript:pagination("en",1,6);return false;' style="display:inline;"><label for="page_num" style="display:none;">#</label><input class="page_input" id="page_num" title="Go to page Number" type="text"/><button style="display:none;"></button></form>of 6
+<a href="/en/e-resources/e-databases/home/all/2"><img alt="Next page" height="19" src="/common/e-resources/common/images/books/page_right_arrow.jpg" style="float:right" title="Next page" width="19"/>Next</a>
+</div>
+</div>
+</div>

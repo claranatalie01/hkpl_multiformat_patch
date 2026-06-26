@@ -1,0 +1,109 @@
+<div class="inner_page" id="content">
+<div class="content-container">
+<div class="breadcrumb_area">
+<a href="/en/index.html">Home</a>
+<span> &gt; </span><a href="/en/about-us/intro/intro.html">About HKPL</a>
+<span> &gt; </span><a href="/en/about-us/services/mobileapp.html">Services</a>
+<span> &gt; </span><a href="/en/about-us/services/library-station/introduction.html">Self-service Library Station</a>
+<span> &gt; </span><span>Station Catalogue</span>
+</div>
+<div class="clear"></div>
+<h1 class="txt_col"></h1>
+<div class="left_nav_content">
+<div class="content-container"><p>Each self-service library station will provide about 350 lending books, with a suitable mix between Chinese and English on various subject areas to
+                    cater for the interests of different age groups. Browse/search the station collection from below catalogue.</p>
+<div class="errorPanel">
+<div id="out_of_service" style="display: none;">
+<h5>Service is currrently unavailable. Please try again later.</h5>
+</div>
+<div id="bin_full" style="display: none;">
+<h5>The return bins of the below self-service library station(s) are full</h5>
+<ul id="bin_full_lib"></ul>
+</div>
+<div id="bin_status" style="display: none;">
+<div id="bin_status_offline" style="display: none;">
+<h5>The Self-service Library Station(s) below can only accept return of library items now, while other services are suspended temporarily:</h5>
+<ul id="bin_status_lib_offline"></ul>
+</div>
+<div id="bin_status_maintenance" style="display: none;">
+<h5>The Self-service Library Station(s) below is/are now under maintenance, and all services are suspended temporarily:</h5>
+<ul id="bin_status_lib_maintenance"></ul>
+</div>
+</div>
+</div>
+<div class="responsive_table" id="bod_search_area">
+<div class="overlay"></div>
+<form name="bod_search_form">
+<div class="search_title">
+<h2>Search Filters</h2>
+</div>
+<div class="rt_tr">
+<div class="rt_2_col">
+<label class="field_label" for="title">Title</label><input id="title" name="title" type="text"/>
+</div>
+<div class="rt_2_col">
+<label class="field_label" for="author">Author</label><input id="author" name="author" type="text"/>
+</div>
+</div>
+<div class="rt_tr">
+<div class="rt_2_col">
+<label class="field_label" for="site">Location</label>
+<div class="styled_select">
+<select id="site" name="site">
+<option value="">All Self-service Library Stations</option>
+</select>
+</div>
+</div>
+<div class="rt_2_col">
+<label class="field_label" for="site">Selected Book</label>
+<div class="styled_select">
+<input id="thematic" name="thematic" type="checkbox"/>Show selected book only
+                                    </div>
+</div>
+</div>
+<div class="rt_tr">
+<div class="rt_1_col" id="layerOpts">
+<label class="field_label">*Layer</label><label class="cb_label" for="layer_all"><input checked="true" id="layer_all" name="layer" type="radio" value=""/>All Layers</label>
+</div>
+</div>
+<div class="rt_tr">
+<div class="rt_1_col" id="statusOpts">
+<label class="field_label">Item Status</label><label class="cb_label" for="status_all"><input checked="true" id="status_all" name="status" type="radio" value=""/>All
+                                    Items</label>
+</div>
+</div>
+<div class="rt_tr">
+<div class="rt_1_col">
+<div class="btn_area">
+<input name="lang" type="hidden" value="en"/><input name="sortBy" type="hidden" value="statusCode"/><input name="isAsc" type="hidden" value="1"/><a class="submitBtn" href="javascript:void(0)">Submit</a><a class="resetBtn" href="javascript:void(0)">Reset</a>
+</div>
+</div>
+</div>
+</form>
+</div>
+<div>* Layer: Each Station has three layers of books displayed for browsing.<br/>** Slot number: Enter the slot number for the item you want to borrow.</div>
+<div id="bod_result">
+<div class="overlay"></div>
+<table id="bod_booklist">
+<thead>
+<tr>
+<th><a class="col-siteId sort-by" href="javascript:changeSort('siteId')">Location</a></th>
+<th><a class="col-slotNo sort-by" href="javascript:changeSort('slotNo')">**Slot number</a></th>
+<th><a class="col-title sort-by" href="javascript:changeSort('title')">Title</a></th>
+<th><a class="col-author sort-by" href="javascript:changeSort('author')">Author</a></th>
+<th><a class="col-shelvingTime sort-by" href="javascript:changeSort('collectionCodeE')">Item class</a></th>
+<th><a class="col-shelvingTime sort-by" href="javascript:changeSort('subjectE')">Subject</a></th>
+<th><a class="col-statusCode sort-by sort-asc" href="javascript:changeSort('statusCode')">Status</a></th>
+<th><a class="col-shelvingTime sort-by" href="javascript:changeSort('shelvingTime')">Shelving Date</a></th>
+<th>Checkout Date</th>
+<th><a class="col-shelvingTime sort-by" href="javascript:changeSort('remarkE')">Remarks</a></th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+<div class="page_no_area"></div>
+</div>
+</div>
+</div>
+</div>
+</div>
