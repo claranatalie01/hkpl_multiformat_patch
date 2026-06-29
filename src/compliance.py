@@ -64,7 +64,6 @@ def create_prohibited_keyword(
     )
 
     return created
-    return dict(row._mapping)
 
 
 def set_keyword_active(
@@ -175,7 +174,7 @@ def write_keyword_audit_log(
                 "keyword_id": keyword_id,
                 "action": action,
                 "staff_id": staff_id,
-                "old_value": json.dumps(old_value) if old_value else None,
-                "new_value": json.dumps(new_value) if new_value else None,
+                "old_value": json.dumps(old_value, default=str) if old_value else None,
+                "new_value": json.dumps(new_value, default=str) if new_value else None,
             },
         )
