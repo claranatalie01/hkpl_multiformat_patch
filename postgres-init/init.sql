@@ -36,6 +36,53 @@ ON knowledge_documents(content_hash);
 CREATE INDEX IF NOT EXISTS idx_knowledge_documents_status
 ON knowledge_documents(status);
 
--- LlamaIndex creates and manages:
---     data_hkpl_knowledge
--- after the first ingestion.
+CREATE TABLE IF NOT EXISTS prohibited_keywords (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    keyword TEXT NOT NULL,
+
+    category TEXT NOT NULL DEFAULT 'general',
+
+    language TEXT NOT NULL DEFAULT 'en',
+
+    fallback_response TEXT NOT NULL,
+
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+
+    created_by TEXT DEFAULT '',
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prohibited_keywords_active
+ON prohibited_keywords(is_active);
+
+CREATE INDEX IF NOT EXISTS idx_prohibited_keywords_category
+ON prohibited_keywords(category);
+
+CREATE INDEX IF NOT EXISTS idx_prohibited_keywords_created_at
+ON prohibited_keywords(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS prohibited_keyword_audit_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    keyword_id UUID,
+    action TEXT NOT NULL,
+    staff_id TEXT NOT NULL,
+    old_value JSONB,
+    new_value JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prohibited_keyword_audit_keyword_id
+ON prohibited_keyword_audit_log(keyword_id);
+
+CREATE INDEX IF NOT EXISTS idx_prohibited_keyword_audit_staff_id
+ON prohibited_keyword_audit_log(staff_id);
+
+CREATE INDEX IF NOT EXISTS idx_prohibited_keyword_audit_action
+ON prohibited_keyword_audit_log(action);
+
+CREATE INDEX IF NOT EXISTS idx_prohibited_keyword_audit_created_at
+ON prohibited_keyword_audit_log(created_at DESC);

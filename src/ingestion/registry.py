@@ -33,6 +33,51 @@ def ensure_registry_schema() -> None:
                 """
             )
         )
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS prohibited_keywords (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                keyword TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                language TEXT NOT NULL DEFAULT 'en',
+                fallback_response TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_by TEXT DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS prohibited_keyword_audit_log (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                keyword_id UUID,
+                action TEXT NOT NULL,
+                staff_id TEXT NOT NULL,
+                old_value JSONB,
+                new_value JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+
+        connection.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_prohibited_keyword_audit_keyword_id
+            ON prohibited_keyword_audit_log(keyword_id)
+        """))
+
+        connection.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_prohibited_keyword_audit_staff_id
+            ON prohibited_keyword_audit_log(staff_id)
+        """))
+
+        connection.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_prohibited_keyword_audit_action
+            ON prohibited_keyword_audit_log(action)
+        """))
+
+        connection.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_prohibited_keyword_audit_created_at
+            ON prohibited_keyword_audit_log(created_at DESC)
+        """))
+        
         connection.execute(
             text(
                 """

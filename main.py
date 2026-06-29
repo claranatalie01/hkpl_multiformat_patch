@@ -6,7 +6,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
-
+from src.compliance import (
+    list_prohibited_keywords,
+    create_prohibited_keyword,
+    set_keyword_active,
+)
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -53,6 +57,18 @@ ADMIN_API_KEY = os.getenv(
     "ADMIN_API_KEY",
     "",
 )
+
+class ProhibitedKeywordRequest(BaseModel):
+    keyword: str
+    category: str = "general"
+    language: str = "en"
+    fallback_response: str
+    created_by: str = "admin"
+
+class KeywordStatusRequest(BaseModel):
+    is_active: bool
+    staff_id: str = "admin"
+
 class UrlIndexRequest(BaseModel):
     url: str
     source_title: str = ""
@@ -110,7 +126,52 @@ def require_admin(
             status_code=401,
             detail="Invalid admin API key.",
         )
+@app.get(
+    "/admin/compliance/keywords",
+    dependencies=[Depends(require_admin)],
+)
+async def get_prohibited_keywords():
+    return {
+        "keywords": list_prohibited_keywords()
+    }
 
+
+@app.post(
+    "/admin/compliance/keywords",
+    dependencies=[Depends(require_admin)],
+)
+async def add_prohibited_keyword(
+    payload: ProhibitedKeywordRequest,
+):
+    return create_prohibited_keyword(
+        keyword=payload.keyword,
+        category=payload.category,
+        language=payload.language,
+        fallback_response=payload.fallback_response,
+        created_by=payload.created_by,
+    )
+
+
+@app.patch(
+    "/admin/compliance/keywords/{keyword_id}",
+    dependencies=[Depends(require_admin)],
+)
+async def update_keyword_status(
+    keyword_id: str,
+    payload: KeywordStatusRequest,
+):
+    updated = set_keyword_active(
+        keyword_id,
+        payload.is_active,
+        staff_id=payload.staff_id,
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=404,
+            detail="Keyword not found.",
+        )
+
+    return updated
 @app.post("/admin/knowledge-base/test-query")
 async def admin_test_query(
     payload: TestQueryRequest,
