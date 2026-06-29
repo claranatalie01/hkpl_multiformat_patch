@@ -11,6 +11,7 @@ from gliner2 import GLiNER2
 from .state import LibraryBotState
 from .retrieval import retrieve_nodes
 from .memory import save_conversation_turn
+from .compliance import check_prohibited_keywords
 import aiohttp
 
 load_dotenv()
@@ -124,6 +125,19 @@ def is_library_follow_up(user_input: str, history: list) -> bool:
 async def safety_and_intent_node(state: LibraryBotState) -> dict:
     logger.info("[Node] Safety Classifier (GLiGuard)")
     user_input = state["messages"][-1].content
+    policy_hit = check_prohibited_keywords(user_input)
+
+    if policy_hit:
+        logger.warning(
+            "Prohibited keyword matched: %s | category=%s",
+            policy_hit["keyword"],
+            policy_hit["category"],
+        )
+        return {
+            "messages": [AIMessage(content=policy_hit["fallback_response"])],
+            "is_output_safe": True,
+            "end_conversation": True,
+        }
     model = get_safety_model()
 
     toxicity_labels = [
@@ -794,6 +808,19 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
 async def output_safety_filter_node(state: LibraryBotState) -> dict:
     logger.info("[Node] Output Safety Filter")
     answer = state["messages"][-1].content
+    policy_hit = check_prohibited_keywords(answer)
+
+    if policy_hit:
+        logger.warning(
+            "Output prohibited keyword matched: %s | category=%s",
+            policy_hit["keyword"],
+            policy_hit["category"],
+        )
+        return {
+            "is_output_safe": True,
+            "messages": [AIMessage(content=policy_hit["fallback_response"])],
+            "generated_answer": policy_hit["fallback_response"],
+        }
     blocked_phrases = ["self-harm", "suicide", "kill yourself"]
     if any(phrase in answer.lower() for phrase in blocked_phrases):
         return {"is_output_safe": False, "messages": [AIMessage(content="I cannot provide that answer. Please contact library staff or call the Samaritans at 2896 0000 for immediate help.")]}
