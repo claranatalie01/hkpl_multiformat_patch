@@ -746,7 +746,10 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
     context = "\n\n".join(selected_context_parts)
 
     if not context:
-        fallback = "I'm sorry, I couldn't find that information. Could you rephrase or ask about a specific library branch (e.g., Shatin Library)?"
+        fallback = (
+    "I don't have enough verified information in my knowledge base to answer that reliably. "
+    "Please check the official HKPL website or contact library staff for assistance."
+)
         return {
             "messages": [AIMessage(content=fallback)],
             "generated_answer": fallback,
@@ -754,7 +757,11 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
     scores = state.get("retrieved_scores", [])
 
     if not scores or max(scores) < float(os.getenv("RERANKER_THRESHOLD", "0.50")):
-        fallback = "I don't have enough confidence to answer that. Could you rephrase your question or ask about a specific library service?"
+        fallback = (
+    "I don't have enough confidence to answer that from the approved HKPL knowledge base. "
+    "Please try asking about a specific library branch, service, event, or policy, "
+    "or contact HKPL staff for confirmation."
+)
         return {
             "messages": [AIMessage(content=fallback)],
             "generated_answer": fallback,
