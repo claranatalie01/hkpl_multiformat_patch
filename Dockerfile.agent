@@ -10,11 +10,11 @@ RUN apt-get update \
         tesseract-ocr-chi-tra \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-agent.txt .
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-RUN pip install \
-    --no-cache-dir \
-    -r requirements-agent.txt
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --frozen --no-dev
 
 COPY src/ ./src/
 COPY scripts/ ./scripts/
@@ -27,4 +27,4 @@ RUN mkdir -p \
 
 EXPOSE 8001
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]

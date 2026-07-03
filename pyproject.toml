@@ -1,0 +1,42 @@
+[project]
+name = "hkpl-agent"
+version = "0.1.0"
+description = "HKPL Agentic RAG"
+requires-python = ">=3.11,<3.12"
+
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "pydantic",
+    "python-dotenv",
+    "aiohttp",
+    "requests",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "asyncpg",
+    "pgvector",
+
+    "langchain-core",
+    "langgraph",
+    "gliner2",
+
+    "llama-index-core",
+    "llama-index-vector-stores-postgres",
+
+    "PyMuPDF",
+    "python-docx",
+    "python-pptx",
+    "openpyxl",
+    "beautifulsoup4",
+    "lxml",
+    "Pillow",
+    "pytesseract",
+
+    "arize-phoenix",
+    "openinference-instrumentation-llama-index",
+    "opentelemetry-exporter-otlp",
+]
+
+[tool.uv]
+package = false
