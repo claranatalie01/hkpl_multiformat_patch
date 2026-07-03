@@ -61,6 +61,17 @@ class HTTPReranker:
 
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
+                logger.info(
+                    "Sending %d documents to reranker",
+                    len(documents),
+                )
+
+                for i, doc in enumerate(documents):
+                    logger.info(
+                        "Doc %d length = %d chars",
+                        i,
+                        len(doc),
+                    )
                 async with session.post(
                     self.reranker_url,
                     json={
@@ -69,12 +80,24 @@ class HTTPReranker:
                     },
                 ) as response:
                     if response.status != 200:
-                        logger.warning(
-                            "Reranker returned HTTP %s; using vector order.",
+                        body = await response.text()
+
+                        logger.error(
+                            "============================="
+                        )
+                        logger.error(
+                            "RERANKER ERROR"
+                        )
+                        logger.error(
+                            "HTTP %s",
                             response.status,
                         )
-                        return nodes[: self.top_n]
+                        logger.error(body)
+                        logger.error(
+                            "============================="
+                        )
 
+                        return nodes[: self.top_n]
                     payload = await response.json()
         except Exception:
             logger.exception(

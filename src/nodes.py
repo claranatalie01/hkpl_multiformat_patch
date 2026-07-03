@@ -28,7 +28,7 @@ def get_current_datetime():
 # ----------------------------------------------------------------------
 LLM_URL = os.getenv("LLM_URL", "http://llm:8080/v1/chat/completions")
 
-async def http_llm(prompt: str, temperature: float = 0.0, max_tokens: int = 4096) -> str:
+async def http_llm(prompt: str, temperature: float = 0.0, max_tokens: int =4096     ) -> str:
     headers = {"Content-Type": "application/json"}
     payload = {
         "model": "qwen3.5-9b",

@@ -1,0 +1,9 @@
+{
+  "total_questions": 173,
+  "average_correctness": 4.210982658959537,
+  "average_faithfulness": 0.9075144508670521,
+  "average_relevancy": 0.9075144508670521,
+  "source_match_at_3": 0.9248554913294798,
+  "chunk_match_at_3": 0.8034682080924855,
+  "average_latency_seconds": 2.100971098265895
+}

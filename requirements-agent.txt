@@ -22,3 +22,9 @@ beautifulsoup4
 lxml
 Pillow
 pytesseract
+arize-phoenix
+openinference-instrumentation-llama-index
+opentelemetry-exporter-otlp
+llama-index
+llama-index-llms-openai
+llama-index-embeddings-openai
