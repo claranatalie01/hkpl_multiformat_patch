@@ -2169,3 +2169,307 @@ INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/change_my_pass
 INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/collections/catalogues/catalogue.html
 {'visited': 30, 'indexed': 0, 'unchanged': 25, 'failed': 5, 'discovered': 212}
 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_embedding Running 
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-5ab7d674bce2 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-5ab7d674bce2 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_embedding Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-266108825a22 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-266108825a22 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_embedding Running 
+ Container hkpl_llm Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-664973ed3545 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-664973ed3545 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_llm Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-a963d2d55daf Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-a963d2d55daf Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-f817c48c39e9 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-f817c48c39e9 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Running 
+ Container hkpl_llm Running 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-2dc9a745f890 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-2dc9a745f890 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_llm Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-88980cec8c42 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-88980cec8c42 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_llm Running 
+ Container hkpl_embedding Running 
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-703f7fe8db06 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-703f7fe8db06 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-de3dfbb5a16b Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-de3dfbb5a16b Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-f7dc6a04ac1c Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-f7dc6a04ac1c Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_llm Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-407d991101b6 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-407d991101b6 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_embedding Running 
+ Container hkpl_postgres Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-f0394951c486 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-f0394951c486 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-260576f60071 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-260576f60071 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_llm Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-aec3659ac1c3 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-aec3659ac1c3 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-633296a16f16 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-633296a16f16 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-41f467f3332d Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-41f467f3332d Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+
