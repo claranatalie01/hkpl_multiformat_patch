@@ -26,7 +26,9 @@ from src.ingestion.webpage import save_webpage_to_uploads
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
+from src.observability import setup_phoenix_tracing
 
+setup_phoenix_tracing()
 from src.graph import compiled_workflow
 from src.ingestion.readers import SUPPORTED_EXTENSIONS
 from src.ingestion.registry import (

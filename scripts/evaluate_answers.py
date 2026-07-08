@@ -3,12 +3,16 @@
 import asyncio
 import csv
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
+from opentelemetry import trace
+from openinference.semconv.trace import SpanAttributes
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+from src.tracing_helpers import set_span_io
 
 from llama_index.core.evaluation import (
     CorrectnessEvaluator,
@@ -22,22 +26,25 @@ from llama_index.core.llms import (
 )
 from llama_index.core.llms.callbacks import llm_completion_callback
 
+from src.observability import setup_phoenix_tracing
 from src.retrieval import retrieve_nodes
 from src.nodes import http_llm
 
+setup_phoenix_tracing()
+
+tracer = trace.get_tracer("hkpl-answer-evaluation")
 
 EVAL_FILE = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
 OUTPUT_FILE = PROJECT_ROOT / "data" / "generation_results.csv"
 SUMMARY_FILE = PROJECT_ROOT / "data" / "generation_summary.json"
 
-MAX_CONTEXT_CHARS = 8000
 
 
 class QwenLlamaIndexLLM(CustomLLM):
     @property
     def metadata(self) -> LLMMetadata:
         return LLMMetadata(
-            context_window=32000,
+            context_window=4096,
             num_output=1024,
             model_name="qwen3.5-9b-http",
         )
@@ -64,41 +71,56 @@ def load_dataset() -> list[dict]:
     with EVAL_FILE.open("r", encoding="utf-8") as file:
         return list(csv.DictReader(file))
 
-
 def build_context(nodes) -> tuple[str, list[str], list[dict]]:
-    parts = []
-    contexts = []
-    sources = []
-    used_chars = 0
+    with tracer.start_as_current_span("build_context") as span:
+        set_span_io(span, "CHAIN", input_value={"num_nodes": len(nodes)})
 
-    for index, item in enumerate(nodes, start=1):
-        node = item.node
-        text = node.get_content()
-        metadata = node.metadata or {}
+        parts = []
+        contexts = []
+        sources = []
 
-        formatted = f"[Source {index}]\n{text}"
+        for index, item in enumerate(nodes, start=1):
+            node = item.node
+            text = node.get_content()
+            metadata = node.metadata or {}
+            chunk_id = metadata.get("chunk_id", "")
 
-        if used_chars + len(formatted) > MAX_CONTEXT_CHARS:
-            break
+            formatted = f"[Source {index}]\n{text}"
 
-        parts.append(formatted)
-        contexts.append(text)
-        used_chars += len(formatted)
+            parts.append(formatted)
+            contexts.append(text)
 
-        sources.append(
-            {
-                "source_title": metadata.get("source_title", ""),
-                "source_url": metadata.get("source_url") or metadata.get("url", ""),
-                "document_id": metadata.get("kb_document_id")
-                or metadata.get("document_id", ""),
-                "chunk_id": metadata.get("chunk_id", ""),
-                "score": item.score or 0.0,
-            }
+            sources.append(
+                {
+                    "source_title": metadata.get("source_title", ""),
+                    "source_url": metadata.get("source_url") or metadata.get("url", ""),
+                    "document_id": (
+                        metadata.get("kb_document_id")
+                        or metadata.get("document_id")
+                        or chunk_id.split(":")[0]
+                        or ""
+                    ),
+                    "chunk_id": chunk_id,
+                    "score": float(item.score or 0.0),
+                    "text_preview": text[:300],
+                }
+            )
+
+        context = "\n\n".join(parts)
+
+        set_span_io(
+            span,
+            "CHAIN",
+            output_value={
+                "context_chars": len(context),
+                "chunks_used": [source["chunk_id"] for source in sources],
+                "source_titles": [source["source_title"] for source in sources],
+                "context_preview": context[:1000],
+            },
         )
 
-    return "\n\n".join(parts), contexts, sources
-
-
+        return context, contexts, sources
+    
 async def generate_answer(query: str, context: str) -> str:
     prompt = f"""
 You are the official Hong Kong Public Libraries assistant.
@@ -117,13 +139,41 @@ Question:
 Answer:
 """
 
-    return await http_llm(
-        prompt,
-        temperature=0.0,
-        max_tokens=512,
-    )
+    with tracer.start_as_current_span("http_llm_generate_answer") as span:
+        set_span_io(
+            span,
+            "LLM",
+            input_value={
+                "query": query,
+                "context_chars": len(context),
+                "prompt_chars": len(prompt),
+                "prompt_preview": prompt[:1500],
+            },
+        )
 
+        start = time.time()
 
+        answer = await http_llm(
+            prompt,
+            temperature=0.0,
+            max_tokens=512,
+        )
+
+        span.set_attribute(
+            "llm.latency_seconds",
+            round(time.time() - start, 4),
+        )
+
+        set_span_io(
+            span,
+            "LLM",
+            output_value={
+                "answer": answer,
+            },
+        )
+
+        return answer
+    
 def source_match(expected_document_id: str, sources: list[dict]) -> bool:
     if not expected_document_id:
         return False
@@ -170,7 +220,6 @@ def get_eval_reason(result) -> str:
 
     return ""
 
-
 async def evaluate_one(
     row: dict,
     correctness_evaluator,
@@ -182,57 +231,227 @@ async def evaluate_one(
     expected_document_id = row.get("source_document_id", "")
     expected_chunk_id = row.get("source_chunk_id", "")
 
-    start = time.time()
+    with tracer.start_as_current_span("evaluate_answer_row") as span:
+        span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, "CHAIN")
+        span.set_attribute(SpanAttributes.INPUT_VALUE, query)
 
-    nodes = await retrieve_nodes(query)
-    context, contexts, sources = build_context(nodes)
+        span.set_attribute("eval.question", query)
+        span.set_attribute("eval.expected_answer", expected_answer)
+        span.set_attribute("eval.expected_source_document_id", expected_document_id)
+        span.set_attribute("eval.expected_source_chunk_id", expected_chunk_id)
 
-    answer = await generate_answer(query, context)
+        start = time.time()
 
-    retrieval_and_generation_latency = time.time() - start
+        nodes = await retrieve_nodes(query)
+        context, contexts, sources = build_context(nodes)
+        chunks_sent_to_llm = [
+            source.get("chunk_id", "")
+            for source in sources
+        ]
 
-    correctness_result = await correctness_evaluator.aevaluate(
-        query=query,
-        response=answer,
-        reference=expected_answer,
-    )
+        span.set_attribute(
+            "rag.chunks_sent_to_llm",
+            json.dumps(chunks_sent_to_llm, ensure_ascii=False),
+        )
+        span.set_attribute("retrieval.num_sources", len(sources))
+        span.set_attribute("generation.context_chars", len(context))
+        span.set_attribute(
+            "retrieval.chunk_ids",
+            json.dumps([source.get("chunk_id", "") for source in sources]),
+        )
+        span.set_attribute(
+            "retrieval.source_titles",
+            json.dumps([source.get("source_title", "") for source in sources]),
+        )
+        span.set_attribute(
+            "retrieval.scores",
+            json.dumps([source.get("score", 0.0) for source in sources]),
+        )
 
-    faithfulness_result = await faithfulness_evaluator.aevaluate(
-        response=answer,
-        contexts=contexts,
-    )
+        answer = await generate_answer(query, context)
 
-    relevancy_result = await relevancy_evaluator.aevaluate(
-        query=query,
-        response=answer,
-        contexts=contexts,
-    )
+        retrieval_and_generation_latency = time.time() - start
 
-    top_source = sources[0] if sources else {}
+        with tracer.start_as_current_span("correctness_evaluator") as eval_span:
+            set_span_io(
+                eval_span,
+                "EVALUATOR",
+                input_value={
+                    "query": query,
+                    "generated_answer": answer,
+                    "expected_answer": expected_answer,
+                },
+            )
 
-    return {
-        "domain": row.get("domain", ""),
-        "query": query,
-        "expected_answer_text": expected_answer,
-        "generated_answer": answer,
-        "expected_document_id": expected_document_id,
-        "expected_chunk_id": expected_chunk_id,
-        "top_source_title": top_source.get("source_title", ""),
-        "top_document_id": top_source.get("document_id", ""),
-        "top_chunk_id": top_source.get("chunk_id", ""),
-        "source_match_at_3": source_match(expected_document_id, sources),
-        "chunk_match_at_3": chunk_match(expected_chunk_id, sources),
-        "correctness_score": get_eval_score(correctness_result),
-        "correctness_reason": get_eval_reason(correctness_result),
-        "faithfulness_score": get_eval_score(faithfulness_result),
-        "faithfulness_reason": get_eval_reason(faithfulness_result),
-        "relevancy_score": get_eval_score(relevancy_result),
-        "relevancy_reason": get_eval_reason(relevancy_result),
-        "latency_seconds": round(retrieval_and_generation_latency, 4),
-    }
+            correctness_result = await correctness_evaluator.aevaluate(
+                query=query,
+                response=answer,
+                reference=expected_answer,
+            )
+
+            correctness_score = get_eval_score(correctness_result)
+
+            set_span_io(
+                eval_span,
+                "EVALUATOR",
+                output_value={
+                    "score": correctness_score,
+                    "reason": get_eval_reason(correctness_result),
+                },
+            )
 
 
-async def main():
+        with tracer.start_as_current_span("faithfulness_evaluator") as eval_span:
+            set_span_io(
+                eval_span,
+                "EVALUATOR",
+                input_value={
+                    "generated_answer": answer,
+                    "contexts_preview": [context[:500] for context in contexts],
+                },
+            )
+
+            faithfulness_result = await faithfulness_evaluator.aevaluate(
+                response=answer,
+                contexts=contexts,
+            )
+
+            faithfulness_score = get_eval_score(faithfulness_result)
+
+            set_span_io(
+                eval_span,
+                "EVALUATOR",
+                output_value={
+                    "score": faithfulness_score,
+                    "reason": get_eval_reason(faithfulness_result),
+                },
+            )
+
+
+        with tracer.start_as_current_span("relevancy_evaluator") as eval_span:
+            set_span_io(
+                eval_span,
+                "EVALUATOR",
+                input_value={
+                    "query": query,
+                    "generated_answer": answer,
+                    "contexts_preview": [context[:500] for context in contexts],
+                },
+            )
+
+            relevancy_result = await relevancy_evaluator.aevaluate(
+                query=query,
+                response=answer,
+                contexts=contexts,
+            )
+
+            relevancy_score = get_eval_score(relevancy_result)
+
+            set_span_io(
+                eval_span,
+                "EVALUATOR",
+                output_value={
+                    "score": relevancy_score,
+                    "reason": get_eval_reason(relevancy_result),
+                },
+            )
+        source_match_value = source_match(expected_document_id, sources)
+        chunk_match_value = chunk_match(expected_chunk_id, sources)
+        expected_chunk_found_in_final_context = expected_chunk_id in chunks_sent_to_llm
+
+        if not chunk_match_value and not source_match_value:
+            diagnosis = "retrieval_problem"
+        elif source_match_value and not chunk_match_value:
+            diagnosis = "chunk_level_retrieval_problem"
+        elif chunk_match_value and not expected_chunk_found_in_final_context:
+            diagnosis = "context_truncation_problem"
+        elif correctness_score < 3:
+            diagnosis = "llm_generation_problem"
+        elif correctness_score >= 4 and (faithfulness_score < 0.5 or relevancy_score < 0.5):
+            diagnosis = "evaluator_or_dataset_issue"
+        else:
+            diagnosis = "working_correctly"
+        with tracer.start_as_current_span(f"rag_diagnosis:{diagnosis}") as diagnosis_span:
+            set_span_io(
+                diagnosis_span,
+                "CHAIN",
+                input_value={
+                    "question": query,
+                    "expected_chunk": expected_chunk_id,
+                    "chunks_sent_to_llm": chunks_sent_to_llm,
+                    "generated_answer": answer,
+                    "expected_answer": expected_answer,
+                },
+                output_value={
+                    "diagnosis": diagnosis,
+                    "correctness": correctness_score,
+                    "faithfulness": faithfulness_score,
+                    "relevancy": relevancy_score,
+                    "source_match_at_3": source_match_value,
+                    "chunk_match_at_3": chunk_match_value,
+                    "explanation": (
+                        "retrieval_problem = expected source/chunk not retrieved; "
+                        "context_truncation_problem = expected chunk retrieved but not sent to LLM; "
+                        "llm_generation_problem = correct context but low correctness; "
+                        "evaluator_or_dataset_issue = answer looks correct but judge score is low."
+                    ),
+                },
+            )
+        span.set_attribute("rag.expected_chunk", expected_chunk_id)
+        span.set_attribute("rag.generated_answer", answer)
+        span.set_attribute("rag.diagnosis", diagnosis)
+        print("DIAGNOSIS:", diagnosis)
+        print("EXPECTED CHUNK:", expected_chunk_id)
+        print("CHUNKS SENT TO LLM:", chunks_sent_to_llm)
+        output_payload = {
+            "generated_answer": answer,
+            "expected_answer": expected_answer,
+            "correctness": correctness_score,
+            "faithfulness": faithfulness_score,
+            "relevancy": relevancy_score,
+            "source_match_at_3": source_match_value,
+            "chunk_match_at_3": chunk_match_value,
+            "latency_seconds": round(retrieval_and_generation_latency, 4),
+            "diagnosis": diagnosis
+        }
+
+        span.set_attribute(
+            SpanAttributes.OUTPUT_VALUE,
+            json.dumps(output_payload, ensure_ascii=False),
+        )
+
+        span.set_attribute("generation.answer", answer)
+        span.set_attribute("eval.correctness", float(correctness_score))
+        span.set_attribute("eval.faithfulness", float(faithfulness_score))
+        span.set_attribute("eval.relevancy", float(relevancy_score))
+        span.set_attribute("eval.source_match_at_3", bool(source_match_value))
+        span.set_attribute("eval.chunk_match_at_3", bool(chunk_match_value))
+        span.set_attribute(
+            "eval.latency_seconds",
+            float(round(retrieval_and_generation_latency, 4)),
+        )
+
+        top_source = sources[0] if sources else {}
+
+        return {
+            "domain": row.get("domain", ""),
+            "query": query,
+            "expected_answer_text": expected_answer,
+            "generated_answer": answer,
+            "expected_document_id": expected_document_id,
+            "expected_chunk_id": expected_chunk_id,
+            "top_source_title": top_source.get("source_title", ""),
+            "top_document_id": top_source.get("document_id", ""),
+            "top_chunk_id": top_source.get("chunk_id", ""),
+            "source_match_at_3": source_match_value,
+            "chunk_match_at_3": chunk_match_value,
+            "correctness_score": correctness_score,
+            "faithfulness_score": faithfulness_score,
+            "relevancy_score": relevancy_score,
+            "diagnosis": diagnosis,
+            "latency_seconds": round(retrieval_and_generation_latency, 4),
+        }
+async def main() -> None:
     rows = load_dataset()
 
     print(f"Loaded {len(rows)} evaluation rows.")

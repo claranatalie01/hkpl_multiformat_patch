@@ -143,17 +143,17 @@ services:
 
       VECTOR_TABLE: hkpl_knowledge
       EMBED_DIM: "1024"
-      SIMILARITY_TOP_K: "10"
-      RERANK_TOP_N: "3"
+      SIMILARITY_TOP_K: "5"
+      RERANK_TOP_N: "5"
       RERANKER_THRESHOLD: "0.50"
-      MAX_CONTEXT_CHARS: "8000"
-
       UPLOAD_DIR: /app/uploads
       MAX_UPLOAD_BYTES: "26214400"
       CHUNK_SIZE: "512"
       CHUNK_OVERLAP: "64"
       ATOMIC_MAX_TOKENS: "2048"
       OCR_LANGUAGES: eng+chi_tra
+      PHOENIX_ENABLED: "true"
+      PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"
 
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
     depends_on:
@@ -165,14 +165,14 @@ services:
         condition: service_healthy
       llm:
         condition: service_healthy
+      phoenix:
+        condition: service_started
     restart: unless-stopped
   phoenix:
     image: arizephoenix/phoenix:latest
     container_name: hkpl_phoenix
     ports:
       - "6006:6006"
-      - "4317:4317"
-      - "4318:4318"
     environment:
       PHOENIX_WORKING_DIR: /mnt/data
     volumes:
