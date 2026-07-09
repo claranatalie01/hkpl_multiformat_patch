@@ -1,16 +1,22 @@
 import asyncio
 import os
+import time
 from typing import List, Sequence
 
 import aiohttp
 import requests
+from opentelemetry import trace
 from dotenv import load_dotenv
 from pydantic import Field, PrivateAttr
 
 from llama_index.core.base.embeddings.base import BaseEmbedding
 
+from src.tracing_helpers import set_embedding_attributes
+
 
 load_dotenv()
+tracer = trace.get_tracer("hkpl-embedding")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "local-llama-cpp-embedding")
 
 
 class LlamaCppEmbedding(BaseEmbedding):
@@ -73,7 +79,17 @@ class LlamaCppEmbedding(BaseEmbedding):
                 return self._parse_embeddings(await response.json())
 
     def _get_query_embedding(self, query: str) -> List[float]:
-        return self._request_sync([query])[0]
+        with tracer.start_as_current_span("Embedding") as span:
+            start = time.time()
+            vector = self._request_sync([query])[0]
+            span.set_attribute("embedding.latency_seconds", round(time.time() - start, 4))
+            set_embedding_attributes(
+                span=span,
+                model_name=EMBEDDING_MODEL_NAME,
+                text=query,
+                vector=vector,
+            )
+            return vector
 
     def _get_text_embedding(self, text: str) -> List[float]:
         return self._request_sync([text])[0]
@@ -87,7 +103,17 @@ class LlamaCppEmbedding(BaseEmbedding):
         return self._request_sync(texts)
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
-        return (await self._request_async([query]))[0]
+        with tracer.start_as_current_span("Embedding") as span:
+            start = time.time()
+            vector = (await self._request_async([query]))[0]
+            span.set_attribute("embedding.latency_seconds", round(time.time() - start, 4))
+            set_embedding_attributes(
+                span=span,
+                model_name=EMBEDDING_MODEL_NAME,
+                text=query,
+                vector=vector,
+            )
+            return vector
 
     async def _aget_text_embedding(self, text: str) -> List[float]:
         return (await self._request_async([text]))[0]

@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any
 
 from openinference.semconv.trace import SpanAttributes
@@ -44,6 +45,83 @@ def set_json_attribute(
     span.set_attribute(
         key,
         to_json(value),
+    )
+
+
+def set_document_list_attributes(
+    span,
+    prefix: str,
+    documents: list[dict],
+) -> None:
+    for index, document in enumerate(documents):
+        metadata = {
+            "rank": document.get("rank"),
+            "document_id": document.get("document_id", ""),
+            "chunk_id": document.get("chunk_id", ""),
+            "title": document.get("title") or document.get("source_title", ""),
+            "url": document.get("url") or document.get("source_url", ""),
+            "page": document.get("page"),
+            "section": document.get("section"),
+            "score_name": document.get("score_name", ""),
+            **(document.get("metadata") or {}),
+        }
+
+        document_id = (
+            document.get("chunk_id")
+            or document.get("document_id")
+            or f"document-{index + 1}"
+        )
+
+        span.set_attribute(f"{prefix}.{index}.document.id", str(document_id))
+        span.set_attribute(
+            f"{prefix}.{index}.document.content",
+            document.get("text") or document.get("text_preview", ""),
+        )
+        span.set_attribute(
+            f"{prefix}.{index}.document.score",
+            float(document.get("score") or 0.0),
+        )
+        span.set_attribute(
+            f"{prefix}.{index}.document.metadata",
+            to_json(metadata),
+        )
+
+
+def set_embedding_attributes(
+    *,
+    span,
+    model_name: str,
+    text: str,
+    vector: list[float],
+) -> None:
+    log_full_vector = os.getenv("PHOENIX_LOG_FULL_EMBEDDING", "true").lower() == "true"
+
+    span.set_attribute(
+        SpanAttributes.OPENINFERENCE_SPAN_KIND,
+        "EMBEDDING",
+    )
+    span.set_attribute(SpanAttributes.INPUT_VALUE, text)
+    span.set_attribute("embedding.model_name", model_name)
+    span.set_attribute("embedding.text", text)
+    span.set_attribute("embedding.vector_dimension", len(vector))
+    span.set_attribute("embedding.vector_preview", to_json(vector[:16]))
+    span.set_attribute("embedding.embeddings.0.embedding.text", text)
+
+    if log_full_vector:
+        span.set_attribute("embedding.embeddings.0.embedding.vector", vector)
+        output_value = {
+            "dimension": len(vector),
+            "vector": vector,
+        }
+    else:
+        output_value = {
+            "dimension": len(vector),
+            "vector_preview": vector[:16],
+        }
+
+    span.set_attribute(
+        SpanAttributes.OUTPUT_VALUE,
+        to_json(output_value),
     )
 
 
@@ -112,6 +190,10 @@ def set_llm_attributes(
         "llm.input_messages.0.message.content",
         prompt,
     )
+    span.set_attribute(
+        "llm.prompts.0.prompt.text",
+        prompt,
+    )
 
     span.set_attribute(
         SpanAttributes.INPUT_VALUE,
@@ -125,6 +207,10 @@ def set_llm_attributes(
         )
         span.set_attribute(
             "llm.output_messages.0.message.content",
+            response,
+        )
+        span.set_attribute(
+            "llm.choices.0.completion.text",
             response,
         )
         span.set_attribute(

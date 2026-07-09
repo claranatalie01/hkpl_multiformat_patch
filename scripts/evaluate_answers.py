@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 from opentelemetry import trace
@@ -22,7 +23,7 @@ from src.nodes import http_llm
 from src.observability import setup_phoenix_tracing
 from src.rag_diagnosis import diagnose_rag
 from src.retrieval import retrieve_nodes
-from src.tracing_helpers import set_span_io, set_json_attribute
+from src.tracing_helpers import set_llm_attributes, set_span_io, set_json_attribute
 
 setup_phoenix_tracing()
 tracer = trace.get_tracer("hkpl-answer-evaluation")
@@ -130,33 +131,23 @@ Question:
 Answer:
 """
 
-    with tracer.start_as_current_span("http_llm_generate_answer") as span:
-        set_span_io(
-            span,
-            "LLM",
-            input_value={
-                "query": query,
-                "prompt_chars": len(prompt),
-                "context_chars": len(context),
-                "prompt_preview": prompt[:2000],
-            },
-        )
-
+    with tracer.start_as_current_span("LLM") as span:
         start = time.time()
         answer = await http_llm(prompt, temperature=0.0, max_tokens=512)
         latency = time.time() - start
 
-        span.set_attribute("llm.latency_seconds", round(latency, 4))
-        span.set_attribute("rag.generated_answer", answer)
-
-        set_span_io(
-            span,
-            "LLM",
-            output_value={
-                "generated_answer": answer,
-                "latency_seconds": round(latency, 4),
-            },
+        set_llm_attributes(
+            span=span,
+            model_name="qwen3.5-9b-http",
+            prompt=prompt,
+            response=answer,
+            temperature=0.0,
+            max_tokens=512,
         )
+        span.set_attribute("llm.latency_seconds", round(latency, 4))
+        span.set_attribute("rag.query", query)
+        span.set_attribute("rag.context_chars", len(context))
+        span.set_attribute("rag.generated_answer", answer)
 
         return answer
 
@@ -237,9 +228,18 @@ async def evaluate_one(
     expected_document_id = row.get("source_document_id", "")
     expected_chunk_id = row.get("source_chunk_id", "")
 
-    with tracer.start_as_current_span("evaluate_answer_row") as span:
+    with tracer.start_as_current_span("HKPL RAG Query") as span:
         span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, "CHAIN")
-        span.set_attribute(SpanAttributes.INPUT_VALUE, query)
+        set_span_io(
+            span,
+            "CHAIN",
+            input_value={
+                "question": query,
+                "expected_answer": expected_answer,
+                "expected_document_id": expected_document_id,
+                "expected_chunk_id": expected_chunk_id,
+            },
+        )
 
         span.set_attribute("eval.question", query)
         span.set_attribute("eval.expected_answer", expected_answer)
@@ -468,6 +468,7 @@ async def main() -> None:
         "source_match_at_3": rate("source_match_at_3"),
         "chunk_match_at_3": rate("chunk_match_at_3"),
         "average_latency_seconds": avg("latency_seconds"),
+        "diagnosis_counts": dict(Counter(row["diagnosis"] for row in results)),
     }
 
     SUMMARY_FILE.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -483,6 +484,9 @@ async def main() -> None:
     print(f"Source match@3         : {summary['source_match_at_3']:.2%}")
     print(f"Chunk match@3          : {summary['chunk_match_at_3']:.2%}")
     print(f"Average latency        : {summary['average_latency_seconds']:.4f}s")
+    print("Diagnosis counts       :")
+    for diagnosis, count in summary["diagnosis_counts"].items():
+        print(f"  {diagnosis}: {count}")
     print()
     print(f"Saved results to: {OUTPUT_FILE}")
     print(f"Saved summary to: {SUMMARY_FILE}")

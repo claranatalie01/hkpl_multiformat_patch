@@ -12,7 +12,11 @@ from llama_index.core.schema import NodeWithScore
 
 from .infrastructure.embedding import embed_model
 from .infrastructure.vector_store import VECTOR_TABLE, vector_store
-from src.tracing_helpers import set_span_io, set_json_attribute
+from src.tracing_helpers import (
+    set_document_list_attributes,
+    set_json_attribute,
+    set_span_io,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +26,7 @@ RERANKER_URL = os.getenv("RERANKER_URL", "http://reranker:8080/reranking")
 SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", "5"))
 RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "5"))
 RERANKER_TIMEOUT_SECONDS = float(os.getenv("RERANKER_TIMEOUT_SECONDS", "120"))
+RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", "Qwen3-Reranker-0.6B")
 
 Settings.embed_model = embed_model
 
@@ -74,6 +79,8 @@ def node_to_trace_dict(
         "score":
             float(node.score or 0.0),
 
+        "score_name": score_name,
+
         "text":
             node.node.get_content(),
 
@@ -90,7 +97,7 @@ class HTTPReranker:
         self.top_n = top_n
 
     async def arerank(self, nodes: List[NodeWithScore], query: str) -> List[NodeWithScore]:
-        with tracer.start_as_current_span("reranker") as span:
+        with tracer.start_as_current_span("Reranker") as span:
             before_rerank = [
                 node_to_trace_dict(node, i + 1, "vector_score")
                 for i, node in enumerate(nodes)
@@ -107,9 +114,15 @@ class HTTPReranker:
                 },
             )
             set_json_attribute(span, "rag.before_rerank", before_rerank)
+            set_document_list_attributes(span, "reranker.input_documents", before_rerank)
+            span.set_attribute("reranker.query", query)
+            span.set_attribute("reranker.top_k", int(self.top_n))
+            span.set_attribute("reranker.model_name", RERANKER_MODEL_NAME)
+            span.set_attribute("reranker.input_document_count", len(before_rerank))
 
             if not nodes:
                 set_span_io(span, "RERANKER", output_value={"after_rerank": []})
+                set_document_list_attributes(span, "reranker.output_documents", [])
                 return []
 
             documents = [node.node.get_content() for node in nodes]
@@ -132,7 +145,7 @@ class HTTPReranker:
                                 for i, node in enumerate(fallback)
                             ]
                             span.set_attribute(
-                            "reranker.input_document_count",
+                                "reranker.input_document_count",
                                 len(before_rerank),
                             )
 
@@ -145,6 +158,11 @@ class HTTPReranker:
                             span.set_attribute("reranker.http_status", response.status)
                             span.set_attribute("reranker.error_body", body)
                             set_json_attribute(span, "rag.after_rerank", after_rerank)
+                            set_document_list_attributes(
+                                span,
+                                "reranker.output_documents",
+                                after_rerank,
+                            )
 
                             set_span_io(
                                 span,
@@ -169,6 +187,7 @@ class HTTPReranker:
                 span.record_exception(error)
                 span.set_attribute("reranker.failed", True)
                 set_json_attribute(span, "rag.after_rerank", after_rerank)
+                set_document_list_attributes(span, "reranker.output_documents", after_rerank)
 
                 set_span_io(
                     span,
@@ -194,6 +213,7 @@ class HTTPReranker:
                 ]
 
                 set_json_attribute(span, "rag.after_rerank", after_rerank)
+                set_document_list_attributes(span, "reranker.output_documents", after_rerank)
                 set_span_io(
                     span,
                     "RERANKER",
@@ -232,6 +252,7 @@ class HTTPReranker:
                 ]
 
                 set_json_attribute(span, "rag.after_rerank", after_rerank)
+                set_document_list_attributes(span, "reranker.output_documents", after_rerank)
                 set_span_io(
                     span,
                     "RERANKER",
@@ -252,6 +273,8 @@ class HTTPReranker:
             ]
 
             set_json_attribute(span, "rag.after_rerank", after_rerank)
+            set_document_list_attributes(span, "reranker.output_documents", after_rerank)
+            span.set_attribute("reranker.output_document_count", len(after_rerank))
             set_span_io(span, "RERANKER", output_value={"after_rerank": after_rerank})
 
             return ranked
@@ -261,7 +284,7 @@ reranker = HTTPReranker(reranker_url=RERANKER_URL, top_n=RERANK_TOP_N)
 
 
 async def retrieve_nodes(query: str) -> List[NodeWithScore]:
-    with tracer.start_as_current_span("retrieve_nodes") as span:
+    with tracer.start_as_current_span("Retriever") as span:
         set_span_io(
             span,
             "RETRIEVER",
@@ -292,37 +315,30 @@ async def retrieve_nodes(query: str) -> List[NodeWithScore]:
 
         span.set_attribute("retrieval.vector_latency_seconds", round(vector_latency, 4))
         span.set_attribute("retrieval.candidate_count", len(candidates))
+        set_json_attribute(span, "rag.vector_candidates_before_rerank", vector_candidates)
+        set_document_list_attributes(span, "retrieval.documents", vector_candidates)
         set_span_io(
-        span,
-        "RETRIEVER",
-        input_value=query,
-        output_value={
-            "documents": vector_candidates,
-        },
-    )
+            span,
+            "RETRIEVER",
+            input_value=query,
+            output_value={
+                "documents": vector_candidates,
+            },
+        )
 
-        reranked = await reranker.arerank(candidates, query)
+    reranked = await reranker.arerank(candidates, query)
 
-        final_chunks = [
-            node_to_trace_dict(node, i + 1, "final_score")
-            for i, node in enumerate(reranked)
-        ]
+    final_chunks = [
+        node_to_trace_dict(node, i + 1, "final_score")
+        for i, node in enumerate(reranked)
+    ]
 
-        set_json_attribute(span, "rag.chunks_after_rerank", final_chunks)
+    retrieve_nodes.last_trace = {
+        "vector_candidates_before_rerank": vector_candidates,
+        "final_chunks_after_rerank": final_chunks,
+    }
 
-        output_payload = {
-            "PGVector retrieved before rerank": vector_candidates,
-            "Final chunks after rerank": final_chunks,
-        }
-
-        set_span_io(span, "RETRIEVER", output_value=output_payload)
-
-        retrieve_nodes.last_trace = {
-            "vector_candidates_before_rerank": vector_candidates,
-            "final_chunks_after_rerank": final_chunks,
-        }
-
-        return reranked
+    return reranked
 
 
 retrieve_nodes.last_trace = {

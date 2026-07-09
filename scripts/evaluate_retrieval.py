@@ -4,6 +4,7 @@ import asyncio
 import csv
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -14,7 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.observability import setup_phoenix_tracing
+from src.rag_diagnosis import diagnose_rag
 from src.retrieval import retrieve_nodes
+from src.tracing_helpers import set_json_attribute, set_span_io
 
 setup_phoenix_tracing()
 
@@ -52,12 +55,12 @@ async def evaluate() -> None:
 
         print(f"[{index + 1}/{total}] {query}")
 
-        with tracer.start_as_current_span("evaluate_retrieval_row") as span:
-            span.set_attribute(
-                SpanAttributes.OPENINFERENCE_SPAN_KIND,
-                "RETRIEVER",
+        with tracer.start_as_current_span("HKPL Retrieval Evaluation Query") as span:
+            set_span_io(
+                span,
+                "CHAIN",
+                input_value=query,
             )
-            span.set_attribute(SpanAttributes.INPUT_VALUE, query)
             span.set_attribute("eval.question", query)
             span.set_attribute("eval.expected_document", expected_document)
             span.set_attribute("eval.expected_chunk", expected_chunk)
@@ -96,6 +99,11 @@ async def evaluate() -> None:
                         "hit@3": False,
                         "hit@5": False,
                         "reciprocal_rank": 0.0,
+                        "expected_document_in_vector": False,
+                        "expected_chunk_in_vector": False,
+                        "expected_chunk_after_rerank": False,
+                        "diagnosis": "retrieval_evaluation_failed",
+                        "diagnosis_recommendation": str(error),
                         "error": str(error),
                     }
                 )
@@ -130,6 +138,28 @@ async def evaluate() -> None:
             h5 = expected_document in retrieved_documents[:5]
             rr = reciprocal_rank(expected_document, retrieved_documents)
 
+            retrieval_trace = getattr(retrieve_nodes, "last_trace", {})
+            vector_candidates = retrieval_trace.get("vector_candidates_before_rerank", [])
+            after_rerank = retrieval_trace.get("final_chunks_after_rerank", [])
+            vector_documents = [item.get("document_id", "") for item in vector_candidates]
+            vector_chunks = [item.get("chunk_id", "") for item in vector_candidates]
+            reranked_chunks = [item.get("chunk_id", "") for item in after_rerank]
+
+            expected_document_in_vector = expected_document in vector_documents
+            expected_chunk_in_vector = expected_chunk in vector_chunks
+            expected_chunk_after_rerank = expected_chunk in reranked_chunks
+
+            diagnostic = diagnose_rag(
+                expected_document_id=expected_document,
+                expected_chunk_id=expected_chunk,
+                vector_candidates=vector_candidates,
+                after_rerank=after_rerank,
+                chunks_sent_to_llm=reranked_chunks,
+                correctness_score=5.0,
+                faithfulness_score=1.0,
+                relevancy_score=1.0,
+            )
+
             hit1 += int(h1)
             hit3 += int(h3)
             hit5 += int(h5)
@@ -144,20 +174,36 @@ async def evaluate() -> None:
                 "hit_at_3": h3,
                 "hit_at_5": h5,
                 "reciprocal_rank": rr,
+                "expected_document_in_vector": expected_document_in_vector,
+                "expected_chunk_in_vector": expected_chunk_in_vector,
+                "expected_chunk_after_rerank": expected_chunk_after_rerank,
+                "diagnosis": diagnostic["diagnosis"],
+                "recommendation": diagnostic["recommendation"],
             }
 
-            span.set_attribute(
-                SpanAttributes.OUTPUT_VALUE,
-                json.dumps(output_payload, ensure_ascii=False),
-            )
+            set_span_io(span, "CHAIN", output_value=output_payload)
             span.set_attribute("retrieval.documents", json.dumps(retrieved_documents))
             span.set_attribute("retrieval.chunks", json.dumps(retrieved_chunks))
             span.set_attribute("retrieval.titles", json.dumps(retrieved_titles))
             span.set_attribute("retrieval.scores", json.dumps(retrieved_scores))
+            set_json_attribute(span, "retrieval.vector_candidate_documents", vector_documents)
+            set_json_attribute(span, "retrieval.vector_candidate_chunks", vector_chunks)
+            set_json_attribute(span, "retrieval.after_rerank_chunks", reranked_chunks)
             span.set_attribute("eval.hit_at_1", bool(h1))
             span.set_attribute("eval.hit_at_3", bool(h3))
             span.set_attribute("eval.hit_at_5", bool(h5))
             span.set_attribute("eval.reciprocal_rank", float(rr))
+            span.set_attribute(
+                "eval.expected_document_in_vector",
+                bool(expected_document_in_vector),
+            )
+            span.set_attribute("eval.expected_chunk_in_vector", bool(expected_chunk_in_vector))
+            span.set_attribute(
+                "eval.expected_chunk_after_rerank",
+                bool(expected_chunk_after_rerank),
+            )
+            span.set_attribute("rag.diagnosis", diagnostic["diagnosis"])
+            span.set_attribute("rag.recommendation", diagnostic["recommendation"])
 
             results.append(
                 {
@@ -180,6 +226,11 @@ async def evaluate() -> None:
                     "hit@3": h3,
                     "hit@5": h5,
                     "reciprocal_rank": rr,
+                    "expected_document_in_vector": expected_document_in_vector,
+                    "expected_chunk_in_vector": expected_chunk_in_vector,
+                    "expected_chunk_after_rerank": expected_chunk_after_rerank,
+                    "diagnosis": diagnostic["diagnosis"],
+                    "diagnosis_recommendation": diagnostic["recommendation"],
                     "error": "",
                 }
             )
@@ -200,6 +251,9 @@ async def evaluate() -> None:
     print(f"Recall@3 (Hit@3)   : {hit3 / total:.2%}")
     print(f"Recall@5 (Hit@5)   : {hit5 / total:.2%}")
     print(f"MRR                : {rr_total / total:.4f}")
+    print("Diagnosis counts   :")
+    for diagnosis, count in Counter(row["diagnosis"] for row in results).items():
+        print(f"  {diagnosis}: {count}")
     print()
     print(f"Saved to {OUTPUT}")
 
