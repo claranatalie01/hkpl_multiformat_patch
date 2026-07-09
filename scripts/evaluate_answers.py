@@ -515,6 +515,26 @@ async def main() -> None:
 
     SUMMARY_FILE.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
+    with tracer.start_as_current_span("HKPL Answer Evaluation Summary") as span:
+        set_span_io(
+            span,
+            "EVALUATOR",
+            input_value={
+                "dataset": str(EVAL_FILE),
+                "result_file": str(OUTPUT_FILE),
+                "questions": total,
+            },
+            output_value=summary,
+        )
+        span.set_attribute("eval.total_questions", int(total))
+        span.set_attribute("eval.average_correctness", float(summary["average_correctness"]))
+        span.set_attribute("eval.average_faithfulness", float(summary["average_faithfulness"]))
+        span.set_attribute("eval.average_relevancy", float(summary["average_relevancy"]))
+        span.set_attribute("eval.source_match_at_3", float(summary["source_match_at_3"]))
+        span.set_attribute("eval.chunk_match_at_3", float(summary["chunk_match_at_3"]))
+        span.set_attribute("eval.average_latency_seconds", float(summary["average_latency_seconds"]))
+        set_json_attribute(span, "eval.diagnosis_counts", summary["diagnosis_counts"])
+
     print()
     print("=" * 80)
     print("Answer Generation Evaluation Summary")
