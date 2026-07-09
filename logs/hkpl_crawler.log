@@ -2832,3 +2832,23 @@ Traceback (most recent call last):
     import requests
 ModuleNotFoundError: No module named 'requests'
 
+ Container hkpl_llm Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_embedding Running 
+ Container hkpl_postgres Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-2646adb1f688 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-2646adb1f688 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 15, in <module>
+    import requests
+ModuleNotFoundError: No module named 'requests'
+

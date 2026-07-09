@@ -1,5 +1,4 @@
 import json
-import os
 from typing import Any
 
 from openinference.semconv.trace import SpanAttributes
@@ -85,44 +84,6 @@ def set_document_list_attributes(
             f"{prefix}.{index}.document.metadata",
             to_json(metadata),
         )
-
-
-def set_embedding_attributes(
-    *,
-    span,
-    model_name: str,
-    text: str,
-    vector: list[float],
-) -> None:
-    log_full_vector = os.getenv("PHOENIX_LOG_FULL_EMBEDDING", "true").lower() == "true"
-
-    span.set_attribute(
-        SpanAttributes.OPENINFERENCE_SPAN_KIND,
-        "EMBEDDING",
-    )
-    span.set_attribute(SpanAttributes.INPUT_VALUE, text)
-    span.set_attribute("embedding.model_name", model_name)
-    span.set_attribute("embedding.text", text)
-    span.set_attribute("embedding.vector_dimension", len(vector))
-    span.set_attribute("embedding.vector_preview", to_json(vector[:16]))
-    span.set_attribute("embedding.embeddings.0.embedding.text", text)
-
-    if log_full_vector:
-        span.set_attribute("embedding.embeddings.0.embedding.vector", vector)
-        output_value = {
-            "dimension": len(vector),
-            "vector": vector,
-        }
-    else:
-        output_value = {
-            "dimension": len(vector),
-            "vector_preview": vector[:16],
-        }
-
-    span.set_attribute(
-        SpanAttributes.OUTPUT_VALUE,
-        to_json(output_value),
-    )
 
 
 def node_document_payload(

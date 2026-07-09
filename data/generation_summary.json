@@ -1,11 +1,11 @@
 {
   "total_questions": 175,
-  "average_correctness": 4.474285714285714,
+  "average_correctness": 4.485714285714286,
   "average_faithfulness": 0.8742857142857143,
   "average_relevancy": 0.8914285714285715,
   "source_match_at_3": 0.9428571428571428,
   "chunk_match_at_3": 0.8742857142857143,
-  "average_latency_seconds": 1.8830897142857141,
+  "average_latency_seconds": 1.8887022857142863,
   "diagnosis_counts": {
     "working_correctly": 130,
     "chunk_level_retrieval_problem": 12,

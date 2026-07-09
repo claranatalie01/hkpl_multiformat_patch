@@ -9,12 +9,17 @@ from pathlib import Path
 
 import pandas as pd
 from opentelemetry import trace
+from opentelemetry.trace import format_span_id
 from openinference.semconv.trace import SpanAttributes
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.observability import setup_phoenix_tracing
+from src.phoenix_annotations import (
+    log_document_relevance_annotations,
+    log_span_annotations,
+)
 from src.rag_diagnosis import diagnose_rag
 from src.retrieval import retrieve_nodes
 from src.tracing_helpers import set_json_attribute, set_span_io
@@ -56,11 +61,14 @@ async def evaluate() -> None:
         print(f"[{index + 1}/{total}] {query}")
 
         with tracer.start_as_current_span("HKPL Retrieval Evaluation Query") as span:
+            root_span_id = format_span_id(span.get_span_context().span_id)
+
             set_span_io(
                 span,
                 "CHAIN",
                 input_value=query,
             )
+            span.set_attribute("eval.root_span_id", root_span_id)
             span.set_attribute("eval.question", query)
             span.set_attribute("eval.expected_document", expected_document)
             span.set_attribute("eval.expected_chunk", expected_chunk)
@@ -139,6 +147,7 @@ async def evaluate() -> None:
             rr = reciprocal_rank(expected_document, retrieved_documents)
 
             retrieval_trace = getattr(retrieve_nodes, "last_trace", {})
+            retriever_span_id = retrieval_trace.get("retriever_span_id", "")
             vector_candidates = retrieval_trace.get("vector_candidates_before_rerank", [])
             after_rerank = retrieval_trace.get("final_chunks_after_rerank", [])
             vector_documents = [item.get("document_id", "") for item in vector_candidates]
@@ -204,6 +213,42 @@ async def evaluate() -> None:
             )
             span.set_attribute("rag.diagnosis", diagnostic["diagnosis"])
             span.set_attribute("rag.recommendation", diagnostic["recommendation"])
+
+            log_span_annotations(
+                root_span_id,
+                [
+                    {
+                        "name": "Hit@1",
+                        "annotator_kind": "CODE",
+                        "label": "hit" if h1 else "miss",
+                        "score": 1.0 if h1 else 0.0,
+                        "explanation": f"Expected document: {expected_document}",
+                        "identifier": "hkpl-hit-at-1",
+                    },
+                    {
+                        "name": "Hit@3",
+                        "annotator_kind": "CODE",
+                        "label": "hit" if h3 else "miss",
+                        "score": 1.0 if h3 else 0.0,
+                        "explanation": f"Expected document: {expected_document}",
+                        "identifier": "hkpl-hit-at-3",
+                    },
+                    {
+                        "name": "Hit@5",
+                        "annotator_kind": "CODE",
+                        "label": "hit" if h5 else "miss",
+                        "score": 1.0 if h5 else 0.0,
+                        "explanation": f"Expected document: {expected_document}",
+                        "identifier": "hkpl-hit-at-5",
+                    },
+                ],
+            )
+            log_document_relevance_annotations(
+                retriever_span_id=retriever_span_id,
+                retrieved_documents=vector_candidates,
+                expected_document_id=expected_document,
+                expected_chunk_id=expected_chunk,
+            )
 
             results.append(
                 {
