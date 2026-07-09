@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 import pandas as pd
+from llama_index.core.evaluation import HitRate, MRR
 from opentelemetry import trace
 from opentelemetry.trace import format_span_id
 from openinference.semconv.trace import SpanAttributes
@@ -33,11 +34,26 @@ OUTPUT = PROJECT_ROOT / "data" / "retrieval_results.csv"
 SUMMARY = PROJECT_ROOT / "data" / "retrieval_summary.json"
 
 
-def reciprocal_rank(expected: str, retrieved: list[str]) -> float:
-    for rank, doc in enumerate(retrieved, start=1):
-        if doc == expected:
-            return 1.0 / rank
-    return 0.0
+def llamaindex_hit_rate(expected_ids: list[str], retrieved_ids: list[str]) -> float:
+    if not expected_ids or not retrieved_ids:
+        return 0.0
+    return float(
+        HitRate().compute(
+            expected_ids=expected_ids,
+            retrieved_ids=retrieved_ids,
+        ).score
+    )
+
+
+def llamaindex_mrr(expected_ids: list[str], retrieved_ids: list[str]) -> float:
+    if not expected_ids or not retrieved_ids:
+        return 0.0
+    return float(
+        MRR().compute(
+            expected_ids=expected_ids,
+            retrieved_ids=retrieved_ids,
+        ).score
+    )
 
 
 async def evaluate() -> None:
@@ -139,13 +155,11 @@ async def evaluate() -> None:
                 retrieved_titles.append(metadata.get("source_title", ""))
                 retrieved_scores.append(float(item.score or 0.0))
 
-            h1 = (
-                len(retrieved_documents) >= 1
-                and retrieved_documents[0] == expected_document
-            )
-            h3 = expected_document in retrieved_documents[:3]
-            h5 = expected_document in retrieved_documents[:5]
-            rr = reciprocal_rank(expected_document, retrieved_documents)
+            expected_document_ids = [expected_document] if expected_document else []
+            h1 = llamaindex_hit_rate(expected_document_ids, retrieved_documents[:1])
+            h3 = llamaindex_hit_rate(expected_document_ids, retrieved_documents[:3])
+            h5 = llamaindex_hit_rate(expected_document_ids, retrieved_documents[:5])
+            rr = llamaindex_mrr(expected_document_ids, retrieved_documents)
 
             retrieval_trace = getattr(retrieve_nodes, "last_trace", {})
             retriever_span_id = retrieval_trace.get("retriever_span_id", "")
@@ -170,9 +184,9 @@ async def evaluate() -> None:
                 relevancy_score=1.0,
             )
 
-            hit1 += int(h1)
-            hit3 += int(h3)
-            hit5 += int(h5)
+            hit1 += h1
+            hit3 += h3
+            hit5 += h5
             rr_total += rr
 
             output_payload = {
@@ -199,10 +213,11 @@ async def evaluate() -> None:
             set_json_attribute(span, "retrieval.vector_candidate_documents", vector_documents)
             set_json_attribute(span, "retrieval.vector_candidate_chunks", vector_chunks)
             set_json_attribute(span, "retrieval.after_rerank_chunks", reranked_chunks)
-            span.set_attribute("eval.hit_at_1", bool(h1))
-            span.set_attribute("eval.hit_at_3", bool(h3))
-            span.set_attribute("eval.hit_at_5", bool(h5))
+            span.set_attribute("eval.hit_at_1", float(h1))
+            span.set_attribute("eval.hit_at_3", float(h3))
+            span.set_attribute("eval.hit_at_5", float(h5))
             span.set_attribute("eval.reciprocal_rank", float(rr))
+            span.set_attribute("eval.metric_source", "llama_index")
             span.set_attribute(
                 "eval.expected_document_in_vector",
                 bool(expected_document_in_vector),
@@ -222,24 +237,24 @@ async def evaluate() -> None:
                         "name": "Hit@1",
                         "annotator_kind": "CODE",
                         "label": "hit" if h1 else "miss",
-                        "score": 1.0 if h1 else 0.0,
-                        "explanation": f"Expected document: {expected_document}",
+                        "score": h1,
+                        "explanation": f"LlamaIndex HitRate over top 1. Expected document: {expected_document}",
                         "identifier": "hkpl-hit-at-1",
                     },
                     {
                         "name": "Hit@3",
                         "annotator_kind": "CODE",
                         "label": "hit" if h3 else "miss",
-                        "score": 1.0 if h3 else 0.0,
-                        "explanation": f"Expected document: {expected_document}",
+                        "score": h3,
+                        "explanation": f"LlamaIndex HitRate over top 3. Expected document: {expected_document}",
                         "identifier": "hkpl-hit-at-3",
                     },
                     {
                         "name": "Hit@5",
                         "annotator_kind": "CODE",
                         "label": "hit" if h5 else "miss",
-                        "score": 1.0 if h5 else 0.0,
-                        "explanation": f"Expected document: {expected_document}",
+                        "score": h5,
+                        "explanation": f"LlamaIndex HitRate over top 5. Expected document: {expected_document}",
                         "identifier": "hkpl-hit-at-5",
                     },
                 ],
@@ -268,9 +283,9 @@ async def evaluate() -> None:
                     "score_1": retrieved_scores[0] if len(retrieved_scores) > 0 else "",
                     "score_2": retrieved_scores[1] if len(retrieved_scores) > 1 else "",
                     "score_3": retrieved_scores[2] if len(retrieved_scores) > 2 else "",
-                    "hit@1": h1,
-                    "hit@3": h3,
-                    "hit@5": h5,
+                    "hit@1": bool(h1),
+                    "hit@3": bool(h3),
+                    "hit@5": bool(h5),
                     "reciprocal_rank": rr,
                     "expected_document_in_vector": expected_document_in_vector,
                     "expected_chunk_in_vector": expected_chunk_in_vector,
