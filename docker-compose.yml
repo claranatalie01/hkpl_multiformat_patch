@@ -110,8 +110,8 @@ services:
         ]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 30s
+      retries: 30
+      start_period: 180s
     restart: unless-stopped
 
   langgraph-agent:
