@@ -1,6 +1,8 @@
 import json
+import os
 from typing import Any
 
+from opentelemetry.trace import Status, StatusCode
 from openinference.semconv.trace import SpanAttributes
 
 
@@ -18,6 +20,7 @@ def set_span_io(
     input_value: Any = None,
     output_value: Any = None,
 ) -> None:
+    span.set_status(Status(StatusCode.OK))
     span.set_attribute(
         SpanAttributes.OPENINFERENCE_SPAN_KIND,
         span_kind,
@@ -47,11 +50,28 @@ def set_json_attribute(
     )
 
 
+def estimate_token_count(text: str) -> int:
+    if not text:
+        return 0
+
+    # Conservative fallback for local models that do not return usage.
+    return max(1, round(len(text) / 4))
+
+
+def get_float_env(name: str, default: float = 0.0) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def set_document_list_attributes(
     span,
     prefix: str,
     documents: list[dict],
 ) -> None:
+    span.set_status(Status(StatusCode.OK))
+
     for index, document in enumerate(documents):
         metadata = {
             "rank": document.get("rank"),
@@ -126,6 +146,7 @@ def set_llm_attributes(
     max_tokens: int = 4096,
     usage: dict | None = None,
 ) -> None:
+    span.set_status(Status(StatusCode.OK))
     span.set_attribute(
         SpanAttributes.OPENINFERENCE_SPAN_KIND,
         "LLM",
@@ -179,21 +200,38 @@ def set_llm_attributes(
             response,
         )
 
-    if usage:
-        if usage.get("prompt_tokens") is not None:
-            span.set_attribute(
-                "llm.token_count.prompt",
-                int(usage["prompt_tokens"]),
-            )
+    prompt_tokens = (
+        int(usage["prompt_tokens"])
+        if usage and usage.get("prompt_tokens") is not None
+        else estimate_token_count(prompt)
+    )
+    completion_tokens = (
+        int(usage["completion_tokens"])
+        if usage and usage.get("completion_tokens") is not None
+        else estimate_token_count(response or "")
+    )
+    total_tokens = (
+        int(usage["total_tokens"])
+        if usage and usage.get("total_tokens") is not None
+        else prompt_tokens + completion_tokens
+    )
 
-        if usage.get("completion_tokens") is not None:
-            span.set_attribute(
-                "llm.token_count.completion",
-                int(usage["completion_tokens"]),
-            )
+    span.set_attribute("llm.token_count.prompt", prompt_tokens)
+    span.set_attribute("llm.token_count.completion", completion_tokens)
+    span.set_attribute("llm.token_count.total", total_tokens)
+    span.set_attribute("llm.token_count.is_estimated", not bool(usage))
 
-        if usage.get("total_tokens") is not None:
-            span.set_attribute(
-                "llm.token_count.total",
-                int(usage["total_tokens"]),
-            )
+    prompt_cost_per_1k = get_float_env("LLM_PROMPT_COST_PER_1K_USD")
+    completion_cost_per_1k = get_float_env("LLM_COMPLETION_COST_PER_1K_USD")
+
+    if prompt_cost_per_1k or completion_cost_per_1k:
+        prompt_cost = prompt_tokens * prompt_cost_per_1k / 1000
+        completion_cost = completion_tokens * completion_cost_per_1k / 1000
+        total_cost = prompt_cost + completion_cost
+
+        span.set_attribute("llm.cost.prompt", prompt_cost)
+        span.set_attribute("llm.cost.completion", completion_cost)
+        span.set_attribute("llm.cost.total", total_cost)
+        span.set_attribute("llm.cost.prompt_details.input", prompt_cost)
+        span.set_attribute("llm.cost.completion_details.output", completion_cost)
+        span.set_attribute("llm.cost.is_estimated", True)

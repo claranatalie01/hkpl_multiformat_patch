@@ -1,15 +1,15 @@
 {
   "total_questions": 175,
-  "average_correctness": 4.485714285714286,
-  "average_faithfulness": 0.8742857142857143,
+  "average_correctness": 4.48,
+  "average_faithfulness": 0.88,
   "average_relevancy": 0.8914285714285715,
   "source_match_at_3": 0.9428571428571428,
   "chunk_match_at_3": 0.8742857142857143,
-  "average_latency_seconds": 1.8887022857142863,
+  "average_latency_seconds": 1.8520468571428568,
   "diagnosis_counts": {
-    "working_correctly": 130,
+    "working_correctly": 132,
     "chunk_level_retrieval_problem": 12,
-    "evaluator_or_dataset_issue": 19,
+    "evaluator_or_dataset_issue": 17,
     "retrieval_problem": 10,
     "llm_generation_problem": 4
   }
