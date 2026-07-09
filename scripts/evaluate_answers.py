@@ -13,6 +13,7 @@ from pathlib import Path
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, format_span_id
 from openinference.semconv.trace import SpanAttributes
+from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -23,6 +24,7 @@ from llama_index.core.llms.callbacks import llm_completion_callback
 
 from src.nodes import http_llm
 from src.observability import setup_phoenix_tracing
+from src.infrastructure.db import engine
 from src.phoenix_annotations import (
     log_document_relevance_annotations,
     log_rag_answer_annotations,
@@ -37,6 +39,7 @@ tracer = trace.get_tracer("hkpl-answer-evaluation")
 EVAL_FILE = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
 OUTPUT_FILE = PROJECT_ROOT / "data" / "generation_results.csv"
 SUMMARY_FILE = PROJECT_ROOT / "data" / "generation_summary.json"
+EVALUATION_DATASET_TABLE = os.getenv("EVALUATION_DATASET_TABLE", "evaluation_dataset")
 
 
 class QwenLlamaIndexLLM(CustomLLM):
@@ -63,8 +66,31 @@ class QwenLlamaIndexLLM(CustomLLM):
 
 
 def load_dataset() -> list[dict]:
-    with EVAL_FILE.open("r", encoding="utf-8") as file:
-        return list(csv.DictReader(file))
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(f"""
+                SELECT
+                    domain,
+                    query,
+                    expected_answer_text,
+                    expected_context_snippet,
+                    source_title,
+                    source_url,
+                    source_type,
+                    source_document_id,
+                    source_chunk_id
+                FROM {EVALUATION_DATASET_TABLE}
+                ORDER BY id
+            """)
+        ).fetchall()
+
+    if not rows:
+        raise RuntimeError(
+            f"No rows found in Postgres table {EVALUATION_DATASET_TABLE}. "
+            "Run scripts/ingest_pgvector_llamaindex.py first."
+        )
+
+    return [dict(row._mapping) for row in rows]
 
 
 def build_context(nodes) -> tuple[str, list[str], list[dict]]:
@@ -520,7 +546,8 @@ async def main() -> None:
             span,
             "EVALUATOR",
             input_value={
-                "dataset": str(EVAL_FILE),
+                "dataset_table": EVALUATION_DATASET_TABLE,
+                "source_csv": str(EVAL_FILE),
                 "result_file": str(OUTPUT_FILE),
                 "questions": total,
             },
