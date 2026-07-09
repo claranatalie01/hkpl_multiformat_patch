@@ -2,7 +2,6 @@ import logging
 import os
 
 logger = logging.getLogger(__name__)
-
 _tracing_initialized = False
 
 
@@ -26,7 +25,7 @@ def setup_phoenix_tracing() -> None:
         )
 
         tracer_provider = register(
-            project_name="hkpl-evaluation",
+            project_name="hkpl-rag",
             endpoint=endpoint,
         )
 
