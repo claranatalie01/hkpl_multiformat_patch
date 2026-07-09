@@ -1,6 +1,7 @@
 import json
 from typing import Any
 
+from opentelemetry.trace import Status, StatusCode
 from openinference.semconv.trace import SpanAttributes
 
 
@@ -18,6 +19,7 @@ def set_span_io(
     input_value: Any = None,
     output_value: Any = None,
 ) -> None:
+    span.set_status(Status(StatusCode.OK))
     span.set_attribute(
         SpanAttributes.OPENINFERENCE_SPAN_KIND,
         span_kind,
@@ -45,6 +47,55 @@ def set_json_attribute(
         key,
         to_json(value),
     )
+
+
+def estimate_token_count(text: str) -> int:
+    if not text:
+        return 0
+
+    # Conservative fallback for local models that do not return usage.
+    return max(1, round(len(text) / 4))
+
+
+def set_document_list_attributes(
+    span,
+    prefix: str,
+    documents: list[dict],
+) -> None:
+    span.set_status(Status(StatusCode.OK))
+
+    for index, document in enumerate(documents):
+        metadata = {
+            "rank": document.get("rank"),
+            "document_id": document.get("document_id", ""),
+            "chunk_id": document.get("chunk_id", ""),
+            "title": document.get("title") or document.get("source_title", ""),
+            "url": document.get("url") or document.get("source_url", ""),
+            "page": document.get("page"),
+            "section": document.get("section"),
+            "score_name": document.get("score_name", ""),
+            **(document.get("metadata") or {}),
+        }
+
+        document_id = (
+            document.get("chunk_id")
+            or document.get("document_id")
+            or f"document-{index + 1}"
+        )
+
+        span.set_attribute(f"{prefix}.{index}.document.id", str(document_id))
+        span.set_attribute(
+            f"{prefix}.{index}.document.content",
+            document.get("text") or document.get("text_preview", ""),
+        )
+        span.set_attribute(
+            f"{prefix}.{index}.document.score",
+            float(document.get("score") or 0.0),
+        )
+        span.set_attribute(
+            f"{prefix}.{index}.document.metadata",
+            to_json(metadata),
+        )
 
 
 def node_document_payload(
@@ -87,6 +138,7 @@ def set_llm_attributes(
     max_tokens: int = 4096,
     usage: dict | None = None,
 ) -> None:
+    span.set_status(Status(StatusCode.OK))
     span.set_attribute(
         SpanAttributes.OPENINFERENCE_SPAN_KIND,
         "LLM",
@@ -112,6 +164,10 @@ def set_llm_attributes(
         "llm.input_messages.0.message.content",
         prompt,
     )
+    span.set_attribute(
+        "llm.prompts.0.prompt.text",
+        prompt,
+    )
 
     span.set_attribute(
         SpanAttributes.INPUT_VALUE,
@@ -128,25 +184,31 @@ def set_llm_attributes(
             response,
         )
         span.set_attribute(
+            "llm.choices.0.completion.text",
+            response,
+        )
+        span.set_attribute(
             SpanAttributes.OUTPUT_VALUE,
             response,
         )
 
-    if usage:
-        if usage.get("prompt_tokens") is not None:
-            span.set_attribute(
-                "llm.token_count.prompt",
-                int(usage["prompt_tokens"]),
-            )
+    prompt_tokens = (
+        int(usage["prompt_tokens"])
+        if usage and usage.get("prompt_tokens") is not None
+        else estimate_token_count(prompt)
+    )
+    completion_tokens = (
+        int(usage["completion_tokens"])
+        if usage and usage.get("completion_tokens") is not None
+        else estimate_token_count(response or "")
+    )
+    total_tokens = (
+        int(usage["total_tokens"])
+        if usage and usage.get("total_tokens") is not None
+        else prompt_tokens + completion_tokens
+    )
 
-        if usage.get("completion_tokens") is not None:
-            span.set_attribute(
-                "llm.token_count.completion",
-                int(usage["completion_tokens"]),
-            )
-
-        if usage.get("total_tokens") is not None:
-            span.set_attribute(
-                "llm.token_count.total",
-                int(usage["total_tokens"]),
-            )
+    span.set_attribute("llm.token_count.prompt", prompt_tokens)
+    span.set_attribute("llm.token_count.completion", completion_tokens)
+    span.set_attribute("llm.token_count.total", total_tokens)
+    span.set_attribute("llm.token_count.is_estimated", not bool(usage))

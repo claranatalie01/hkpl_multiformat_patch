@@ -153,6 +153,8 @@ services:
       ATOMIC_MAX_TOKENS: "2048"
       OCR_LANGUAGES: eng+chi_tra
       PHOENIX_ENABLED: "true"
+      PHOENIX_BASE_URL: "http://phoenix:6006"
+      PHOENIX_LOG_EVAL_ANNOTATIONS: "true"
       PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"
 
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
