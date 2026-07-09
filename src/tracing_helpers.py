@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any
 
 from opentelemetry.trace import Status, StatusCode
@@ -55,6 +56,13 @@ def estimate_token_count(text: str) -> int:
 
     # Conservative fallback for local models that do not return usage.
     return max(1, round(len(text) / 4))
+
+
+def get_float_env(name: str, default: float = 0.0) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def set_document_list_attributes(
@@ -212,3 +220,18 @@ def set_llm_attributes(
     span.set_attribute("llm.token_count.completion", completion_tokens)
     span.set_attribute("llm.token_count.total", total_tokens)
     span.set_attribute("llm.token_count.is_estimated", not bool(usage))
+
+    prompt_cost_per_1k = get_float_env("LLM_PROMPT_COST_PER_1K_USD")
+    completion_cost_per_1k = get_float_env("LLM_COMPLETION_COST_PER_1K_USD")
+
+    if prompt_cost_per_1k or completion_cost_per_1k:
+        prompt_cost = prompt_tokens * prompt_cost_per_1k / 1000
+        completion_cost = completion_tokens * completion_cost_per_1k / 1000
+        total_cost = prompt_cost + completion_cost
+
+        span.set_attribute("llm.cost.prompt", prompt_cost)
+        span.set_attribute("llm.cost.completion", completion_cost)
+        span.set_attribute("llm.cost.total", total_cost)
+        span.set_attribute("llm.cost.prompt_details.input", prompt_cost)
+        span.set_attribute("llm.cost.completion_details.output", completion_cost)
+        span.set_attribute("llm.cost.is_estimated", True)

@@ -6,13 +6,16 @@ import json
 import os
 import sys
 import time
+from contextlib import asynccontextmanager
 from collections import Counter
 from pathlib import Path
 
 from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode, format_span_id
 from openinference.semconv.trace import SpanAttributes
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from llama_index.core.evaluation import CorrectnessEvaluator, FaithfulnessEvaluator, RelevancyEvaluator
 from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
@@ -20,6 +23,10 @@ from llama_index.core.llms.callbacks import llm_completion_callback
 
 from src.nodes import http_llm
 from src.observability import setup_phoenix_tracing
+from src.phoenix_annotations import (
+    log_document_relevance_annotations,
+    log_rag_answer_annotations,
+)
 from src.rag_diagnosis import diagnose_rag
 from src.retrieval import retrieve_nodes
 from src.tracing_helpers import set_llm_attributes, set_span_io, set_json_attribute
@@ -195,10 +202,27 @@ def get_eval_reason(result) -> str:
     return ""
 
 
+@asynccontextmanager
+async def suppress_auto_instrumentation():
+    try:
+        from opentelemetry.context import attach, detach, set_value
+
+        token = attach(set_value("suppress_instrumentation", True))
+        try:
+            yield
+        finally:
+            detach(token)
+    except Exception:
+        yield
+
+
 async def run_evaluator_span(name: str, input_payload: dict, evaluator_call):
     with tracer.start_as_current_span(name) as span:
         set_span_io(span, "EVALUATOR", input_value=input_payload)
-        result = await evaluator_call()
+
+        async with suppress_auto_instrumentation():
+            result = await evaluator_call()
+
         score = get_eval_score(result)
         reason = get_eval_reason(result)
 
@@ -228,17 +252,16 @@ async def evaluate_one(
     expected_chunk_id = row.get("source_chunk_id", "")
 
     with tracer.start_as_current_span("HKPL RAG Query") as span:
+        root_span_id = format_span_id(span.get_span_context().span_id)
+
+        span.set_status(Status(StatusCode.OK))
         span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, "CHAIN")
         set_span_io(
             span,
             "CHAIN",
-            input_value={
-                "question": query,
-                "expected_answer": expected_answer,
-                "expected_document_id": expected_document_id,
-                "expected_chunk_id": expected_chunk_id,
-            },
+            input_value=query,
         )
+        span.set_attribute("rag.root_span_id", root_span_id)
 
         span.set_attribute("eval.question", query)
         span.set_attribute("eval.expected_answer", expected_answer)
@@ -298,6 +321,7 @@ async def evaluate_one(
         chunk_match_value = chunk_match(expected_chunk_id, sources)
 
         retrieval_trace = getattr(retrieve_nodes, "last_trace", {})
+        retriever_span_id = retrieval_trace.get("retriever_span_id", "")
         vector_candidates = retrieval_trace.get("vector_candidates_before_rerank", [])
         after_rerank = retrieval_trace.get("final_chunks_after_rerank", [])
 
@@ -346,7 +370,8 @@ async def evaluate_one(
             "recommendation": diagnostic["recommendation"],
         }
 
-        set_span_io(span, "CHAIN", output_value=output_payload)
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, answer)
+        set_json_attribute(span, "rag.evaluation_output", output_payload)
 
         span.set_attribute("eval.correctness", float(correctness_score))
         span.set_attribute("eval.faithfulness", float(faithfulness_score))
@@ -356,6 +381,24 @@ async def evaluate_one(
         span.set_attribute("eval.latency_seconds", float(round(retrieval_generation_latency, 4)))
         span.set_attribute("rag.diagnosis", diagnosis)
         span.set_attribute("rag.recommendation", diagnostic["recommendation"])
+
+        log_rag_answer_annotations(
+            root_span_id=root_span_id,
+            correctness_score=correctness_score,
+            correctness_reason=correctness_reason,
+            faithfulness_score=faithfulness_score,
+            faithfulness_reason=faithfulness_reason,
+            relevancy_score=relevancy_score,
+            relevancy_reason=relevancy_reason,
+            diagnosis=diagnosis,
+            recommendation=diagnostic["recommendation"],
+        )
+        log_document_relevance_annotations(
+            retriever_span_id=retriever_span_id,
+            retrieved_documents=vector_candidates,
+            expected_document_id=expected_document_id,
+            expected_chunk_id=expected_chunk_id,
+        )
 
         top_source = sources[0] if sources else {}
 
