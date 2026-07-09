@@ -30,6 +30,7 @@ tracer = trace.get_tracer("hkpl-retrieval-evaluation")
 
 DATASET = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
 OUTPUT = PROJECT_ROOT / "data" / "retrieval_results.csv"
+SUMMARY = PROJECT_ROOT / "data" / "retrieval_summary.json"
 
 
 def reciprocal_rank(expected: str, retrieved: list[str]) -> float:
@@ -287,20 +288,49 @@ async def evaluate() -> None:
         writer.writeheader()
         writer.writerows(results)
 
+    summary = {
+        "total_questions": total,
+        "hit_at_1": hit1 / total if total else 0.0,
+        "recall_at_3": hit3 / total if total else 0.0,
+        "recall_at_5": hit5 / total if total else 0.0,
+        "mrr": rr_total / total if total else 0.0,
+        "diagnosis_counts": dict(Counter(row["diagnosis"] for row in results)),
+    }
+    SUMMARY.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    with tracer.start_as_current_span("HKPL Retrieval Evaluation Summary") as span:
+        set_span_io(
+            span,
+            "EVALUATOR",
+            input_value={
+                "dataset": str(DATASET),
+                "result_file": str(OUTPUT),
+                "questions": total,
+            },
+            output_value=summary,
+        )
+        span.set_attribute("eval.total_questions", int(total))
+        span.set_attribute("eval.hit_at_1", float(summary["hit_at_1"]))
+        span.set_attribute("eval.recall_at_3", float(summary["recall_at_3"]))
+        span.set_attribute("eval.recall_at_5", float(summary["recall_at_5"]))
+        span.set_attribute("eval.mrr", float(summary["mrr"]))
+        set_json_attribute(span, "eval.diagnosis_counts", summary["diagnosis_counts"])
+
     print()
     print("=" * 80)
     print("Retrieval Evaluation Summary")
     print("=" * 80)
     print(f"Questions          : {total}")
-    print(f"Hit@1              : {hit1 / total:.2%}")
-    print(f"Recall@3 (Hit@3)   : {hit3 / total:.2%}")
-    print(f"Recall@5 (Hit@5)   : {hit5 / total:.2%}")
-    print(f"MRR                : {rr_total / total:.4f}")
+    print(f"Hit@1              : {summary['hit_at_1']:.2%}")
+    print(f"Recall@3 (Hit@3)   : {summary['recall_at_3']:.2%}")
+    print(f"Recall@5 (Hit@5)   : {summary['recall_at_5']:.2%}")
+    print(f"MRR                : {summary['mrr']:.4f}")
     print("Diagnosis counts   :")
-    for diagnosis, count in Counter(row["diagnosis"] for row in results).items():
+    for diagnosis, count in summary["diagnosis_counts"].items():
         print(f"  {diagnosis}: {count}")
     print()
     print(f"Saved to {OUTPUT}")
+    print(f"Saved summary to {SUMMARY}")
 
 
 if __name__ == "__main__":
