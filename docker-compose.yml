@@ -98,8 +98,11 @@ services:
       --host 0.0.0.0
       --port 8080
       --n-gpu-layers 99
-      --ctx-size 4096
-      --reasoning off
+      --ctx-size 32768
+      --parallel 1
+      --reasoning on
+      --reasoning-budget 8000
+      --reasoning-budget-message "Now provide the final answer."
     healthcheck:
       test:
         [
@@ -140,6 +143,9 @@ services:
       EMBEDDING_URL: http://embedding:8080/v1/embeddings
       RERANKER_URL: http://reranker:8080/reranking
       LLM_URL: http://llm:8080/v1/chat/completions
+      LLM_CONTEXT_WINDOW: "32768"
+      LLM_MAX_TOKENS: "24000"
+      LLM_REASONING_BUDGET: "8000"
 
       VECTOR_TABLE: hkpl_knowledge
       EVALUATION_DATASET_TABLE: evaluation_dataset
@@ -158,6 +164,13 @@ services:
       PHOENIX_BASE_URL: "http://phoenix:6006"
       PHOENIX_LOG_EVAL_ANNOTATIONS: "true"
       PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"
+      LLM_TOKENIZER_URL: http://llm:8080/tokenize
+      EMBEDDING_TOKENIZER_URL: http://embedding:8080/tokenize
+      RERANKER_TOKENIZER_URL: http://reranker:8080/tokenize
+      LLM_TOKENIZER_NAME: llama.cpp:qwen3.5-9b
+      EMBEDDING_TOKENIZER_NAME: llama.cpp:qwen3-embedding-0.6b
+      RERANKER_TOKENIZER_NAME: llama.cpp:qwen3-reranker-0.6b
+      TOKENIZER_TIMEOUT_SECONDS: "30"
       LLM_PROMPT_COST_PER_1K_USD: "0"
       LLM_COMPLETION_COST_PER_1K_USD: "0"
 

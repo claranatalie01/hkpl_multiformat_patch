@@ -33,11 +33,11 @@ from src.rag_diagnosis import diagnose_rag
 from src.retrieval import retrieve_nodes
 from src.infrastructure.vector_store import VECTOR_TABLE
 from src.tracing_helpers import (
-    estimate_token_count,
     set_llm_attributes,
     set_span_io,
     set_json_attribute,
 )
+from src.token_counting import LLM_TOKENIZER_NAME, LLM_TOKENIZER_URL, count_tokens
 
 setup_phoenix_tracing()
 tracer = trace.get_tracer("hkpl-answer-evaluation")
@@ -46,14 +46,16 @@ SOURCE_CSV = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
 OUTPUT_FILE = PROJECT_ROOT / "data" / "generation_results.csv"
 SUMMARY_FILE = PROJECT_ROOT / "data" / "generation_summary.json"
 EVALUATION_DATASET_TABLE = os.getenv("EVALUATION_DATASET_TABLE", "evaluation_dataset")
+LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "24000"))
 
 
 class QwenLlamaIndexLLM(CustomLLM):
     @property
     def metadata(self) -> LLMMetadata:
         return LLMMetadata(
-            context_window=4096,
-            num_output=1024,
+            context_window=LLM_CONTEXT_WINDOW,
+            num_output=LLM_MAX_TOKENS,
             model_name="qwen3.5-9b-http",
         )
 
@@ -178,9 +180,21 @@ Answer:
         start = time.time()
         answer = await http_llm(prompt, temperature=0.0, max_tokens=512)
         latency = time.time() - start
+        prompt_tokens, prompt_estimated, tokenizer_name = await count_tokens(
+            prompt,
+            LLM_TOKENIZER_URL,
+            LLM_TOKENIZER_NAME,
+        )
+        completion_tokens, completion_estimated, _ = await count_tokens(
+            answer,
+            LLM_TOKENIZER_URL,
+            LLM_TOKENIZER_NAME,
+        )
         token_usage = {
-            "prompt_tokens": estimate_token_count(prompt),
-            "completion_tokens": estimate_token_count(answer),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "is_estimated": prompt_estimated or completion_estimated,
+            "tokenizer": tokenizer_name,
         }
         token_usage["total_tokens"] = (
             token_usage["prompt_tokens"] + token_usage["completion_tokens"]
@@ -369,6 +383,25 @@ async def evaluate_one(
         retriever_span_id = retrieval_trace.get("retriever_span_id", "")
         vector_candidates = retrieval_trace.get("vector_candidates_before_rerank", [])
         after_rerank = retrieval_trace.get("final_chunks_after_rerank", [])
+        retrieval_token_usage = retrieval_trace.get("token_usage", {})
+        retriever_query_tokens = int(retrieval_token_usage.get("retriever_query_tokens", 0))
+        reranker_input_tokens = int(retrieval_token_usage.get("reranker_input_tokens", 0))
+        context_tokens, context_tokens_estimated, context_tokenizer = await count_tokens(
+            context,
+            LLM_TOKENIZER_URL,
+            LLM_TOKENIZER_NAME,
+        )
+        pipeline_total_tokens = (
+            retriever_query_tokens
+            + reranker_input_tokens
+            + token_usage["prompt_tokens"]
+            + token_usage["completion_tokens"]
+        )
+        pipeline_tokens_estimated = (
+            bool(retrieval_token_usage.get("is_estimated", False))
+            or bool(context_tokens_estimated)
+            or bool(token_usage.get("is_estimated", False))
+        )
 
         diagnostic = diagnose_rag(
             expected_document_id=expected_document_id,
@@ -413,6 +446,11 @@ async def evaluate_one(
             "prompt_tokens": token_usage["prompt_tokens"],
             "completion_tokens": token_usage["completion_tokens"],
             "total_tokens": token_usage["total_tokens"],
+            "retriever_query_tokens": retriever_query_tokens,
+            "reranker_input_tokens": reranker_input_tokens,
+            "context_tokens": context_tokens,
+            "pipeline_total_tokens": pipeline_total_tokens,
+            "tokens_are_estimated": pipeline_tokens_estimated,
             "latency_seconds": round(retrieval_generation_latency, 4),
             "diagnosis": diagnosis,
             "recommendation": diagnostic["recommendation"],
@@ -430,7 +468,12 @@ async def evaluate_one(
         span.set_attribute("rag.token_count.prompt", int(token_usage["prompt_tokens"]))
         span.set_attribute("rag.token_count.completion", int(token_usage["completion_tokens"]))
         span.set_attribute("rag.token_count.total", int(token_usage["total_tokens"]))
-        span.set_attribute("rag.token_count.is_estimated", True)
+        span.set_attribute("rag.token_count.retriever_query", int(retriever_query_tokens))
+        span.set_attribute("rag.token_count.reranker_input", int(reranker_input_tokens))
+        span.set_attribute("rag.token_count.context", int(context_tokens))
+        span.set_attribute("rag.token_count.total_pipeline", int(pipeline_total_tokens))
+        span.set_attribute("rag.token_count.is_estimated", bool(pipeline_tokens_estimated))
+        span.set_attribute("rag.token_count.tokenizer", context_tokenizer)
         span.set_attribute("rag.diagnosis", diagnosis)
         span.set_attribute("rag.recommendation", diagnostic["recommendation"])
 
@@ -469,6 +512,11 @@ async def evaluate_one(
             "prompt_tokens": token_usage["prompt_tokens"],
             "completion_tokens": token_usage["completion_tokens"],
             "total_tokens": token_usage["total_tokens"],
+            "retriever_query_tokens": retriever_query_tokens,
+            "reranker_input_tokens": reranker_input_tokens,
+            "context_tokens": context_tokens,
+            "pipeline_total_tokens": pipeline_total_tokens,
+            "tokens_are_estimated": pipeline_tokens_estimated,
             "correctness_score": correctness_score,
             "correctness_reason": correctness_reason,
             "faithfulness_score": faithfulness_score,
@@ -535,6 +583,11 @@ async def main() -> None:
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
                     "total_tokens": 0,
+                    "retriever_query_tokens": 0,
+                    "reranker_input_tokens": 0,
+                    "context_tokens": 0,
+                    "pipeline_total_tokens": 0,
+                    "tokens_are_estimated": True,
                     "correctness_score": 0.0,
                     "correctness_reason": f"Evaluation failed: {error}",
                     "faithfulness_score": 0.0,
@@ -572,6 +625,10 @@ async def main() -> None:
         "average_prompt_tokens": avg("prompt_tokens"),
         "average_completion_tokens": avg("completion_tokens"),
         "average_total_tokens": avg("total_tokens"),
+        "average_retriever_query_tokens": avg("retriever_query_tokens"),
+        "average_reranker_input_tokens": avg("reranker_input_tokens"),
+        "average_context_tokens": avg("context_tokens"),
+        "average_pipeline_total_tokens": avg("pipeline_total_tokens"),
         "average_latency_seconds": avg("latency_seconds"),
         "diagnosis_counts": dict(Counter(row["diagnosis"] for row in results)),
     }
@@ -602,6 +659,19 @@ async def main() -> None:
             float(summary["average_completion_tokens"]),
         )
         span.set_attribute("eval.average_total_tokens", float(summary["average_total_tokens"]))
+        span.set_attribute(
+            "eval.average_retriever_query_tokens",
+            float(summary["average_retriever_query_tokens"]),
+        )
+        span.set_attribute(
+            "eval.average_reranker_input_tokens",
+            float(summary["average_reranker_input_tokens"]),
+        )
+        span.set_attribute("eval.average_context_tokens", float(summary["average_context_tokens"]))
+        span.set_attribute(
+            "eval.average_pipeline_total_tokens",
+            float(summary["average_pipeline_total_tokens"]),
+        )
         span.set_attribute("eval.average_latency_seconds", float(summary["average_latency_seconds"]))
         set_json_attribute(span, "eval.diagnosis_counts", summary["diagnosis_counts"])
 
@@ -618,6 +688,10 @@ async def main() -> None:
     print(f"Average prompt tokens  : {summary['average_prompt_tokens']:.1f}")
     print(f"Average answer tokens  : {summary['average_completion_tokens']:.1f}")
     print(f"Average total tokens   : {summary['average_total_tokens']:.1f}")
+    print(f"Avg retriever tokens   : {summary['average_retriever_query_tokens']:.1f}")
+    print(f"Avg reranker tokens    : {summary['average_reranker_input_tokens']:.1f}")
+    print(f"Avg context tokens     : {summary['average_context_tokens']:.1f}")
+    print(f"Avg pipeline tokens    : {summary['average_pipeline_total_tokens']:.1f}")
     print(f"Average latency        : {summary['average_latency_seconds']:.4f}s")
     print("Diagnosis counts       :")
     for diagnosis, count in summary["diagnosis_counts"].items():
