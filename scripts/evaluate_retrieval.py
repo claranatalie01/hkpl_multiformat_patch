@@ -3,35 +3,39 @@
 import asyncio
 import csv
 import json
+import os
 import sys
 from collections import Counter
 from pathlib import Path
 
-import pandas as pd
 from llama_index.core.evaluation import HitRate, MRR
 from opentelemetry import trace
 from opentelemetry.trace import format_span_id
 from openinference.semconv.trace import SpanAttributes
+from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.observability import setup_phoenix_tracing
+from src.infrastructure.db import engine
 from src.phoenix_annotations import (
     log_document_relevance_annotations,
     log_span_annotations,
 )
 from src.rag_diagnosis import diagnose_rag
 from src.retrieval import retrieve_nodes
+from src.infrastructure.vector_store import VECTOR_TABLE
 from src.tracing_helpers import set_json_attribute, set_span_io
 
 setup_phoenix_tracing()
 
 tracer = trace.get_tracer("hkpl-retrieval-evaluation")
 
-DATASET = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
+SOURCE_CSV = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
 OUTPUT = PROJECT_ROOT / "data" / "retrieval_results.csv"
 SUMMARY = PROJECT_ROOT / "data" / "retrieval_summary.json"
+EVALUATION_DATASET_TABLE = os.getenv("EVALUATION_DATASET_TABLE", "evaluation_dataset")
 
 
 def llamaindex_hit_rate(expected_ids: list[str], retrieved_ids: list[str]) -> float:
@@ -57,20 +61,46 @@ def llamaindex_mrr(expected_ids: list[str], retrieved_ids: list[str]) -> float:
 
 
 async def evaluate() -> None:
-    df = pd.read_csv(DATASET)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(f"""
+                SELECT
+                    domain,
+                    query,
+                    expected_answer_text,
+                    expected_context_snippet,
+                    source_title,
+                    source_url,
+                    source_type,
+                    source_document_id,
+                    source_chunk_id
+                FROM {EVALUATION_DATASET_TABLE}
+                ORDER BY id
+            """)
+        ).fetchall()
+
+    rows = [dict(row._mapping) for row in rows]
+    if not rows:
+        raise RuntimeError(
+            f"No rows found in Postgres table {EVALUATION_DATASET_TABLE}. "
+            "Run scripts/ingest_pgvector_llamaindex.py first."
+        )
 
     results = []
     hit1 = 0
     hit3 = 0
     hit5 = 0
     rr_total = 0.0
-    total = len(df)
+    total = len(rows)
 
     print("=" * 80)
     print("Evaluating retrieval...")
     print("=" * 80)
+    print(f"Evaluation questions loaded from table: {EVALUATION_DATASET_TABLE}")
+    print(f"Retriever searches vector table: data_{VECTOR_TABLE}")
+    print("=" * 80)
 
-    for index, row in df.iterrows():
+    for index, row in enumerate(rows):
         query = str(row["query"])
         expected_document = str(row.get("source_document_id", ""))
         expected_chunk = str(row.get("source_chunk_id", ""))
@@ -318,7 +348,8 @@ async def evaluate() -> None:
             span,
             "EVALUATOR",
             input_value={
-                "dataset": str(DATASET),
+                "dataset_table": EVALUATION_DATASET_TABLE,
+                "source_csv": str(SOURCE_CSV),
                 "result_file": str(OUTPUT),
                 "questions": total,
             },

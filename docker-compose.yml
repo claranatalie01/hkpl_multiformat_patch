@@ -110,8 +110,8 @@ services:
         ]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 30s
+      retries: 30
+      start_period: 180s
     restart: unless-stopped
 
   langgraph-agent:
@@ -142,10 +142,12 @@ services:
       LLM_URL: http://llm:8080/v1/chat/completions
 
       VECTOR_TABLE: hkpl_knowledge
+      EVALUATION_DATASET_TABLE: evaluation_dataset
+      EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
       EMBED_DIM: "1024"
-      SIMILARITY_TOP_K: "5"
+      SIMILARITY_TOP_K: "10"
       RERANK_TOP_N: "5"
-      RERANKER_THRESHOLD: "0.50"
+      RERANKER_THRESHOLD: "0.30"
       UPLOAD_DIR: /app/uploads
       MAX_UPLOAD_BYTES: "26214400"
       CHUNK_SIZE: "512"

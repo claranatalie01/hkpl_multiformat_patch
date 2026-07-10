@@ -2,8 +2,11 @@
 
 import csv
 import os
+import sys
 from pathlib import Path
 from uuid import uuid5, NAMESPACE_URL
+
+from sqlalchemy import text
 
 from llama_index.core import (
     Document,
@@ -16,6 +19,9 @@ from llama_index.core.vector_stores import (
     MetadataFilters,
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.infrastructure.embedding import (
     embed_model,
 )
@@ -23,9 +29,113 @@ from src.infrastructure.vector_store import (
     VECTOR_TABLE,
     vector_store,
 )
+from src.infrastructure.db import engine
 from src.ingestion.chunking import (
     chunk_documents,
 )
+
+
+EVALUATION_DATASET_TABLE = os.getenv(
+    "EVALUATION_DATASET_TABLE",
+    "evaluation_dataset",
+)
+
+EVALUATION_DATASET_COLUMNS = [
+    "domain",
+    "query",
+    "expected_answer_text",
+    "expected_context_snippet",
+    "source_title",
+    "source_url",
+    "source_type",
+    "source_document_id",
+    "source_chunk_id",
+]
+
+
+def create_evaluation_dataset_table() -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(f"""
+                CREATE TABLE IF NOT EXISTS {EVALUATION_DATASET_TABLE} (
+                    id BIGSERIAL PRIMARY KEY,
+                    domain TEXT NOT NULL DEFAULT '',
+                    query TEXT NOT NULL,
+                    expected_answer_text TEXT NOT NULL DEFAULT '',
+                    expected_context_snippet TEXT NOT NULL DEFAULT '',
+                    source_title TEXT NOT NULL DEFAULT '',
+                    source_url TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    source_document_id TEXT NOT NULL DEFAULT '',
+                    source_chunk_id TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+        )
+        connection.execute(
+            text(f"""
+                CREATE INDEX IF NOT EXISTS idx_{EVALUATION_DATASET_TABLE}_source_document
+                ON {EVALUATION_DATASET_TABLE} (source_document_id)
+            """)
+        )
+        connection.execute(
+            text(f"""
+                CREATE INDEX IF NOT EXISTS idx_{EVALUATION_DATASET_TABLE}_source_chunk
+                ON {EVALUATION_DATASET_TABLE} (source_chunk_id)
+            """)
+        )
+
+
+def ingest_evaluation_dataset(csv_path: str) -> int:
+    path = Path(csv_path)
+    if not path.exists():
+        print(f"Evaluation dataset not found, skipping: {path}")
+        return 0
+
+    create_evaluation_dataset_table()
+
+    with path.open("r", newline="", encoding="utf-8") as file:
+        rows = [
+            {
+                column: (row.get(column) or "")
+                for column in EVALUATION_DATASET_COLUMNS
+            }
+            for row in csv.DictReader(file)
+            if row.get("query")
+        ]
+
+    with engine.begin() as connection:
+        connection.execute(text(f"TRUNCATE TABLE {EVALUATION_DATASET_TABLE}"))
+        if rows:
+            connection.execute(
+                text(f"""
+                    INSERT INTO {EVALUATION_DATASET_TABLE} (
+                        domain,
+                        query,
+                        expected_answer_text,
+                        expected_context_snippet,
+                        source_title,
+                        source_url,
+                        source_type,
+                        source_document_id,
+                        source_chunk_id
+                    )
+                    VALUES (
+                        :domain,
+                        :query,
+                        :expected_answer_text,
+                        :expected_context_snippet,
+                        :source_title,
+                        :source_url,
+                        :source_type,
+                        :source_document_id,
+                        :source_chunk_id
+                    )
+                """),
+                rows,
+            )
+
+    return len(rows)
 
 
 def load_faq_documents(
@@ -148,6 +258,10 @@ def main() -> None:
         "DATA_PATH",
         "/app/data/hkpl_faq_clean.csv",
     )
+    evaluation_dataset_path = os.getenv(
+        "EVALUATION_DATASET_PATH",
+        "/app/data/evaluation_dataset.csv",
+    )
     rebuild_all = (
         os.getenv(
             "REBUILD_ALL",
@@ -196,6 +310,14 @@ def main() -> None:
     print(
         "Ingested FAQ data into "
         f"data_{VECTOR_TABLE}"
+    )
+
+    evaluation_rows = ingest_evaluation_dataset(
+        evaluation_dataset_path
+    )
+    print(
+        f"Ingested {evaluation_rows} evaluation rows into "
+        f"{EVALUATION_DATASET_TABLE}"
     )
 
 
