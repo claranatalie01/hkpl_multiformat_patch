@@ -25,13 +25,14 @@ from src.phoenix_annotations import (
 )
 from src.rag_diagnosis import diagnose_rag
 from src.retrieval import retrieve_nodes
+from src.infrastructure.vector_store import VECTOR_TABLE
 from src.tracing_helpers import set_json_attribute, set_span_io
 
 setup_phoenix_tracing()
 
 tracer = trace.get_tracer("hkpl-retrieval-evaluation")
 
-DATASET = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
+SOURCE_CSV = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
 OUTPUT = PROJECT_ROOT / "data" / "retrieval_results.csv"
 SUMMARY = PROJECT_ROOT / "data" / "retrieval_summary.json"
 EVALUATION_DATASET_TABLE = os.getenv("EVALUATION_DATASET_TABLE", "evaluation_dataset")
@@ -74,6 +75,11 @@ async def evaluate() -> None:
                     source_document_id,
                     source_chunk_id
                 FROM {EVALUATION_DATASET_TABLE}
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM data_{VECTOR_TABLE} k
+                    WHERE k.metadata_->>'chunk_id' = {EVALUATION_DATASET_TABLE}.source_chunk_id
+                )
                 ORDER BY id
             """)
         ).fetchall()
@@ -81,8 +87,8 @@ async def evaluate() -> None:
     rows = [dict(row._mapping) for row in rows]
     if not rows:
         raise RuntimeError(
-            f"No rows found in Postgres table {EVALUATION_DATASET_TABLE}. "
-            "Run scripts/ingest_pgvector_llamaindex.py first."
+            f"No valid rows found in Postgres table {EVALUATION_DATASET_TABLE}. "
+            f"Run scripts/ingest_pgvector_llamaindex.py and scripts/validate_evaluation_dataset.py first."
         )
 
     results = []
@@ -94,6 +100,9 @@ async def evaluate() -> None:
 
     print("=" * 80)
     print("Evaluating retrieval...")
+    print("=" * 80)
+    print(f"Evaluation questions loaded from table: {EVALUATION_DATASET_TABLE}")
+    print(f"Retriever searches vector table: data_{VECTOR_TABLE}")
     print("=" * 80)
 
     for index, row in enumerate(rows):
@@ -345,7 +354,7 @@ async def evaluate() -> None:
             "EVALUATOR",
             input_value={
                 "dataset_table": EVALUATION_DATASET_TABLE,
-                "source_csv": str(DATASET),
+                "source_csv": str(SOURCE_CSV),
                 "result_file": str(OUTPUT),
                 "questions": total,
             },
