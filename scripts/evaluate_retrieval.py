@@ -75,6 +75,11 @@ async def evaluate() -> None:
                     source_document_id,
                     source_chunk_id
                 FROM {EVALUATION_DATASET_TABLE}
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM data_{VECTOR_TABLE} k
+                    WHERE k.metadata_->>'chunk_id' = {EVALUATION_DATASET_TABLE}.source_chunk_id
+                )
                 ORDER BY id
             """)
         ).fetchall()
@@ -82,8 +87,8 @@ async def evaluate() -> None:
     rows = [dict(row._mapping) for row in rows]
     if not rows:
         raise RuntimeError(
-            f"No rows found in Postgres table {EVALUATION_DATASET_TABLE}. "
-            "Run scripts/ingest_pgvector_llamaindex.py first."
+            f"No valid rows found in Postgres table {EVALUATION_DATASET_TABLE}. "
+            f"Run scripts/ingest_pgvector_llamaindex.py and scripts/validate_evaluation_dataset.py first."
         )
 
     results = []

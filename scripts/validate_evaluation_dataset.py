@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import os
 import re
 import sys
@@ -25,7 +26,26 @@ def normalize(value: str) -> str:
     return value
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Validate evaluation rows against the searchable knowledge chunks.",
+    )
+    parser.add_argument(
+        "--delete-missing-chunks",
+        action="store_true",
+        help="Delete evaluation rows whose source_chunk_id is missing from the knowledge table.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm destructive cleanup actions.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+
     with engine.connect() as connection:
         rows = connection.execute(
             text(f"""
@@ -106,6 +126,31 @@ def main() -> None:
         print("Expected answer not found verbatim in linked chunk:")
         for item in missing_answers[:10]:
             print(f"- id={item['id']} answer={item['expected_answer_text']} query={item['query']}")
+
+    if args.delete_missing_chunks:
+        if not args.yes:
+            raise SystemExit(
+                "Refusing to delete rows without --yes. "
+                "Re-run with --delete-missing-chunks --yes after reviewing the list."
+            )
+
+        missing_ids = [item["id"] for item in missing_chunks]
+        if not missing_ids:
+            print()
+            print("No rows with missing expected chunks to delete.")
+            return
+
+        with engine.begin() as connection:
+            deleted = connection.execute(
+                text(f"""
+                    DELETE FROM {EVALUATION_DATASET_TABLE}
+                    WHERE id = ANY(:missing_ids)
+                """),
+                {"missing_ids": missing_ids},
+            ).rowcount
+
+        print()
+        print(f"Deleted {deleted} rows with missing expected chunks.")
 
 
 if __name__ == "__main__":
