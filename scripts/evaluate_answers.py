@@ -32,7 +32,12 @@ from src.phoenix_annotations import (
 from src.rag_diagnosis import diagnose_rag
 from src.retrieval import retrieve_nodes
 from src.infrastructure.vector_store import VECTOR_TABLE
-from src.tracing_helpers import set_llm_attributes, set_span_io, set_json_attribute
+from src.tracing_helpers import (
+    estimate_token_count,
+    set_llm_attributes,
+    set_span_io,
+    set_json_attribute,
+)
 
 setup_phoenix_tracing()
 tracer = trace.get_tracer("hkpl-answer-evaluation")
@@ -151,7 +156,7 @@ def build_context(nodes) -> tuple[str, list[str], list[dict]]:
         return context, contexts, sources
 
 
-async def generate_answer(query: str, context: str) -> str:
+async def generate_answer(query: str, context: str) -> tuple[str, dict]:
     prompt = f"""
 You are the official Hong Kong Public Libraries assistant.
 
@@ -173,6 +178,13 @@ Answer:
         start = time.time()
         answer = await http_llm(prompt, temperature=0.0, max_tokens=512)
         latency = time.time() - start
+        token_usage = {
+            "prompt_tokens": estimate_token_count(prompt),
+            "completion_tokens": estimate_token_count(answer),
+        }
+        token_usage["total_tokens"] = (
+            token_usage["prompt_tokens"] + token_usage["completion_tokens"]
+        )
 
         set_llm_attributes(
             span=span,
@@ -181,13 +193,14 @@ Answer:
             response=answer,
             temperature=0.0,
             max_tokens=512,
+            usage=token_usage,
         )
         span.set_attribute("llm.latency_seconds", round(latency, 4))
         span.set_attribute("rag.query", query)
         span.set_attribute("rag.context_chars", len(context))
         span.set_attribute("rag.generated_answer", answer)
 
-        return answer
+        return answer, token_usage
 
 
 def source_match(expected_document_id: str, sources: list[dict]) -> bool:
@@ -306,7 +319,7 @@ async def evaluate_one(
         context, contexts, sources = build_context(nodes)
         chunks_sent_to_llm = [source.get("chunk_id", "") for source in sources]
 
-        answer = await generate_answer(query, context)
+        answer, token_usage = await generate_answer(query, context)
         retrieval_generation_latency = time.time() - start
 
         correctness_result, correctness_score, correctness_reason = await run_evaluator_span(
@@ -397,6 +410,9 @@ async def evaluate_one(
             "relevancy": relevancy_score,
             "source_match_at_3": source_match_value,
             "chunk_match_at_3": chunk_match_value,
+            "prompt_tokens": token_usage["prompt_tokens"],
+            "completion_tokens": token_usage["completion_tokens"],
+            "total_tokens": token_usage["total_tokens"],
             "latency_seconds": round(retrieval_generation_latency, 4),
             "diagnosis": diagnosis,
             "recommendation": diagnostic["recommendation"],
@@ -411,6 +427,10 @@ async def evaluate_one(
         span.set_attribute("eval.source_match_at_3", bool(source_match_value))
         span.set_attribute("eval.chunk_match_at_3", bool(chunk_match_value))
         span.set_attribute("eval.latency_seconds", float(round(retrieval_generation_latency, 4)))
+        span.set_attribute("rag.token_count.prompt", int(token_usage["prompt_tokens"]))
+        span.set_attribute("rag.token_count.completion", int(token_usage["completion_tokens"]))
+        span.set_attribute("rag.token_count.total", int(token_usage["total_tokens"]))
+        span.set_attribute("rag.token_count.is_estimated", True)
         span.set_attribute("rag.diagnosis", diagnosis)
         span.set_attribute("rag.recommendation", diagnostic["recommendation"])
 
@@ -446,6 +466,9 @@ async def evaluate_one(
             "top_chunk_id": top_source.get("chunk_id", ""),
             "source_match_at_3": source_match_value,
             "chunk_match_at_3": chunk_match_value,
+            "prompt_tokens": token_usage["prompt_tokens"],
+            "completion_tokens": token_usage["completion_tokens"],
+            "total_tokens": token_usage["total_tokens"],
             "correctness_score": correctness_score,
             "correctness_reason": correctness_reason,
             "faithfulness_score": faithfulness_score,
@@ -509,6 +532,9 @@ async def main() -> None:
                     "top_chunk_id": "",
                     "source_match_at_3": False,
                     "chunk_match_at_3": False,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
                     "correctness_score": 0.0,
                     "correctness_reason": f"Evaluation failed: {error}",
                     "faithfulness_score": 0.0,
@@ -543,6 +569,9 @@ async def main() -> None:
         "average_relevancy": avg("relevancy_score"),
         "source_match_at_3": rate("source_match_at_3"),
         "chunk_match_at_3": rate("chunk_match_at_3"),
+        "average_prompt_tokens": avg("prompt_tokens"),
+        "average_completion_tokens": avg("completion_tokens"),
+        "average_total_tokens": avg("total_tokens"),
         "average_latency_seconds": avg("latency_seconds"),
         "diagnosis_counts": dict(Counter(row["diagnosis"] for row in results)),
     }
@@ -567,6 +596,12 @@ async def main() -> None:
         span.set_attribute("eval.average_relevancy", float(summary["average_relevancy"]))
         span.set_attribute("eval.source_match_at_3", float(summary["source_match_at_3"]))
         span.set_attribute("eval.chunk_match_at_3", float(summary["chunk_match_at_3"]))
+        span.set_attribute("eval.average_prompt_tokens", float(summary["average_prompt_tokens"]))
+        span.set_attribute(
+            "eval.average_completion_tokens",
+            float(summary["average_completion_tokens"]),
+        )
+        span.set_attribute("eval.average_total_tokens", float(summary["average_total_tokens"]))
         span.set_attribute("eval.average_latency_seconds", float(summary["average_latency_seconds"]))
         set_json_attribute(span, "eval.diagnosis_counts", summary["diagnosis_counts"])
 
@@ -580,6 +615,9 @@ async def main() -> None:
     print(f"Average relevancy      : {summary['average_relevancy']:.4f}")
     print(f"Source match@3         : {summary['source_match_at_3']:.2%}")
     print(f"Chunk match@3          : {summary['chunk_match_at_3']:.2%}")
+    print(f"Average prompt tokens  : {summary['average_prompt_tokens']:.1f}")
+    print(f"Average answer tokens  : {summary['average_completion_tokens']:.1f}")
+    print(f"Average total tokens   : {summary['average_total_tokens']:.1f}")
     print(f"Average latency        : {summary['average_latency_seconds']:.4f}s")
     print("Diagnosis counts       :")
     for diagnosis, count in summary["diagnosis_counts"].items():

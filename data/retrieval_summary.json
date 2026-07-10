@@ -1,12 +1,12 @@
 {
-  "total_questions": 176,
-  "hit_at_1": 0.6988636363636364,
-  "recall_at_3": 0.8806818181818182,
-  "recall_at_5": 0.9375,
-  "mrr": 0.7918560606060605,
+  "total_questions": 174,
+  "hit_at_1": 0.7068965517241379,
+  "recall_at_3": 0.8908045977011494,
+  "recall_at_5": 0.9482758620689655,
+  "mrr": 0.8009578544061301,
   "diagnosis_counts": {
     "working_correctly": 157,
-    "retrieval_problem": 8,
+    "retrieval_problem": 6,
     "reranker_problem": 8,
     "chunk_level_retrieval_problem": 3
   }

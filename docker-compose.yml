@@ -158,6 +158,13 @@ services:
       PHOENIX_BASE_URL: "http://phoenix:6006"
       PHOENIX_LOG_EVAL_ANNOTATIONS: "true"
       PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"
+      LLM_TOKENIZER_URL: http://llm:8080/tokenize
+      EMBEDDING_TOKENIZER_URL: http://embedding:8080/tokenize
+      RERANKER_TOKENIZER_URL: http://reranker:8080/tokenize
+      LLM_TOKENIZER_NAME: llama.cpp:qwen3.5-9b
+      EMBEDDING_TOKENIZER_NAME: llama.cpp:qwen3-embedding-0.6b
+      RERANKER_TOKENIZER_NAME: llama.cpp:qwen3-reranker-0.6b
+      TOKENIZER_TIMEOUT_SECONDS: "30"
       LLM_PROMPT_COST_PER_1K_USD: "0"
       LLM_COMPLETION_COST_PER_1K_USD: "0"
 
