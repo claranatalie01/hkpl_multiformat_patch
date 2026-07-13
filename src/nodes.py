@@ -27,8 +27,10 @@ def get_current_datetime():
 # HTTP endpoint for LLM (answer generation)
 # ----------------------------------------------------------------------
 LLM_URL = os.getenv("LLM_URL", "http://llm:8080/v1/chat/completions")
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
 
-async def http_llm(prompt: str, temperature: float = 0.0, max_tokens: int =4096     ) -> str:
+async def http_llm(prompt: str, temperature: float = 0.0, max_tokens: int | None = None) -> str:
+    max_tokens = max_tokens or LLM_MAX_TOKENS
     headers = {"Content-Type": "application/json"}
     payload = {
         "model": "qwen3.5-9b",
@@ -778,7 +780,7 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
 
     # ✅ Build the system prompt first
     system_prompt = f"""You are the official HKPL (Hong Kong Public Libraries) assistant.  
-    **IMPORTANT:** Do NOT include any reasoning, thinking, or analysis in your response. Output only the final answer.
+    **IMPORTANT:** Do not expose reasoning, thinking, or analysis in your response. Output only the final answer.
     {date_hint}{location_hint}{memory_hint}
 
     **Instructions:**

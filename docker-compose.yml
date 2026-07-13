@@ -98,7 +98,8 @@ services:
       --host 0.0.0.0
       --port 8080
       --n-gpu-layers 99
-      --ctx-size 4096
+      --ctx-size 32768
+      --parallel 1
       --reasoning off
     healthcheck:
       test:
@@ -140,6 +141,8 @@ services:
       EMBEDDING_URL: http://embedding:8080/v1/embeddings
       RERANKER_URL: http://reranker:8080/reranking
       LLM_URL: http://llm:8080/v1/chat/completions
+      LLM_CONTEXT_WINDOW: "32768"
+      LLM_MAX_TOKENS: "24000"
 
       VECTOR_TABLE: hkpl_knowledge
       EVALUATION_DATASET_TABLE: evaluation_dataset

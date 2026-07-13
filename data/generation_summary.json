@@ -1,21 +1,24 @@
 {
   "total_questions": 174,
-  "average_correctness": 4.425287356321839,
-  "average_faithfulness": 0.8735632183908046,
-  "average_relevancy": 0.9022988505747126,
-  "source_match_at_3": 0.9367816091954023,
-  "chunk_match_at_3": 0.896551724137931,
-  "average_prompt_tokens": 925.5459770114943,
-  "average_completion_tokens": 58.247126436781606,
-  "average_total_tokens": 983.7931034482758,
-  "average_latency_seconds": 2.0594867816091953,
+  "average_correctness": 4.502873563218391,
+  "average_faithfulness": 0.8850574712643678,
+  "average_relevancy": 0.9137931034482759,
+  "source_match_at_3": 0.9482758620689655,
+  "chunk_match_at_3": 0.9022988505747126,
+  "average_prompt_tokens": 920.5114942528736,
+  "average_completion_tokens": 61.31609195402299,
+  "average_total_tokens": 981.8275862068965,
+  "average_retriever_query_tokens": 22.93103448275862,
+  "average_reranker_input_tokens": 1775.0632183908046,
+  "average_context_tokens": 830.6379310344828,
+  "average_pipeline_total_tokens": 2779.82183908046,
+  "average_latency_seconds": 2.3385959770114937,
   "diagnosis_counts": {
-    "working_correctly": 132,
+    "working_correctly": 133,
     "llm_generation_problem": 8,
     "retrieval_problem": 6,
     "evaluator_or_dataset_issue": 16,
-    "reranker_problem": 7,
-    "chunk_level_retrieval_problem": 3,
-    "evaluation_failed": 2
+    "reranker_problem": 8,
+    "chunk_level_retrieval_problem": 3
   }
 }
