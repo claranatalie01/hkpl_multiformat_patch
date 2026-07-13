@@ -17,6 +17,7 @@ from PIL import Image
 from pptx import Presentation
 
 from llama_index.core import Document
+from .document_types import detect_document_type
 
 
 SUPPORTED_EXTENSIONS = {
@@ -55,23 +56,6 @@ def normalize_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
-def detect_document_type(text: str) -> str:
-    lower = text.lower()
-
-    if "question:" in lower and "answer:" in lower:
-        return "faq"
-
-    if "district" in lower and "public library" in lower and "tel:" in lower:
-        return "directory"
-
-    if any(word in lower for word in ["announcement", "notice", "temporary closure", "suspension"]):
-        return "announcement"
-
-    if any(word in lower for word in ["policy", "rules", "regulations", "guidelines"]):
-        return "policy"
-
-    return "general"
-
 def file_content_hash(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -96,6 +80,7 @@ def _base_metadata(
     language: str | None = None,
     effective_date: str | None = None,
     source_kind: str = "upload",
+    document_type: str = "auto",
 ) -> dict:
     return {
         "document_id": document_id,
@@ -114,6 +99,7 @@ def _base_metadata(
         "language": language or "",
         "effective_date": effective_date or "",
         "source_kind": source_kind,
+        "document_type": document_type,
     }
 
 
@@ -138,7 +124,7 @@ def _make_document(
     if extra_metadata:
         metadata.update(extra_metadata)
 
-    metadata["document_type"] = metadata.get("document_type") or detect_document_type(clean)
+    metadata["document_type"] = detect_document_type(clean, metadata)
 
     document = Document(
         text=clean,
@@ -758,6 +744,7 @@ def load_file(
     language: str | None = None,
     effective_date: str | None = None,
     source_kind: str = "upload",
+    document_type: str = "auto",
 ) -> list[Document]:
     
     extension = path.suffix.lower()
@@ -790,6 +777,7 @@ def load_file(
         language=language or "",
         effective_date=effective_date or "",
         source_kind=source_kind,
+        document_type=document_type,
     )
 
     if extension == ".pdf":

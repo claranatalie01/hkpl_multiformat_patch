@@ -6,6 +6,7 @@ from typing import List
 from llama_index.core import Document
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import BaseNode
+from .document_types import chunk_strategy_for, detect_document_type
 
 
 PROSE_CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
@@ -27,47 +28,40 @@ def get_text(document: Document) -> str:
     return getattr(document, "text", None) or document.get_content()
 
 
-def detect_document_type(text: str, metadata: dict | None = None) -> str:
-    metadata = metadata or {}
-    lower = text.lower()
-
-    if metadata.get("question") or ("question:" in lower and "answer:" in lower):
-        return "faq"
-
-    if metadata.get("file_type") in ["csv", "xlsx", "xlsm", "json", "jsonl", "xml"]:
-        return "record_based"
-
-    if "## " in text:
-        return "structured"
-
-    if any(x in lower for x in ["announcement", "notice", "temporary closure", "suspension"]):
-        return "announcement"
-
-    return "prose"
-
-
 def choose_chunking_strategy(document: Document) -> str:
     text = get_text(document)
     metadata = document.metadata or {}
-    file_type = metadata.get("file_type", "").lower()
-    doc_type = metadata.get("document_type") or detect_document_type(text, metadata)
+    doc_type = detect_document_type(text, metadata)
+    return chunk_strategy_for(doc_type)
 
-    if doc_type == "faq" or metadata.get("question"):
-        return "atomic"
 
-    if file_type in ["csv", "xlsx", "xlsm", "json", "jsonl", "xml"]:
-        return "atomic"
+def split_faq_entries(document: Document) -> List[Document]:
+    text = get_text(document)
+    metadata = document.metadata or {}
+    matches = list(re.finditer(r"(?im)^\s*Q\d+\s*[:.)]", text))
+    if not matches:
+        document.metadata.update({
+            "chunk_strategy": "atomic",
+            "document_type": "faq",
+        })
+        return [document]
 
-    if doc_type == "announcement":
-        return "atomic"
-    if doc_type == "directory":
-        return "directory_sections"
-
-    if "## " in text:
-        return "marked_sections"
-    
-
-    return "prose"
+    heading = text[:matches[0].start()].strip()
+    output = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        entry = text[match.start():end].strip()
+        if not entry:
+            continue
+        content = f"{heading}\n\n{entry}" if heading else entry
+        output.append(Document(text=content, metadata={
+            **metadata,
+            "section_index": index,
+            "chunk_strategy": "atomic",
+            "document_type": "faq",
+            "faq_entry_index": index,
+        }))
+    return output or [document]
 
 
 def split_marked_sections(document: Document) -> List[Document]:
@@ -130,7 +124,7 @@ def prepare_documents_for_chunking(documents: List[Document]) -> List[Document]:
         text = get_text(document)
         metadata = document.metadata or {}
         strategy = choose_chunking_strategy(document)
-        doc_type = metadata.get("document_type") or detect_document_type(text, metadata)
+        doc_type = detect_document_type(text, metadata)
 
         document.metadata.update(
             {
@@ -140,7 +134,9 @@ def prepare_documents_for_chunking(documents: List[Document]) -> List[Document]:
             }
         )
 
-        if strategy == "directory_sections":
+        if strategy == "faq_entries":
+            prepared.extend(split_faq_entries(document))
+        elif strategy == "directory_sections":
             prepared.extend(split_directory_entries(document))
         elif strategy == "marked_sections":
             prepared.extend(split_marked_sections(document))

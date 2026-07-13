@@ -115,6 +115,10 @@ def ensure_registry_schema() -> None:
             ALTER TABLE knowledge_documents
             ADD COLUMN IF NOT EXISTS source_kind TEXT
         """))
+        connection.execute(text("""
+            ALTER TABLE knowledge_documents
+            ADD COLUMN IF NOT EXISTS document_type TEXT NOT NULL DEFAULT 'auto'
+        """))
 
 
 def _row_to_dict(row: Any) -> dict:
@@ -157,6 +161,7 @@ def create_document(
     language: str | None = None,
     effective_date: str | None = None,
     source_kind: str = "upload",
+    document_type: str = "auto",
 ) -> dict:
     document_id = str(uuid4())
 
@@ -180,7 +185,8 @@ def create_document(
                     category,
                     language,
                     effective_date,
-                    source_kind
+                    source_kind,
+                    document_type
                 )
                 VALUES (
                     :document_id,
@@ -198,7 +204,8 @@ def create_document(
                     :category,
                     :language,
                     :effective_date,
-                    :source_kind
+                    :source_kind,
+                    :document_type
                 )
                 RETURNING *
                 """
@@ -218,6 +225,7 @@ def create_document(
                 "language": language,
                 "effective_date": effective_date or None,
                 "source_kind": source_kind,
+                "document_type": document_type,
                 
             },
         ).fetchone()
@@ -241,6 +249,7 @@ def prepare_replacement(
     language: str | None = None,
     effective_date: str | None = None,
     source_kind: str = "upload",
+    document_type: str = "auto",
 ) -> Optional[dict]:
     with engine.begin() as connection:
         row = connection.execute(
@@ -261,6 +270,7 @@ def prepare_replacement(
                     language = :language,
                     effective_date = :effective_date,
                     source_kind = :source_kind,
+                    document_type = :document_type,
                     version = version + 1,
                     status = 'uploaded',
                     chunk_count = 0,
@@ -286,6 +296,7 @@ def prepare_replacement(
                 "language": language,
                 "effective_date": effective_date or None,
                 "source_kind": source_kind,
+                "document_type": document_type,
             },
         ).fetchone()
 
