@@ -27,9 +27,14 @@ def get_current_datetime():
 # HTTP endpoint for LLM (answer generation)
 # ----------------------------------------------------------------------
 LLM_URL = os.getenv("LLM_URL", "http://llm:8080/v1/chat/completions")
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "16000"))
 
-async def http_llm(prompt: str, temperature: float = 0.0, max_tokens: int | None = None) -> str:
+async def http_llm(
+    prompt: str,
+    temperature: float = 0.0,
+    max_tokens: int | None = None,
+    enable_thinking: bool = False,
+) -> str:
     max_tokens = max_tokens or LLM_MAX_TOKENS
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -37,7 +42,8 @@ async def http_llm(prompt: str, temperature: float = 0.0, max_tokens: int | None
         "messages": [{"role": "user", "content": prompt}],
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "stream": False
+        "stream": False,
+        "chat_template_kwargs": {"enable_thinking": enable_thinking},
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(LLM_URL, json=payload, headers=headers) as resp:
@@ -721,7 +727,11 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
     if request_type == "normal_info":
         system_msg = "You are a helpful library assistant. Keep answers short and friendly."
         full_prompt = f"{system_msg}\n\nUser: {question}"
-        response = await http_llm(full_prompt, temperature=0.7)
+        response = await http_llm(
+            full_prompt,
+            temperature=0.7,
+            enable_thinking=True,
+        )
         return {
             "messages": [AIMessage(content=response)],
             "generated_answer": response,
@@ -803,7 +813,11 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
     logger.debug(f"Context length: {len(context)} characters")
     logger.debug(f"System prompt (first 500 chars): {system_prompt[:500]}...")
 
-    response = await http_llm(system_prompt, temperature=0.0)
+    response = await http_llm(
+        system_prompt,
+        temperature=0.0,
+        enable_thinking=True,
+    )
 
     # Store the generated answer separately so later nodes can inspect it.
     return {
