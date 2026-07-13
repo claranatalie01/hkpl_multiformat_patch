@@ -12,7 +12,7 @@
   "average_reranker_input_tokens": 1775.0632183908046,
   "average_context_tokens": 830.6379310344828,
   "average_pipeline_total_tokens": 2779.82183908046,
-  "average_latency_seconds": 2.3385959770114937,
+  "average_latency_seconds": 2.0964379310344836,
   "diagnosis_counts": {
     "working_correctly": 133,
     "llm_generation_problem": 8,
