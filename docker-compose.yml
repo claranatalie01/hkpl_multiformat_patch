@@ -100,9 +100,7 @@ services:
       --n-gpu-layers 99
       --ctx-size 32768
       --parallel 1
-      --reasoning on
-      --reasoning-budget 8000
-      --reasoning-budget-message "Now provide the final answer."
+      --reasoning off
     healthcheck:
       test:
         [
@@ -145,7 +143,6 @@ services:
       LLM_URL: http://llm:8080/v1/chat/completions
       LLM_CONTEXT_WINDOW: "32768"
       LLM_MAX_TOKENS: "24000"
-      LLM_REASONING_BUDGET: "8000"
 
       VECTOR_TABLE: hkpl_knowledge
       EVALUATION_DATASET_TABLE: evaluation_dataset
