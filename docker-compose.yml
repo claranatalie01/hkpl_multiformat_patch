@@ -100,7 +100,7 @@ services:
       --n-gpu-layers 99
       --ctx-size 32768
       --parallel 1
-      --reasoning off
+      --reasoning on
     healthcheck:
       test:
         [
