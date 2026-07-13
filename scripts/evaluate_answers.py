@@ -47,7 +47,7 @@ OUTPUT_FILE = PROJECT_ROOT / "data" / "generation_results.csv"
 SUMMARY_FILE = PROJECT_ROOT / "data" / "generation_summary.json"
 EVALUATION_DATASET_TABLE = os.getenv("EVALUATION_DATASET_TABLE", "evaluation_dataset")
 LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "24000"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "16000"))
 
 
 class QwenLlamaIndexLLM(CustomLLM):
@@ -65,7 +65,12 @@ class QwenLlamaIndexLLM(CustomLLM):
 
     @llm_completion_callback()
     async def acomplete(self, prompt: str, **kwargs) -> CompletionResponse:
-        text = await http_llm(prompt, temperature=0.0, max_tokens=1024)
+        text = await http_llm(
+            prompt,
+            temperature=0.0,
+            max_tokens=1024,
+            enable_thinking=False,
+        )
         return CompletionResponse(text=text)
 
     @llm_completion_callback()
@@ -178,7 +183,12 @@ Answer:
 
     with tracer.start_as_current_span("LLM") as span:
         start = time.time()
-        answer = await http_llm(prompt, temperature=0.0, max_tokens=512)
+        answer = await http_llm(
+            prompt,
+            temperature=0.0,
+            max_tokens=512,
+            enable_thinking=False,
+        )
         latency = time.time() - start
         prompt_tokens, prompt_estimated, tokenizer_name = await count_tokens(
             prompt,

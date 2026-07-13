@@ -13,6 +13,7 @@ from llama_index.core.vector_stores import (
 from ..infrastructure.embedding import embed_model
 from ..infrastructure.vector_store import vector_store
 from .chunking import chunk_documents
+from .document_types import validate_document_type
 from .readers import (
     SUPPORTED_EXTENSIONS,
     file_content_hash,
@@ -110,6 +111,7 @@ def register_upload(
     language: str | None = None,
     effective_date: str | None = None,
     source_kind: str = "upload",
+    document_type: str = "auto",
     replace_document_id: str | None = None,
 ) -> dict:
     ensure_registry_schema()
@@ -121,6 +123,7 @@ def register_upload(
         )
 
     content_hash = file_content_hash(stored_path)
+    document_type = validate_document_type(document_type)
 
     if replace_document_id is None:
         duplicate = find_completed_duplicate(
@@ -149,6 +152,7 @@ def register_upload(
             language=language,
             effective_date=effective_date,
             source_kind=source_kind,
+            document_type=document_type,
         )
     else:
         existing = get_document(
@@ -187,6 +191,7 @@ def register_upload(
             language=language,
             effective_date=effective_date,
             source_kind=source_kind,
+            document_type=document_type,
         )
 
         if record is None:
@@ -255,6 +260,7 @@ def process_registered_document(
             language=record.get("language"),
             effective_date=str(record.get("effective_date") or ""),
             source_kind=record.get("source_kind") or "upload",
+            document_type=record.get("document_type") or "auto",
         )
 
         if not documents:
@@ -355,6 +361,7 @@ def ingest_path_sync(
     language: str | None = None,
     effective_date: str | None = None,
     source_kind: str = "upload",
+    document_type: str = "auto",
     replace_document_id: str | None = None,
 ) -> dict:
     registration = register_upload(
@@ -374,8 +381,8 @@ def ingest_path_sync(
         category=category,
         language=language,
         effective_date=effective_date,
-        source_kind=source_kind
-        
+        source_kind=source_kind,
+        document_type=document_type,
     )
 
     if registration["duplicate"]:
