@@ -146,6 +146,43 @@ def find_completed_duplicate(
     return _row_to_dict(row) if row else None
 
 
+def find_active_document_by_source_url(
+    source_url: str,
+    *,
+    source_type: str | None = None,
+) -> Optional[dict]:
+    if not source_url:
+        return None
+
+    source_type_filter = (
+        "AND source_type = :source_type"
+        if source_type
+        else ""
+    )
+    parameters = {
+        "source_url": source_url,
+        "source_type": source_type,
+    }
+
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                f"""
+                SELECT *
+                FROM knowledge_documents
+                WHERE source_url = :source_url
+                  AND status <> 'deleted'
+                  {source_type_filter}
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """
+            ),
+            parameters,
+        ).fetchone()
+
+    return _row_to_dict(row) if row else None
+
+
 def create_document(
     *,
     original_file_name: str,
