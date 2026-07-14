@@ -157,6 +157,7 @@ services:
       CHUNK_SIZE: "512"
       CHUNK_OVERLAP: "64"
       ATOMIC_MAX_TOKENS: "2048"
+      RECORD_MAX_TOKENS: "8192"
       OCR_LANGUAGES: eng+chi_tra
       PHOENIX_ENABLED: "true"
       PHOENIX_BASE_URL: "http://phoenix:6006"

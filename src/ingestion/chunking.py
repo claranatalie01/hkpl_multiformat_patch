@@ -12,6 +12,7 @@ from .document_types import chunk_strategy_for, detect_document_type
 PROSE_CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
 PROSE_CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "64"))
 ATOMIC_MAX_TOKENS = int(os.getenv("ATOMIC_MAX_TOKENS", "2048"))
+RECORD_MAX_TOKENS = int(os.getenv("RECORD_MAX_TOKENS", "8192"))
 
 prose_splitter = SentenceSplitter(
     chunk_size=PROSE_CHUNK_SIZE,
@@ -20,6 +21,11 @@ prose_splitter = SentenceSplitter(
 
 atomic_splitter = SentenceSplitter(
     chunk_size=ATOMIC_MAX_TOKENS,
+    chunk_overlap=0,
+)
+
+record_splitter = SentenceSplitter(
+    chunk_size=RECORD_MAX_TOKENS,
     chunk_overlap=0,
 )
 
@@ -191,7 +197,13 @@ def chunk_documents(documents: List[Document]) -> List[BaseNode]:
 
     for document in prepared_documents:
         strategy = document.metadata.get("chunk_strategy", "prose")
-        splitter = atomic_splitter if strategy == "atomic" else prose_splitter
+        document_type = document.metadata.get("document_type", "prose")
+        if strategy == "atomic" and document_type == "record_based":
+            splitter = record_splitter
+        elif strategy == "atomic":
+            splitter = atomic_splitter
+        else:
+            splitter = prose_splitter
 
         document_nodes = splitter.get_nodes_from_documents([document])
 
@@ -221,7 +233,13 @@ def chunk_documents(documents: List[Document]) -> List[BaseNode]:
                     "chunk_id": node.id_,
                     "chunk_index": local_index,
                     "chunk_strategy": strategy,
-                    "chunk_size": ATOMIC_MAX_TOKENS if strategy == "atomic" else PROSE_CHUNK_SIZE,
+                    "chunk_size": (
+                        RECORD_MAX_TOKENS
+                        if strategy == "atomic" and document_type == "record_based"
+                        else ATOMIC_MAX_TOKENS
+                        if strategy == "atomic"
+                        else PROSE_CHUNK_SIZE
+                    ),
                     "chunk_overlap": 0 if strategy == "atomic" else PROSE_CHUNK_OVERLAP,
                 }
             )
