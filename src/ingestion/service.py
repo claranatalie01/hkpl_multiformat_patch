@@ -26,6 +26,7 @@ from .registry import (
     get_document,
     mark_deleted,
     prepare_replacement,
+    prepare_reindex,
     update_status,
 )
 
@@ -167,6 +168,7 @@ def register_upload(
             existing.get("content_hash")
             == content_hash
             and existing.get("status") == "completed"
+            and (existing.get("document_type") or "auto") == document_type
         ):
             return {
                 "duplicate": True,
@@ -439,3 +441,19 @@ def delete_registered_document(
         "status": "deleted",
         "chunks_removed": removed_chunks,
     }
+
+
+def reindex_registered_document(
+    document_id: str,
+    *,
+    document_type: str | None = None,
+) -> dict:
+    selected_type = (
+        validate_document_type(document_type)
+        if document_type is not None
+        else None
+    )
+    record = prepare_reindex(document_id, selected_type)
+    if not record:
+        raise ValueError("Document was not found.")
+    return process_registered_document(document_id)

@@ -1,0 +1,209 @@
+ Container hkpl_phoenix Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_embedding Running 
+ Container hkpl_postgres Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-d79c73e4da33 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-d79c73e4da33 Created 
+Generating embeddings:   0%|          | 0/25 [00:00<?, ?it/s]Full rebuild preflight passed: FAQ source plus 96 registered documents are available.
+Clearing data_hkpl_knowledge before rebuilding all knowledge.
+Removed 0 existing FAQ chunks
+Loaded 24 FAQ documents
+Created 25 FAQ chunks
+Generating embeddings:  40%|████      | 10/25 [00:01<00:01,  8.40it/s]Generating embeddings:  80%|████████  | 20/25 [00:01<00:00, 11.53it/s]Generating embeddings: 100%|██████████| 25/25 [00:02<00:00, 12.19it/s]Generating embeddings: 100%|██████████| 25/25 [00:02<00:00, 11.43it/s]
+Document ingestion failed: 6408f2fb-d156-43ad-940b-c7bea40a5760
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: be201105-626d-4960-8d71-ae3746e11bd0
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: 2e50fcdc-25c8-44e6-ab11-849492312a5b
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: e463eff9-8a3f-4bba-8d04-a89c60e03cba
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: 60ae1221-d32e-44ac-896c-4e11dbdcc281
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: 0c120f45-c0ec-4825-a977-3950acf47036
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: b74d3afe-ab4f-42c4-9e3c-949398eabad5
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: 367e1e06-6e2e-44a8-87bf-99799625acbe
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: cf4222ad-502d-4fa9-92dc-0e39a8361de1
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: 4d646d9d-2ea3-4fee-9131-ed8a4fd726ae
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: f0c38bef-1b30-450c-b5ef-7b5404245104
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 269, in process_registered_document
+    raise ValueError(
+ValueError: No readable content was extracted.
+Document ingestion failed: db97158b-a289-4132-8119-fa03e1159bf3
+Traceback (most recent call last):
+  File "/app/src/ingestion/service.py", line 280, in process_registered_document
+    raise ValueError(
+ValueError: No chunks were created.
+Ingested FAQ data into data_hkpl_knowledge
+[1/96] Reindexing crawler_f48bc9dadeeed2fc.html (e10f6ca5-51af-4882-bced-65ceaf5edc94)
+  Created 12 chunks; source_kind=crawler
+[2/96] Reindexing crawler_f48bc9dadeeed2fc.html (de0e7f69-abaa-47a4-9a6a-edf1176a11bc)
+  Created 12 chunks; source_kind=crawler
+[3/96] Reindexing crawler_fe2e1437daf18255.html (5a5a6ea0-ec30-432b-a83f-a07b62105f3c)
+  Created 15 chunks; source_kind=crawler
+[4/96] Reindexing crawler_c9f1da1cc476a50d.html (5ee77841-3eef-416b-9ab6-39dff8ff2a79)
+  Created 3 chunks; source_kind=crawler
+[5/96] Reindexing crawler_f48bc9dadeeed2fc.html (9e9ca7da-8451-4aaa-902b-1a913d1ef33f)
+  Created 12 chunks; source_kind=crawler
+[6/96] Reindexing webpage_7b1b325686bd4acc.html (d94189a2-fdc8-40cb-8484-a1621cfcc6de)
+  Created 13 chunks; source_kind=webpage
+[7/96] Reindexing library_list_eng.pdf (bbaa337b-f76b-4a05-9a29-af000e66bc1d)
+  Created 76 chunks; source_kind=upload
+[8/96] Reindexing crawler_2f362b59b81bca25.html (168ef7c9-d20f-41ef-a1f7-922e3693c951)
+  Created 12 chunks; source_kind=crawler
+[9/96] Reindexing crawler_dffba3d573a61169.html (6408f2fb-d156-43ad-940b-c7bea40a5760)
+  FAILED: No readable content was extracted.
+[10/96] Reindexing crawler_80626f691d566b6f.html (be201105-626d-4960-8d71-ae3746e11bd0)
+  FAILED: No readable content was extracted.
+[11/96] Reindexing crawler_6e57c320930a78e5.html (2e50fcdc-25c8-44e6-ab11-849492312a5b)
+  FAILED: No readable content was extracted.
+[12/96] Reindexing crawler_9474aab51a002b7e.html (e463eff9-8a3f-4bba-8d04-a89c60e03cba)
+  FAILED: No readable content was extracted.
+[13/96] Reindexing crawler_f4841ea3ae98c3a5.html (60ae1221-d32e-44ac-896c-4e11dbdcc281)
+  FAILED: No readable content was extracted.
+[14/96] Reindexing crawler_5997835db4924729.html (0c120f45-c0ec-4825-a977-3950acf47036)
+  FAILED: No readable content was extracted.
+[15/96] Reindexing crawler_60b45ee3de3b6da1.html (b74d3afe-ab4f-42c4-9e3c-949398eabad5)
+  FAILED: No readable content was extracted.
+[16/96] Reindexing crawler_939e4d2311502a97.html (367e1e06-6e2e-44a8-87bf-99799625acbe)
+  FAILED: No readable content was extracted.
+[17/96] Reindexing crawler_f6223901135e3b98.html (cf4222ad-502d-4fa9-92dc-0e39a8361de1)
+  FAILED: No readable content was extracted.
+[18/96] Reindexing crawler_73e322d52b21bb88.html (4d646d9d-2ea3-4fee-9131-ed8a4fd726ae)
+  FAILED: No readable content was extracted.
+[19/96] Reindexing crawler_ba56519285b7517a.html (6ffe34b8-5a77-46bc-a68e-c4f08695c434)
+  Created 2 chunks; source_kind=crawler
+[20/96] Reindexing crawler_00b7c8039a9fa1df.html (8c687299-209f-483c-b43a-b368b07545fb)
+  Created 2 chunks; source_kind=crawler
+[21/96] Reindexing crawler_dad7c5ddd729c9c0.html (d813fb41-9156-4ec2-b6a3-211349dcb73e)
+  Created 2 chunks; source_kind=crawler
+[22/96] Reindexing crawler_3b8a42ced22cea60.html (777bb116-6af0-46f6-8fa4-1fb40febbc2d)
+  Created 2 chunks; source_kind=crawler
+[23/96] Reindexing crawler_4f254e1d9f67620a.html (325b7aa3-7d09-48e8-b393-59b6c1ba3e72)
+  Created 9 chunks; source_kind=crawler
+[24/96] Reindexing crawler_e59f0bd11b87a507.html (0cf40f6a-f030-4d00-a440-f1fe325bbace)
+  Created 8 chunks; source_kind=crawler
+[25/96] Reindexing crawler_ce15941c9f111ef0.html (0bc69e26-9aa5-4ff0-bfaf-b2fb3ca35475)
+  Created 2 chunks; source_kind=crawler
+[26/96] Reindexing crawler_2a9ce212bff96fe8.html (49eb4bdb-12c6-4a72-84b8-8c443f3cf446)
+  Created 2 chunks; source_kind=crawler
+[27/96] Reindexing crawler_8524bdafff68079c.html (ee041c98-0489-4bab-9876-283fd370654f)
+  Created 8 chunks; source_kind=crawler
+[28/96] Reindexing crawler_92765d5b29647daa.html (9ba9f6e8-99b9-43c8-8fd1-3da61fea1151)
+  Created 56 chunks; source_kind=crawler
+[29/96] Reindexing crawler_97eb026c58bdf215.html (6e349ba5-62d4-4f97-858c-e5be4c72beac)
+  Created 3 chunks; source_kind=crawler
+[30/96] Reindexing crawler_978f351cc05ffeb3.html (de64798e-67fd-4617-a80c-8a47f70525ff)
+  Created 1 chunks; source_kind=crawler
+[31/96] Reindexing crawler_7f78ae2927895a7a.html (543a38a3-8bb4-43f5-af8a-7e8a241f3df9)
+  Created 2 chunks; source_kind=crawler
+[32/96] Reindexing crawler_820dc67622571506.html (281175b0-6ffe-4ecd-9450-1331022ec044)
+  Created 1 chunks; source_kind=crawler
+[33/96] Reindexing crawler_4b1755d8d41540dd.html (3d1decc4-6ab4-49ce-a3d8-2e171c8acdfb)
+  Created 8 chunks; source_kind=crawler
+[34/96] Reindexing crawler_65798708efdd257c.html (83ef11ce-1b7e-4d1b-b869-4e290f81f5ea)
+  Created 5 chunks; source_kind=crawler
+[35/96] Reindexing crawler_c77800ec95cfa1be.html (d664d284-74ef-4c66-9656-d03f6dfdfb63)
+  Created 3 chunks; source_kind=crawler
+[36/96] Reindexing crawler_483a63f305988c4b.html (fcdc6b02-28d1-4f70-8fea-06fa020a0eae)
+  Created 2 chunks; source_kind=crawler
+[37/96] Reindexing crawler_fc8041ca2aa37fc2.html (d8894655-28f2-4a42-ac44-421901305804)
+  Created 2 chunks; source_kind=crawler
+[38/96] Reindexing crawler_8ec5cf953a4899b3.html (64d0cf01-8acd-4853-a297-5419978dc695)
+  Created 14 chunks; source_kind=crawler
+[39/96] Reindexing crawler_2f362b59b81bca25.html (afd45438-71b1-4fd1-9007-13ab2723360d)
+  Created 12 chunks; source_kind=crawler
+[40/96] Reindexing crawler_c55c00f0bf51ab25.html (01121b58-4b71-454c-b5b8-e7693eb0014f)
+  Created 12 chunks; source_kind=crawler
+[41/96] Reindexing crawler_7557afbfb9b138b2.html (ce166332-e10a-45b1-b807-27a8a9bcd34e)
+  Created 11 chunks; source_kind=crawler
+[42/96] Reindexing crawler_d009fae45a480813.html (d22fadb8-5a7a-4244-84d1-ddc497f89c60)
+  Created 12 chunks; source_kind=crawler
+[43/96] Reindexing crawler_fdc76a27ac63dad7.html (5b37a8c7-8399-49ee-8e43-b38ab8080170)
+  Created 12 chunks; source_kind=crawler
+[44/96] Reindexing crawler_088c7be27d48522d.html (86dcfb30-3222-432f-a9fd-186256f710ad)
+  Created 2 chunks; source_kind=crawler
+[45/96] Reindexing crawler_bccc1e9285567f4b.html (e680a689-c355-47bf-ac4c-40778ae3cb7b)
+  Created 32 chunks; source_kind=crawler
+[46/96] Reindexing crawler_a578956530841c2b.html (79cba5eb-d3b2-45d4-99bb-d960a68dafff)
+  Created 28 chunks; source_kind=crawler
+[47/96] Reindexing crawler_dffba3d573a61169.html (f0c38bef-1b30-450c-b5ef-7b5404245104)
+  FAILED: No readable content was extracted.
+[48/96] Reindexing crawler_ce3bb96c8490f27d.html (2df9f701-76b1-4b9d-8417-82b2ed1bc24e)
+  Created 5 chunks; source_kind=crawler
+[49/96] Reindexing crawler_124f46d605135b99.html (979f1983-f7fb-4dba-a22f-7d1cb0c9102e)
+  Created 15 chunks; source_kind=crawler
+[50/96] Reindexing crawler_41500dfbda3fdd1d.html (19afe8e9-570c-4e4e-b2dd-e192b485a0e5)
+  Created 23 chunks; source_kind=crawler
+[51/96] Reindexing crawler_3a5938b02b6dfa8c.html (6df94b1a-5f40-4690-b847-b2f09358d791)
+  Created 3 chunks; source_kind=crawler
+[52/96] Reindexing crawler_ed20a9679a53493f.html (8c198a14-3527-4860-82c0-81faa366f699)
+  Created 8 chunks; source_kind=crawler
+[53/96] Reindexing crawler_472ce07a9f0f7fa9.html (4ba7981b-3dbc-4ab8-b3c7-380782a67dd1)
+  Created 7 chunks; source_kind=crawler
+[54/96] Reindexing crawler_b3f8bdf9dbef78c2.html (db97158b-a289-4132-8119-fa03e1159bf3)
+  FAILED: No chunks were created.
+[55/96] Reindexing crawler_7e1998d4576730a9.html (efb21b80-5e5e-40bf-911a-24dc9b52a4e0)
+  Created 37 chunks; source_kind=crawler
+[56/96] Reindexing crawler_cad32e102ff1837d.html (4629c91b-0358-4b4e-bece-09fe4159a1b6)
+  Created 2 chunks; source_kind=crawler
+[57/96] Reindexing crawler_cb6b5d99b629613e.html (1cad770b-dfea-4de2-abc0-23e1fed42052)
+  Created 1 chunks; source_kind=crawler
+[58/96] Reindexing crawler_7a401043d486895a.html (a1a3b4a8-097e-47f3-a687-9e703228fdc5)
+  Created 2 chunks; source_kind=crawler
+[59/96] Reindexing crawler_c9f1da1cc476a50d.html (92f274b8-c6c6-4258-8f71-159644988e5b)
+  Created 3 chunks; source_kind=crawler
+[60/96] Reindexing crawler_9cd1e465b8530977.html (76a75c34-0ec9-48bb-8ab0-675b41db78b0)
+  Created 53 chunks; source_kind=crawler
+[61/96] Reindexing crawler_afe73f5ba21466ce.html (d3d0c789-aec8-45c8-b351-7bcbd9318588)
+  Created 2 chunks; source_kind=crawler
+[62/96] Reindexing crawler_c2e409107e935f27.html (de4d942e-cc1d-4865-b5a0-afb73ee7eec7)
+  Created 4 chunks; source_kind=crawler
+[63/96] Reindexing crawler_720e1aa95196168e.html (541f0dc3-0208-4c7b-b452-167f12e4932c)
+  Created 6 chunks; source_kind=crawler
+[64/96] Reindexing crawler_d1e8a81b99d9e2fc.html (784136c6-fed0-4ed1-a385-7fb7d41b3d7b)

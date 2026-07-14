@@ -30,11 +30,13 @@ DOCUMENT_TYPE_RULES = {
     "announcement": {
         "label": "Announcement / notice",
         "description": "Time-sensitive notices, closures, suspensions, and service announcements.",
-        "chunk_strategy": "atomic",
+        "chunk_strategy": "announcement_entries",
         "admin_selectable": True,
+        "match_title_or_heading": True,
+        "title_or_heading_only": True,
         "patterns": [
-            r"\bannouncement\b",
-            r"\bnotice\b",
+            r"\bannouncements?\b",
+            r"\bnotices?\b",
             r"\btemporary closure\b",
             r"\bsuspension\b",
         ],
@@ -132,7 +134,28 @@ def detect_document_type(text: str, metadata: dict | None = None) -> str:
     for name, rule in rules.items():
         if file_type and file_type in rule.get("file_types", []):
             return name
-        if any(re.search(pattern, text or "", re.IGNORECASE | re.DOTALL) for pattern in rule.get("patterns", [])):
+        patterns = rule.get("patterns", [])
+        if not patterns:
+            continue
+
+        title_and_heading = "\n".join(filter(None, [
+            str(metadata.get("source_title", "")),
+            str(metadata.get("section_heading", "")),
+        ]))
+        if rule.get("match_title_or_heading") and any(
+            re.search(pattern, title_and_heading, re.IGNORECASE | re.DOTALL)
+            for pattern in patterns
+        ):
+            return name
+        if rule.get("title_or_heading_only"):
+            continue
+
+        minimum_matches = int(rule.get("minimum_text_matches", 1))
+        match_count = sum(
+            len(re.findall(pattern, text or "", re.IGNORECASE | re.DOTALL))
+            for pattern in patterns
+        )
+        if match_count >= minimum_matches:
             return name
     return "prose"
 

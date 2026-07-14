@@ -31,6 +31,7 @@ from src.observability import setup_phoenix_tracing
 setup_phoenix_tracing()
 from src.graph import compiled_workflow
 from src.ingestion.readers import SUPPORTED_EXTENSIONS
+from src.ingestion.document_types import document_type_options, validate_document_type
 from src.ingestion.registry import (
     ensure_registry_schema,
     get_document,
@@ -42,6 +43,7 @@ from src.ingestion.service import (
     process_registered_document,
     ingest_path_sync,
     register_upload,
+    reindex_registered_document,
 )
 from src.memory import load_conversation_history
 from src.nodes import get_current_datetime
@@ -532,6 +534,7 @@ async def upload_document(
     language: str | None = Form(None),
     effective_date: str | None = Form(None),
     access_level: str = Form("public"),
+    document_type: str = Form("auto"),
 ):
     stored_path, original_name, mime_type = (
         await save_upload(file)
@@ -550,6 +553,7 @@ async def upload_document(
             language=language,
             effective_date=effective_date,
             source_kind="upload",
+            document_type=validate_document_type(document_type),
         )
     except Exception:
         stored_path.unlink(
@@ -609,6 +613,7 @@ async def replace_document(
     category: str | None = Form(None),
     language: str | None = Form(None),
     effective_date: str | None = Form(None),
+    document_type: str = Form("auto"),
 ):
     stored_path, original_name, mime_type = (
         await save_upload(file)
@@ -628,6 +633,7 @@ async def replace_document(
             language=language,
             effective_date=effective_date,
             source_kind="upload",
+            document_type=validate_document_type(document_type),
         )
     except Exception:
         stored_path.unlink(
@@ -658,6 +664,18 @@ async def replace_document(
             "The previous chunks remain available "
             "until the new version is indexed."
         ),
+    }
+
+
+@app.get(
+    "/admin/document-types",
+    dependencies=[Depends(require_admin)],
+)
+async def get_document_types():
+    return {
+        "document_types": document_type_options(),
+        "upload_endpoint": "/admin/documents/upload",
+        "field_name": "document_type",
     }
 
 
@@ -705,6 +723,36 @@ async def delete_document(
             status_code=404,
             detail=str(error),
         ) from error
+
+
+@app.post(
+    "/admin/documents/{document_id}/reindex",
+    status_code=202,
+    dependencies=[Depends(require_admin)],
+)
+async def reindex_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    document_type: str | None = Form(None),
+):
+    if not get_document(document_id):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    selected_type = (
+        validate_document_type(document_type)
+        if document_type is not None
+        else None
+    )
+    background_tasks.add_task(
+        reindex_registered_document,
+        document_id,
+        document_type=selected_type,
+    )
+    return {
+        "status": "queued",
+        "document_id": document_id,
+        "document_type": selected_type or "existing selection",
+        "message": "Re-chunking and embedding have been queued.",
+    }
 
 
 if __name__ == "__main__":
