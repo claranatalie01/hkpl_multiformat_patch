@@ -64,6 +64,43 @@ def split_faq_entries(document: Document) -> List[Document]:
     return output or [document]
 
 
+def split_announcement_entries(document: Document) -> List[Document]:
+    text = get_text(document)
+    metadata = document.metadata or {}
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    dated_entry = re.compile(
+        r"^\(?\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s*\)?(?:\s+|$)",
+        re.IGNORECASE,
+    )
+    entry_starts = [index for index, line in enumerate(lines) if dated_entry.match(line)]
+
+    # A detailed announcement page is already one coherent item. Only listing
+    # pages with multiple dated entries need to be separated.
+    if len(entry_starts) < 2:
+        document.metadata.update({
+            "chunk_strategy": "atomic",
+            "document_type": "announcement",
+        })
+        return [document]
+
+    heading = "\n".join(lines[:entry_starts[0]]).strip()
+    output = []
+    for entry_index, start in enumerate(entry_starts):
+        end = entry_starts[entry_index + 1] if entry_index + 1 < len(entry_starts) else len(lines)
+        entry = "\n".join(lines[start:end]).strip()
+        if not entry:
+            continue
+        content = f"{heading}\n\n{entry}" if heading else entry
+        output.append(Document(text=content, metadata={
+            **metadata,
+            "section_index": entry_index,
+            "chunk_strategy": "atomic",
+            "document_type": "announcement",
+            "announcement_entry_index": entry_index,
+        }))
+    return output or [document]
+
+
 def split_marked_sections(document: Document) -> List[Document]:
     text = get_text(document)
     metadata = document.metadata or {}
@@ -136,6 +173,8 @@ def prepare_documents_for_chunking(documents: List[Document]) -> List[Document]:
 
         if strategy == "faq_entries":
             prepared.extend(split_faq_entries(document))
+        elif strategy == "announcement_entries":
+            prepared.extend(split_announcement_entries(document))
         elif strategy == "directory_sections":
             prepared.extend(split_directory_entries(document))
         elif strategy == "marked_sections":

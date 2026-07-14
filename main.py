@@ -43,6 +43,7 @@ from src.ingestion.service import (
     process_registered_document,
     ingest_path_sync,
     register_upload,
+    reindex_registered_document,
 )
 from src.memory import load_conversation_history
 from src.nodes import get_current_datetime
@@ -722,6 +723,36 @@ async def delete_document(
             status_code=404,
             detail=str(error),
         ) from error
+
+
+@app.post(
+    "/admin/documents/{document_id}/reindex",
+    status_code=202,
+    dependencies=[Depends(require_admin)],
+)
+async def reindex_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    document_type: str | None = Form(None),
+):
+    if not get_document(document_id):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    selected_type = (
+        validate_document_type(document_type)
+        if document_type is not None
+        else None
+    )
+    background_tasks.add_task(
+        reindex_registered_document,
+        document_id,
+        document_type=selected_type,
+    )
+    return {
+        "status": "queued",
+        "document_id": document_id,
+        "document_type": selected_type or "existing selection",
+        "message": "Re-chunking and embedding have been queued.",
+    }
 
 
 if __name__ == "__main__":

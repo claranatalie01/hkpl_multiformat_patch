@@ -303,6 +303,33 @@ def prepare_replacement(
     return _row_to_dict(row) if row else None
 
 
+def prepare_reindex(document_id: str, document_type: str | None = None) -> Optional[dict]:
+    with engine.begin() as connection:
+        row = connection.execute(
+            text(
+                """
+                UPDATE knowledge_documents
+                SET
+                    document_type = COALESCE(:document_type, document_type, 'auto'),
+                    version = version + 1,
+                    status = 'uploaded',
+                    chunk_count = 0,
+                    error_message = NULL,
+                    updated_at = NOW()
+                WHERE document_id = :document_id
+                  AND status <> 'deleted'
+                RETURNING *
+                """
+            ),
+            {
+                "document_id": document_id,
+                "document_type": document_type,
+            },
+        ).fetchone()
+
+    return _row_to_dict(row) if row else None
+
+
 def update_status(
     document_id: str,
     status: str,

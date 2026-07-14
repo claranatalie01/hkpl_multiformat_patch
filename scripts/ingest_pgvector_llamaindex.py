@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import csv
 import os
 import sys
@@ -32,6 +33,14 @@ from src.infrastructure.vector_store import (
 from src.infrastructure.db import engine
 from src.ingestion.chunking import (
     chunk_documents,
+)
+from src.ingestion.registry import (
+    ensure_registry_schema,
+    list_documents,
+)
+from src.ingestion.service import (
+    UPLOAD_DIR,
+    reindex_registered_document,
 )
 
 
@@ -84,6 +93,23 @@ def create_evaluation_dataset_table() -> None:
                 ON {EVALUATION_DATASET_TABLE} (source_chunk_id)
             """)
         )
+        # Evaluation questions are expected to be unique. Clean up legacy
+        # duplicates before enforcing idempotent imports.
+        connection.execute(
+            text(f"""
+                DELETE FROM {EVALUATION_DATASET_TABLE} older
+                USING {EVALUATION_DATASET_TABLE} newer
+                WHERE older.query = newer.query
+                  AND older.id < newer.id
+            """)
+        )
+        connection.execute(
+            text(f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_{EVALUATION_DATASET_TABLE}_query_unique
+                ON {EVALUATION_DATASET_TABLE} (query)
+            """)
+        )
 
 
 def ingest_evaluation_dataset(csv_path: str) -> int:
@@ -105,9 +131,8 @@ def ingest_evaluation_dataset(csv_path: str) -> int:
         ]
 
     with engine.begin() as connection:
-        connection.execute(text(f"TRUNCATE TABLE {EVALUATION_DATASET_TABLE}"))
         if rows:
-            connection.execute(
+            result = connection.execute(
                 text(f"""
                     INSERT INTO {EVALUATION_DATASET_TABLE} (
                         domain,
@@ -131,11 +156,40 @@ def ingest_evaluation_dataset(csv_path: str) -> int:
                         :source_document_id,
                         :source_chunk_id
                     )
+                    ON CONFLICT (query) DO UPDATE SET
+                        domain = EXCLUDED.domain,
+                        expected_answer_text = EXCLUDED.expected_answer_text,
+                        expected_context_snippet = EXCLUDED.expected_context_snippet,
+                        source_title = EXCLUDED.source_title,
+                        source_url = EXCLUDED.source_url,
+                        source_type = EXCLUDED.source_type,
+                        source_document_id = EXCLUDED.source_document_id,
+                        source_chunk_id = EXCLUDED.source_chunk_id
+                    WHERE (
+                        {EVALUATION_DATASET_TABLE}.domain,
+                        {EVALUATION_DATASET_TABLE}.expected_answer_text,
+                        {EVALUATION_DATASET_TABLE}.expected_context_snippet,
+                        {EVALUATION_DATASET_TABLE}.source_title,
+                        {EVALUATION_DATASET_TABLE}.source_url,
+                        {EVALUATION_DATASET_TABLE}.source_type,
+                        {EVALUATION_DATASET_TABLE}.source_document_id,
+                        {EVALUATION_DATASET_TABLE}.source_chunk_id
+                    ) IS DISTINCT FROM (
+                        EXCLUDED.domain,
+                        EXCLUDED.expected_answer_text,
+                        EXCLUDED.expected_context_snippet,
+                        EXCLUDED.source_title,
+                        EXCLUDED.source_url,
+                        EXCLUDED.source_type,
+                        EXCLUDED.source_document_id,
+                        EXCLUDED.source_chunk_id
+                    )
                 """),
                 rows,
             )
+            return int(result.rowcount or 0)
 
-    return len(rows)
+    return 0
 
 
 def load_faq_documents(
@@ -253,7 +307,90 @@ def delete_existing_faq_chunks() -> int:
     return len(nodes)
 
 
+def registered_documents_for_rebuild() -> list[dict]:
+    """Return rebuildable registry rows, failing before vectors are cleared."""
+    ensure_registry_schema()
+    documents = list_documents()
+    missing_sources = [
+        document
+        for document in documents
+        if not (UPLOAD_DIR / document["stored_file_name"]).is_file()
+    ]
+
+    if missing_sources:
+        details = "\n".join(
+            "- "
+            f"{document['document_id']} "
+            f"{document['original_file_name']} "
+            f"(expected {UPLOAD_DIR / document['stored_file_name']})"
+            for document in missing_sources
+        )
+        raise RuntimeError(
+            "Full rebuild aborted before clearing vectors because registered "
+            f"source files are missing:\n{details}"
+        )
+
+    return documents
+
+
+def rebuild_registered_documents(documents: list[dict]) -> tuple[int, list[str]]:
+    completed = 0
+    failures: list[str] = []
+
+    for index, document in enumerate(documents, start=1):
+        document_id = str(document["document_id"])
+        print(
+            f"[{index}/{len(documents)}] Reindexing "
+            f"{document['original_file_name']} ({document_id})"
+        )
+        try:
+            result = reindex_registered_document(document_id)
+            completed += 1
+            print(
+                f"  Created {result['chunks_created']} chunks; "
+                "source_kind="
+                f"{document.get('source_kind') or document.get('source_type') or 'upload'}"
+            )
+        except Exception as error:
+            failures.append(f"{document_id}: {error}")
+            print(f"  FAILED: {error}")
+
+    return completed, failures
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Ingest FAQ knowledge and/or synchronize the evaluation dataset.",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--evaluation-only",
+        action="store_true",
+        help="Synchronize evaluation_dataset.csv without changing knowledge chunks.",
+    )
+    mode.add_argument(
+        "--faq-only",
+        action="store_true",
+        help="Rebuild the FAQ CSV knowledge chunks without importing evaluation rows.",
+    )
+    mode.add_argument(
+        "--rebuild-all",
+        action="store_true",
+        help=(
+            "Clear and rebuild FAQ chunks plus every non-deleted document in "
+            "knowledge_documents, including saved crawler HTML."
+        ),
+    )
+    mode.add_argument(
+        "--check-rebuild",
+        action="store_true",
+        help="Verify all rebuild source files without changing the database.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     data_path = os.getenv(
         "DATA_PATH",
         "/app/data/hkpl_faq_clean.csv",
@@ -262,63 +399,120 @@ def main() -> None:
         "EVALUATION_DATASET_PATH",
         "/app/data/evaluation_dataset.csv",
     )
-    rebuild_all = (
+
+    if args.check_rebuild:
+        if not Path(data_path).is_file():
+            raise FileNotFoundError(
+                f"FAQ source file is missing: {data_path}"
+            )
+        registered_documents = registered_documents_for_rebuild()
+        source_counts: dict[str, int] = {}
+        for document in registered_documents:
+            source_kind = (
+                document.get("source_kind")
+                or document.get("source_type")
+                or "upload"
+            )
+            source_counts[source_kind] = source_counts.get(source_kind, 0) + 1
+
+        print(f"FAQ source: {data_path}")
+        print(f"Registered documents ready: {len(registered_documents)}")
+        for source_kind, count in sorted(source_counts.items()):
+            print(f"- {source_kind}: {count}")
+        print("Preflight passed. No vectors or registry rows were changed.")
+        return
+
+    rebuild_all_from_env = (
         os.getenv(
             "REBUILD_ALL",
             "false",
         ).lower()
         == "true"
     )
+    rebuild_all = args.rebuild_all or (
+        rebuild_all_from_env
+        and not args.evaluation_only
+        and not args.faq_only
+    )
 
+    registered_documents: list[dict] = []
     if rebuild_all:
+        if not Path(data_path).is_file():
+            raise FileNotFoundError(
+                f"FAQ source file is missing: {data_path}"
+            )
+        registered_documents = registered_documents_for_rebuild()
         print(
-            "REBUILD_ALL=true: clearing "
-            f"data_{VECTOR_TABLE}"
+            f"Full rebuild preflight passed: FAQ source plus "
+            f"{len(registered_documents)} registered documents are available."
+        )
+        print(
+            f"Clearing data_{VECTOR_TABLE} before rebuilding all knowledge."
         )
         vector_store.clear()
 
-    removed = delete_existing_faq_chunks()
-    print(f"Removed {removed} existing FAQ chunks")
+    if not args.evaluation_only:
+        removed = delete_existing_faq_chunks()
+        print(f"Removed {removed} existing FAQ chunks")
 
-    documents = load_faq_documents(
-        data_path
-    )
-    print(
-        f"Loaded {len(documents)} FAQ documents"
-    )
-
-    nodes = chunk_documents(
-        documents
-    )
-    print(
-        f"Created {len(nodes)} FAQ chunks"
-    )
-
-    storage_context = (
-        StorageContext.from_defaults(
-            vector_store=vector_store
+        documents = load_faq_documents(
+            data_path
         )
-    )
+        print(
+            f"Loaded {len(documents)} FAQ documents"
+        )
 
-    VectorStoreIndex(
-        nodes,
-        storage_context=storage_context,
-        embed_model=embed_model,
-        show_progress=True,
-    )
+        nodes = chunk_documents(
+            documents
+        )
+        print(
+            f"Created {len(nodes)} FAQ chunks"
+        )
 
-    print(
-        "Ingested FAQ data into "
-        f"data_{VECTOR_TABLE}"
-    )
+        storage_context = (
+            StorageContext.from_defaults(
+                vector_store=vector_store
+            )
+        )
 
-    evaluation_rows = ingest_evaluation_dataset(
-        evaluation_dataset_path
-    )
-    print(
-        f"Ingested {evaluation_rows} evaluation rows into "
-        f"{EVALUATION_DATASET_TABLE}"
-    )
+        VectorStoreIndex(
+            nodes,
+            storage_context=storage_context,
+            embed_model=embed_model,
+            show_progress=True,
+        )
+
+        print(
+            "Ingested FAQ data into "
+            f"data_{VECTOR_TABLE}"
+        )
+
+    if rebuild_all:
+        completed, failures = rebuild_registered_documents(
+            registered_documents
+        )
+        print(
+            f"Rebuilt {completed}/{len(registered_documents)} registered documents."
+        )
+        if failures:
+            raise RuntimeError(
+                "Full rebuild finished with failures:\n- "
+                + "\n- ".join(failures)
+            )
+        print(
+            "Evaluation rows were not synchronized because rebuilt chunk IDs "
+            "include new document versions. Regenerate the evaluation dataset "
+            "from the rebuilt knowledge base before evaluating."
+        )
+
+    if not args.faq_only and not rebuild_all:
+        evaluation_rows = ingest_evaluation_dataset(
+            evaluation_dataset_path
+        )
+        print(
+            f"Inserted or updated {evaluation_rows} evaluation rows in "
+            f"{EVALUATION_DATASET_TABLE}; unchanged rows were skipped"
+        )
 
 
 if __name__ == "__main__":
