@@ -38,7 +38,9 @@ from src.ingestion.registry import (
     ensure_registry_schema,
     list_documents,
 )
+from src.ingestion.readers import file_content_hash, load_file
 from src.ingestion.service import (
+    OCR_LANGUAGES,
     UPLOAD_DIR,
     reindex_registered_document,
 )
@@ -330,6 +332,55 @@ def registered_documents_for_rebuild() -> list[dict]:
             f"source files are missing:\n{details}"
         )
 
+    unreadable_sources: list[str] = []
+    for index, document in enumerate(documents, start=1):
+        document_id = str(document["document_id"])
+        stored_path = UPLOAD_DIR / document["stored_file_name"]
+        print(
+            f"[{index}/{len(documents)}] Checking extraction for "
+            f"{document['original_file_name']} ({document_id})"
+        )
+        try:
+            extracted = load_file(
+                stored_path,
+                document_id=document_id,
+                original_file_name=document["original_file_name"],
+                source_title=document.get("source_title") or "",
+                source_url=document.get("source_url") or "",
+                source_type=document.get("source_type") or "admin_upload",
+                access_level=document.get("access_level") or "public",
+                document_version=int(document["version"]),
+                content_hash=document["content_hash"],
+                ocr_languages=OCR_LANGUAGES,
+                category=document.get("category"),
+                language=document.get("language"),
+                effective_date=str(document.get("effective_date") or ""),
+                source_kind=(
+                    document.get("source_kind")
+                    or document.get("source_type")
+                    or "upload"
+                ),
+                document_type=document.get("document_type") or "auto",
+            )
+            if not extracted:
+                raise ValueError("No readable content was extracted")
+            nodes = chunk_documents(extracted)
+            if not nodes:
+                raise ValueError("No chunks were created")
+            print(f"  Ready: {len(extracted)} sections, {len(nodes)} chunks")
+        except Exception as error:
+            unreadable_sources.append(
+                f"{document_id} {document['original_file_name']}: {error}"
+            )
+            print(f"  NOT READY: {error}")
+
+    if unreadable_sources:
+        raise RuntimeError(
+            "Full rebuild aborted before clearing vectors because registered "
+            "sources could not be extracted and chunked:\n- "
+            + "\n- ".join(unreadable_sources)
+        )
+
     return documents
 
 
@@ -436,12 +487,18 @@ def main() -> None:
     )
 
     registered_documents: list[dict] = []
+    faq_is_registered = False
     if rebuild_all:
         if not Path(data_path).is_file():
             raise FileNotFoundError(
                 f"FAQ source file is missing: {data_path}"
             )
         registered_documents = registered_documents_for_rebuild()
+        faq_hash = file_content_hash(Path(data_path))
+        faq_is_registered = any(
+            document.get("content_hash") == faq_hash
+            for document in registered_documents
+        )
         print(
             f"Full rebuild preflight passed: FAQ source plus "
             f"{len(registered_documents)} registered documents are available."
@@ -451,7 +508,7 @@ def main() -> None:
         )
         vector_store.clear()
 
-    if not args.evaluation_only:
+    if not args.evaluation_only and not (rebuild_all and faq_is_registered):
         removed = delete_existing_faq_chunks()
         print(f"Removed {removed} existing FAQ chunks")
 
@@ -485,6 +542,11 @@ def main() -> None:
         print(
             "Ingested FAQ data into "
             f"data_{VECTOR_TABLE}"
+        )
+    elif rebuild_all and faq_is_registered:
+        print(
+            "Skipped standalone FAQ ingestion because the same FAQ source is "
+            "registered in knowledge_documents and will be rebuilt there."
         )
 
     if rebuild_all:
