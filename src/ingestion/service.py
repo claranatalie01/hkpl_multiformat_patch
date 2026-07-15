@@ -4,14 +4,11 @@ from pathlib import Path
 from typing import Any
 
 from llama_index.core import StorageContext, VectorStoreIndex
-from llama_index.core.vector_stores import (
-    FilterOperator,
-    MetadataFilter,
-    MetadataFilters,
-)
+from sqlalchemy import text
 
 from ..infrastructure.embedding import embed_model
-from ..infrastructure.vector_store import vector_store
+from ..infrastructure.db import engine
+from ..infrastructure.vector_store import VECTOR_TABLE, vector_store
 from .chunking import chunk_documents
 from .document_types import validate_document_type
 from .readers import (
@@ -40,63 +37,41 @@ OCR_LANGUAGES = os.getenv(
     "OCR_LANGUAGES",
     "eng+chi_tra",
 )
-
-
-def _document_filter(
-    document_id: str,
-) -> MetadataFilters:
-    return MetadataFilters(
-        filters=[
-            MetadataFilter(
-                key="document_id",
-                value=document_id,
-                operator=FilterOperator.EQ,
-            )
-        ]
-    )
+KNOWLEDGE_TABLE = f"data_{VECTOR_TABLE}"
 
 
 def delete_document_chunks(
     document_id: str,
 ) -> int:
-    nodes = vector_store.get_nodes(
-        filters=_document_filter(document_id)
-    )
-    if not nodes:
-        return 0
-
-    vector_store.delete_nodes(
-        node_ids=[node.node_id for node in nodes]
-    )
-    return len(nodes)
+    with engine.begin() as connection:
+        result = connection.execute(
+            text(f"""
+                DELETE FROM {KNOWLEDGE_TABLE}
+                WHERE metadata_->>'kb_document_id' = :document_id
+            """),
+            {"document_id": document_id},
+        )
+    return int(result.rowcount or 0)
 
 
 def delete_old_versions(
     document_id: str,
     current_version: int,
 ) -> int:
-    nodes = vector_store.get_nodes(
-        filters=_document_filter(document_id)
-    )
-
-    old_node_ids = [
-        node.node_id
-        for node in nodes
-        if int(
-            node.metadata.get(
-                "document_version",
-                0,
-            )
+    with engine.begin() as connection:
+        result = connection.execute(
+            text(f"""
+                DELETE FROM {KNOWLEDGE_TABLE}
+                WHERE metadata_->>'kb_document_id' = :document_id
+                  AND metadata_->>'document_version'
+                      IS DISTINCT FROM :current_version
+            """),
+            {
+                "document_id": document_id,
+                "current_version": str(current_version),
+            },
         )
-        != int(current_version)
-    ]
-
-    if old_node_ids:
-        vector_store.delete_nodes(
-            node_ids=old_node_ids
-        )
-
-    return len(old_node_ids)
+    return int(result.rowcount or 0)
 
 
 def register_upload(

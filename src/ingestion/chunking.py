@@ -194,6 +194,7 @@ def prepare_documents_for_chunking(documents: List[Document]) -> List[Document]:
 def chunk_documents(documents: List[Document]) -> List[BaseNode]:
     prepared_documents = prepare_documents_for_chunking(documents)
     nodes: list[BaseNode] = []
+    seen_document_content: set[tuple[str, str]] = set()
 
     for document in prepared_documents:
         strategy = document.metadata.get("chunk_strategy", "prose")
@@ -217,7 +218,13 @@ def chunk_documents(documents: List[Document]) -> List[BaseNode]:
             if len(content.strip()) < 50:
                 continue
 
-            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+            content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            deduplication_key = (kb_document_id, content_hash)
+            if deduplication_key in seen_document_content:
+                continue
+            seen_document_content.add(deduplication_key)
+
+            digest = content_hash[:16]
 
             version = node.metadata["document_version"]
             section_index = node.metadata.get("section_index", 0)
