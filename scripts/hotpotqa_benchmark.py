@@ -770,6 +770,43 @@ async def evaluate(args: argparse.Namespace) -> None:
         json.dumps(summary, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+    with tracer.start_as_current_span("HotpotQA Evaluation Summary") as span:
+        set_span_io(
+            span,
+            "EVALUATOR",
+            input_value={
+                "dataset": DATASET_NAME,
+                "evaluation_table": EVALUATION_TABLE,
+                "result_file": str(RESULTS_PATH),
+            },
+            output_value=summary,
+        )
+        span.set_attribute("eval.dataset", DATASET_NAME)
+        span.set_attribute("eval.total_questions", len(results))
+        span.set_attribute(
+            "eval.vector_recall_at_5",
+            float(summary["average_vector_recall_at_5"]),
+        )
+        span.set_attribute(
+            "eval.vector_mrr",
+            float(summary["average_vector_mrr"]),
+        )
+        span.set_attribute(
+            "eval.rerank_complete_at_5",
+            float(summary["average_rerank_complete_at_5"]),
+        )
+        if args.answers:
+            span.set_attribute(
+                "eval.answer_exact_match",
+                float(summary["average_answer_exact_match"]),
+            )
+            span.set_attribute(
+                "eval.answer_f1",
+                float(summary["average_answer_f1"]),
+            )
+        set_json_attribute(span, "eval.diagnosis_counts", summary["diagnosis_counts"])
+
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
 

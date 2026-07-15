@@ -164,9 +164,11 @@ services:
       RECORD_MAX_TOKENS: "8192"
       OCR_LANGUAGES: eng+chi_tra
       PHOENIX_ENABLED: "true"
+      PHOENIX_PROJECT_NAME: hkpl-rag
       PHOENIX_BASE_URL: "http://phoenix:6006"
       PHOENIX_LOG_EVAL_ANNOTATIONS: "true"
       PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"
+      COMBINED_EVALUATION_SUMMARY_PATH: /app/data/combined_evaluation_summary.json
       LLM_TOKENIZER_URL: http://llm:8080/tokenize
       EMBEDDING_TOKENIZER_URL: http://embedding:8080/tokenize
       RERANKER_TOKENIZER_URL: http://reranker:8080/tokenize

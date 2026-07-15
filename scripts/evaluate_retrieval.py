@@ -121,6 +121,7 @@ async def evaluate() -> None:
                 input_value=query,
             )
             span.set_attribute("eval.root_span_id", root_span_id)
+            span.set_attribute("eval.dataset", "hkpl")
             span.set_attribute("eval.question", query)
             span.set_attribute("eval.expected_document", expected_document)
             span.set_attribute("eval.expected_chunk", expected_chunk)
@@ -361,6 +362,7 @@ async def evaluate() -> None:
             output_value=summary,
         )
         span.set_attribute("eval.total_questions", int(total))
+        span.set_attribute("eval.dataset", "hkpl")
         span.set_attribute("eval.hit_at_1", float(summary["hit_at_1"]))
         span.set_attribute("eval.recall_at_3", float(summary["recall_at_3"]))
         span.set_attribute("eval.recall_at_5", float(summary["recall_at_5"]))

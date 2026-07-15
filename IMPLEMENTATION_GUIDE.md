@@ -148,6 +148,31 @@ Phoenix displays these runs as `HotpotQA RAG Query` traces in the existing
 `hkpl-rag` project. Results are also written to
 `data/hotpotqa/results.csv` and `data/hotpotqa/summary.json`.
 
+### Combined HKPL and HotpotQA report
+
+Both benchmarks use the same Phoenix project and carry an `eval.dataset`
+attribute (`hkpl`, `hotpotqa`, or `combined`). This keeps traces together for
+one deployed RAG pipeline while allowing dataset-specific filtering.
+
+After running HKPL retrieval evaluation, HKPL answer evaluation, and HotpotQA
+answer evaluation, generate the combined report:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/report_rag_evaluation.py
+```
+
+The report is written to `data/combined_evaluation_summary.json` and exported
+to Phoenix as `Combined RAG Evaluation Summary`. It preserves the complete
+per-dataset summaries and reports:
+
+- macro averages, where HKPL and HotpotQA have equal weight;
+- question-weighted averages, where each evaluated question has equal weight.
+
+The normalized macro answer-quality score averages HKPL correctness divided by
+5 with HotpotQA token F1. Dataset-specific scores remain the primary results
+because the two benchmarks use different labels and answer metrics.
+
 Verify both corpora are in the same physical vector table:
 
 ```sql

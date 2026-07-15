@@ -23,9 +23,10 @@ def setup_phoenix_tracing() -> None:
             "PHOENIX_COLLECTOR_ENDPOINT",
             "http://phoenix:6006/v1/traces",
         )
+        project_name = os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag")
 
         tracer_provider = register(
-            project_name="hkpl-rag",
+            project_name=project_name,
             endpoint=endpoint,
         )
 
@@ -34,7 +35,11 @@ def setup_phoenix_tracing() -> None:
         )
 
         _tracing_initialized = True
-        logger.info("Phoenix tracing enabled: %s", endpoint)
+        logger.info(
+            "Phoenix tracing enabled: project=%s endpoint=%s",
+            project_name,
+            endpoint,
+        )
 
     except Exception:
         logger.exception("Failed to enable Phoenix tracing.")
