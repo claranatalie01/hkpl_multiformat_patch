@@ -120,33 +120,50 @@ This deterministic subset creates 9,769 unique HotpotQA paragraph vectors.
 Embedding them can take several minutes. Re-running the command is safe: it
 replaces HotpotQA vectors and leaves HKPL vectors untouched.
 
-Evaluate retrieval and reranking across the complete combined vector table:
+### Generalized HKPL and HotpotQA evaluation
+
+`scripts/evaluate_rag.py` is the recommended evaluation entry point for both
+datasets. It normalizes HKPL's single expected chunk and HotpotQA's multiple
+expected paragraphs into an `expected_chunk_ids` list, then applies the same
+retrieval, reranking, answer, evaluator, diagnosis, and Phoenix logic.
+
+Run a short smoke test with five questions from each dataset:
 
 ```bash
 docker compose run --rm langgraph-agent \
-  uv run python scripts/hotpotqa_benchmark.py evaluate --limit 100
+  uv run python scripts/evaluate_rag.py --limit-per-dataset 5
 ```
 
-Include answer generation and official-style exact-match/token-F1 metrics:
+Run the complete combined evaluation:
 
 ```bash
 docker compose run --rm langgraph-agent \
-  uv run python scripts/hotpotqa_benchmark.py evaluate \
-  --limit 100 --answers
+  uv run python scripts/evaluate_rag.py
 ```
 
-Add the LlamaIndex correctness, faithfulness, and relevancy judges when a
-slower, more expensive full evaluation is needed:
+Run only one dataset when investigating a domain-specific regression:
 
 ```bash
 docker compose run --rm langgraph-agent \
-  uv run python scripts/hotpotqa_benchmark.py evaluate \
-  --limit 100 --answers --llama-evaluators
+  uv run python scripts/evaluate_rag.py --dataset hkpl
+
+docker compose run --rm langgraph-agent \
+  uv run python scripts/evaluate_rag.py --dataset hotpotqa
 ```
 
-Phoenix displays these runs as `HotpotQA RAG Query` traces in the existing
-`hkpl-rag` project. Results are also written to
-`data/hotpotqa/results.csv` and `data/hotpotqa/summary.json`.
+Every question reports retrieval and reranker Hit, Recall, and Complete at
+1/3/5, MRR, LlamaIndex correctness, faithfulness, relevancy, hallucination
+derived from faithfulness, and a stage-specific RAG diagnosis. The summary
+contains separate HKPL and HotpotQA results, an equal-dataset macro average,
+and an overall question-weighted average.
+
+Phoenix displays all runs in the `hkpl-rag` project as `RAG Evaluation Query`
+traces. Filter them with `eval.dataset=hkpl` or
+`eval.dataset=hotpotqa`. The aggregate is exported as
+`Combined RAG Evaluation Summary`.
+
+Results are written to `data/rag_evaluation/results.csv` and
+`data/rag_evaluation/summary.json`.
 
 Verify both corpora are in the same physical vector table:
 
