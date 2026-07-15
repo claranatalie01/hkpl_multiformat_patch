@@ -131,9 +131,15 @@ def detect_document_type(text: str, metadata: dict | None = None) -> str:
 
     file_type = str(metadata.get("file_type", "")).lower().lstrip(".")
     rules = get_document_type_rules()
+
+    # File formats with explicit record semantics take precedence over words
+    # appearing inside a row. For example, a CSV answer may contain the text
+    # "Question:" without making the whole CSV an FAQ webpage.
     for name, rule in rules.items():
         if file_type and file_type in rule.get("file_types", []):
             return name
+
+    for name, rule in rules.items():
         patterns = rule.get("patterns", [])
         if not patterns:
             continue

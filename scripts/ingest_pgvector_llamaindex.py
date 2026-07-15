@@ -27,6 +27,7 @@ from src.infrastructure.embedding import (
     embed_model,
 )
 from src.infrastructure.vector_store import (
+    EMBED_DIM,
     VECTOR_TABLE,
     vector_store,
 )
@@ -409,6 +410,200 @@ def rebuild_registered_documents(documents: list[dict]) -> tuple[int, list[str]]
     return completed, failures
 
 
+def audit_knowledge_chunks() -> bool:
+    table_name = f"data_{VECTOR_TABLE}"
+    with engine.connect() as connection:
+        summary = connection.execute(
+            text(f"""
+                SELECT
+                    COUNT(*) AS total_chunks,
+                    COUNT(DISTINCT metadata_->>'document_id') AS vector_documents,
+                    COUNT(*) FILTER (WHERE embedding IS NULL) AS missing_embeddings,
+                    COUNT(*) FILTER (
+                        WHERE embedding IS NOT NULL
+                          AND vector_dims(embedding) <> :embed_dim
+                    ) AS wrong_dimensions,
+                    COUNT(*) FILTER (WHERE length(trim(text)) < 50) AS short_chunks,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(metadata_->>'document_id', '') = ''
+                           OR COALESCE(metadata_->>'chunk_id', '') = ''
+                           OR COALESCE(metadata_->>'document_type', '') = ''
+                           OR COALESCE(metadata_->>'chunk_strategy', '') = ''
+                           OR COALESCE(metadata_->>'document_version', '') = ''
+                    ) AS missing_metadata
+                FROM {table_name}
+            """),
+            {"embed_dim": EMBED_DIM},
+        ).mappings().one()
+
+        type_rows = connection.execute(
+            text(f"""
+                SELECT
+                    COALESCE(metadata_->>'document_type', '(missing)') AS document_type,
+                    COALESCE(metadata_->>'chunk_strategy', '(missing)') AS strategy,
+                    COUNT(*) AS chunks,
+                    ROUND(AVG(length(text)), 1) AS average_characters,
+                    MIN(length(text)) AS minimum_characters,
+                    MAX(length(text)) AS maximum_characters
+                FROM {table_name}
+                GROUP BY document_type, strategy
+                ORDER BY document_type, strategy
+            """)
+        ).mappings().all()
+
+        registry_mismatches = connection.execute(
+            text(f"""
+                WITH actual AS (
+                    SELECT metadata_->>'document_id' AS document_id, COUNT(*) AS chunks
+                    FROM {table_name}
+                    GROUP BY metadata_->>'document_id'
+                )
+                SELECT
+                    documents.document_id::text AS document_id,
+                    documents.source_title,
+                    documents.chunk_count AS registered_chunks,
+                    COALESCE(actual.chunks, 0) AS actual_chunks
+                FROM knowledge_documents documents
+                LEFT JOIN actual
+                  ON actual.document_id = documents.document_id::text
+                WHERE documents.status <> 'deleted'
+                  AND documents.chunk_count <> COALESCE(actual.chunks, 0)
+                ORDER BY documents.source_title
+            """)
+        ).mappings().all()
+
+        stale_or_orphaned = connection.execute(
+            text(f"""
+                SELECT chunks.node_id
+                FROM {table_name} chunks
+                LEFT JOIN knowledge_documents documents
+                  ON chunks.metadata_->>'document_id' = documents.document_id::text
+                 AND documents.status <> 'deleted'
+                WHERE documents.document_id IS NULL
+                   OR chunks.metadata_->>'document_version' <> documents.version::text
+                LIMIT 50
+            """)
+        ).scalars().all()
+
+        split_records = connection.execute(
+            text(f"""
+                SELECT
+                    metadata_->>'document_id' AS document_id,
+                    metadata_->>'original_file_name' AS file_name,
+                    metadata_->>'section_index' AS section_index,
+                    COUNT(*) AS chunks
+                FROM {table_name}
+                WHERE metadata_->>'document_type' = 'record_based'
+                GROUP BY document_id, file_name, section_index
+                HAVING COUNT(*) > 1
+                ORDER BY chunks DESC
+            """)
+        ).mappings().all()
+
+        duplicate_groups = connection.execute(
+            text(f"""
+                SELECT md5(text) AS content_hash, COUNT(*) AS copies
+                FROM {table_name}
+                GROUP BY md5(text)
+                HAVING COUNT(*) > 1
+                ORDER BY copies DESC
+                LIMIT 20
+            """)
+        ).mappings().all()
+
+        typed_chunks = connection.execute(
+            text(f"""
+                SELECT node_id, text, metadata_
+                FROM {table_name}
+                WHERE metadata_->>'document_type' IN ('faq', 'directory', 'announcement')
+            """)
+        ).mappings().all()
+
+    faq_issues: list[str] = []
+    directory_issues: list[str] = []
+    announcement_issues: list[str] = []
+    dated_entry = re.compile(r"(?m)^\(?\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s*\)?")
+
+    for row in typed_chunks:
+        node_id = row["node_id"]
+        content = row["text"] or ""
+        metadata = row["metadata_"] or {}
+        document_type = metadata.get("document_type")
+
+        if document_type == "faq":
+            questions = set(re.findall(r"(?im)^\s*Q(\d+)\s*[:.)]", content))
+            answers = set(re.findall(r"(?im)^\s*A(\d+)\s*[:.)]", content))
+            labelled_question = bool(re.search(r"(?im)^\s*question\s*:", content))
+            labelled_answer = bool(re.search(r"(?im)^\s*answer\s*:", content))
+            if (not questions and not labelled_question) or (
+                questions and not questions.issubset(answers)
+            ) or (
+                labelled_question != labelled_answer
+            ):
+                faq_issues.append(node_id)
+        elif document_type == "directory":
+            if not metadata.get("library_name"):
+                directory_issues.append(node_id)
+        elif (
+            document_type == "announcement"
+            and metadata.get("announcement_entry_index") is not None
+            and not dated_entry.search(content)
+        ):
+            announcement_issues.append(node_id)
+
+    checks = {
+        "missing embeddings": int(summary["missing_embeddings"]),
+        "wrong embedding dimensions": int(summary["wrong_dimensions"]),
+        "chunks shorter than 50 characters": int(summary["short_chunks"]),
+        "chunks missing required metadata": int(summary["missing_metadata"]),
+        "registry chunk-count mismatches": len(registry_mismatches),
+        "stale or orphaned chunks": len(stale_or_orphaned),
+        "record rows split across chunks": len(split_records),
+        "FAQ pairing issues": len(faq_issues),
+        "directory chunks missing library metadata": len(directory_issues),
+        "dated announcement chunks missing a date": len(announcement_issues),
+    }
+
+    print("=" * 80)
+    print("HKPL Knowledge Chunk Audit")
+    print("=" * 80)
+    print(f"Total chunks       : {summary['total_chunks']}")
+    print(f"Vector documents   : {summary['vector_documents']}")
+    print(f"Embedding dimension: {EMBED_DIM}")
+    print("\nDocument type and strategy distribution:")
+    for row in type_rows:
+        print(
+            f"- {row['document_type']}/{row['strategy']}: "
+            f"{row['chunks']} chunks, chars avg={row['average_characters']} "
+            f"min={row['minimum_characters']} max={row['maximum_characters']}"
+        )
+
+    print("\nInvariant checks:")
+    for label, count in checks.items():
+        status = "PASS" if count == 0 else "FAIL"
+        print(f"- {status}: {label} ({count})")
+
+    if split_records:
+        print("\nSplit record rows:")
+        for row in split_records[:20]:
+            print(
+                f"- {row['file_name']} section={row['section_index']} "
+                f"chunks={row['chunks']} document={row['document_id']}"
+            )
+    if duplicate_groups:
+        print("\nReview warning: exact duplicate chunk text exists:")
+        for row in duplicate_groups:
+            print(f"- hash={row['content_hash']} copies={row['copies']}")
+
+    passed = all(count == 0 for count in checks.values())
+    print("\nResult:", "PASSED" if passed else "FAILED")
+    print(
+        "Exact duplicates are warnings because identical official text can "
+        "legitimately appear in different sources."
+    )
+    return passed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Ingest FAQ knowledge and/or synchronize the evaluation dataset.",
@@ -437,6 +632,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Verify all rebuild source files without changing the database.",
     )
+    mode.add_argument(
+        "--audit-chunks",
+        action="store_true",
+        help="Audit every stored knowledge chunk without changing the database.",
+    )
     return parser.parse_args()
 
 
@@ -450,6 +650,11 @@ def main() -> None:
         "EVALUATION_DATASET_PATH",
         "/app/data/evaluation_dataset.csv",
     )
+
+    if args.audit_chunks:
+        if not audit_knowledge_chunks():
+            raise SystemExit(1)
+        return
 
     if args.check_rebuild:
         if not Path(data_path).is_file():
