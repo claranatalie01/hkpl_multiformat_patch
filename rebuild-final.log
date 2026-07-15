@@ -1,18 +1,18 @@
- Container hkpl_llm Running 
  Container hkpl_reranker_cpp Running 
- Container hkpl_postgres Running 
- Container hkpl_embedding Running 
  Container hkpl_phoenix Running 
+ Container hkpl_postgres Running 
+ Container hkpl_llm Running 
+ Container hkpl_embedding Running 
  Container hkpl_postgres Waiting 
  Container hkpl_embedding Waiting 
  Container hkpl_reranker_cpp Waiting 
  Container hkpl_llm Waiting 
- Container hkpl_embedding Healthy 
  Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
  Container hkpl_llm Healthy 
  Container hkpl_postgres Healthy 
- Container hkpl_multiformat_patch-langgraph-agent-run-a1555d1c7bb7 Creating 
- Container hkpl_multiformat_patch-langgraph-agent-run-a1555d1c7bb7 Created 
+ Container hkpl_multiformat_patch-langgraph-agent-run-c9cf98b03f8b Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-c9cf98b03f8b Created 
 [1/68] Checking extraction for webpage_7b1b325686bd4acc.html (d94189a2-fdc8-40cb-8484-a1621cfcc6de)
   Ready: 1 sections, 13 chunks
 [2/68] Checking extraction for library_list_eng.pdf (bbaa337b-f76b-4a05-9a29-af000e66bc1d)
@@ -146,7 +146,7 @@
 [66/68] Checking extraction for webpage_6d21275c64623d5e.html (91459869-e547-4628-8ee6-48303ced6b3f)
   Ready: 6 sections, 5 chunks
 [67/68] Checking extraction for hkpl_faq_clean.csv (de170ef9-b843-4b28-9c30-e2ea60e7e69e)
-  Ready: 24 sections, 27 chunks
+  Ready: 24 sections, 24 chunks
 [68/68] Checking extraction for hkpl_test.txt (0f53ff5d-7a02-4b80-a33f-1ed586cb5be4)
   Ready: 4 sections, 2 chunks
 Full rebuild preflight passed: FAQ source plus 68 registered documents are available.
@@ -285,7 +285,7 @@ Skipped standalone FAQ ingestion because the same FAQ source is registered in kn
 [66/68] Reindexing webpage_6d21275c64623d5e.html (91459869-e547-4628-8ee6-48303ced6b3f)
   Created 5 chunks; source_kind=webpage
 [67/68] Reindexing hkpl_faq_clean.csv (de170ef9-b843-4b28-9c30-e2ea60e7e69e)
-  Created 27 chunks; source_kind=admin_upload
+  Created 24 chunks; source_kind=admin_upload
 [68/68] Reindexing hkpl_test.txt (0f53ff5d-7a02-4b80-a33f-1ed586cb5be4)
   Created 2 chunks; source_kind=admin_upload
 Rebuilt 68/68 registered documents.

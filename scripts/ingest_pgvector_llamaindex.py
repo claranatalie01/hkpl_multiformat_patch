@@ -3,6 +3,7 @@
 import argparse
 import csv
 import os
+import re
 import sys
 from pathlib import Path
 from uuid import uuid5, NAMESPACE_URL
@@ -417,7 +418,7 @@ def audit_knowledge_chunks() -> bool:
             text(f"""
                 SELECT
                     COUNT(*) AS total_chunks,
-                    COUNT(DISTINCT metadata_->>'document_id') AS vector_documents,
+                    COUNT(DISTINCT metadata_->>'kb_document_id') AS vector_documents,
                     COUNT(*) FILTER (WHERE embedding IS NULL) AS missing_embeddings,
                     COUNT(*) FILTER (
                         WHERE embedding IS NOT NULL
@@ -426,6 +427,7 @@ def audit_knowledge_chunks() -> bool:
                     COUNT(*) FILTER (WHERE length(trim(text)) < 50) AS short_chunks,
                     COUNT(*) FILTER (
                         WHERE COALESCE(metadata_->>'document_id', '') = ''
+                           OR COALESCE(metadata_->>'kb_document_id', '') = ''
                            OR COALESCE(metadata_->>'chunk_id', '') = ''
                            OR COALESCE(metadata_->>'document_type', '') = ''
                            OR COALESCE(metadata_->>'chunk_strategy', '') = ''
@@ -454,9 +456,9 @@ def audit_knowledge_chunks() -> bool:
         registry_mismatches = connection.execute(
             text(f"""
                 WITH actual AS (
-                    SELECT metadata_->>'document_id' AS document_id, COUNT(*) AS chunks
+                    SELECT metadata_->>'kb_document_id' AS document_id, COUNT(*) AS chunks
                     FROM {table_name}
-                    GROUP BY metadata_->>'document_id'
+                    GROUP BY metadata_->>'kb_document_id'
                 )
                 SELECT
                     documents.document_id::text AS document_id,
@@ -477,7 +479,7 @@ def audit_knowledge_chunks() -> bool:
                 SELECT chunks.node_id
                 FROM {table_name} chunks
                 LEFT JOIN knowledge_documents documents
-                  ON chunks.metadata_->>'document_id' = documents.document_id::text
+                  ON chunks.metadata_->>'kb_document_id' = documents.document_id::text
                  AND documents.status <> 'deleted'
                 WHERE documents.document_id IS NULL
                    OR chunks.metadata_->>'document_version' <> documents.version::text
@@ -488,7 +490,7 @@ def audit_knowledge_chunks() -> bool:
         split_records = connection.execute(
             text(f"""
                 SELECT
-                    metadata_->>'document_id' AS document_id,
+                    metadata_->>'kb_document_id' AS document_id,
                     metadata_->>'original_file_name' AS file_name,
                     metadata_->>'section_index' AS section_index,
                     COUNT(*) AS chunks

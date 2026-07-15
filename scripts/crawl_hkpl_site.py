@@ -15,7 +15,7 @@ from urllib.parse import urljoin, urlparse, urldefrag
 import requests
 from bs4 import BeautifulSoup
 
-from src.ingestion.registry import find_active_document_by_source_url
+from src.ingestion.registry import find_active_web_document_by_source_url
 from src.ingestion.service import UPLOAD_DIR, ingest_path_sync
 
 logging.basicConfig(level=logging.INFO)
@@ -216,9 +216,11 @@ def crawl() -> dict:
 
             if has_changed(url, content_hash):
                 path = save_html_for_ingestion(url, main_html)
-                existing_document = find_active_document_by_source_url(
-                    url,
-                    source_type="crawler",
+                existing_document = find_active_web_document_by_source_url(url)
+                previous_path = (
+                    UPLOAD_DIR / existing_document["stored_file_name"]
+                    if existing_document
+                    else None
                 )
 
                 result = ingest_path_sync(
@@ -239,6 +241,10 @@ def crawl() -> dict:
                         else None
                     ),
                 )
+
+                if path != previous_path:
+                    if result.get("status") == "duplicate":
+                        path.unlink(missing_ok=True)
 
                 save_hash(url, content_hash)
                 stats["indexed"] += 1

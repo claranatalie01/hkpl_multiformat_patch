@@ -1,0 +1,66 @@
+ Container hkpl_llm Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_embedding Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_postgres Running 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-71dfd544feb6 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-71dfd544feb6 Created 
+================================================================================
+HKPL Knowledge Chunk Audit
+================================================================================
+Total chunks       : 628
+Vector documents   : 68
+Embedding dimension: 1024
+
+Document type and strategy distribution:
+- announcement/atomic: 70 chunks, chars avg=175.3 min=59 max=1717
+- directory/atomic: 76 chunks, chars avg=141.2 min=60 max=183
+- faq/atomic: 26 chunks, chars avg=600.1 min=351 max=1197
+- policy/prose: 50 chunks, chars avg=770.3 min=53 max=1558
+- prose/prose: 382 chunks, chars avg=531.5 min=52 max=1600
+- record_based/atomic: 24 chunks, chars avg=1063.4 min=493 max=5105
+
+Invariant checks:
+- PASS: missing embeddings (0)
+- PASS: wrong embedding dimensions (0)
+- PASS: chunks shorter than 50 characters (0)
+- PASS: chunks missing required metadata (0)
+- PASS: registry chunk-count mismatches (0)
+- PASS: stale or orphaned chunks (0)
+- PASS: record rows split across chunks (0)
+- PASS: FAQ pairing issues (0)
+- PASS: directory chunks missing library metadata (0)
+- PASS: dated announcement chunks missing a date (0)
+
+Review warning: exact duplicate chunk text exists:
+- hash=e606a55bfbaf037ab662aa7f16b027a2 copies=3
+- hash=92d884e363282382252bd0a13b3a6005 copies=3
+- hash=50ee94ce06a4003549c452adba9af10a copies=2
+- hash=b4874c21bdf7c5150adc4ed8adc213aa copies=2
+- hash=395e2361b403980e505f21db01c36c55 copies=2
+- hash=503d1abe96d42ac8bc92f96d25684252 copies=2
+- hash=ebfe7546adf91cbbfaa1ffe5c968b519 copies=2
+- hash=b6432ad724a86356158b5408119ed399 copies=2
+- hash=44e856d76aa1244644993a0378e22a52 copies=2
+- hash=48c5885a4d39e08e5701dc8f50eb4327 copies=2
+- hash=fa5b2b699cb7e1a725f3944ac2c8db6a copies=2
+- hash=0b4e91591f499a9c5cd3c37db146d5f5 copies=2
+- hash=f50efe5d440b17876142979577272929 copies=2
+- hash=dda9e8f891c4a0003a6b01285938aec6 copies=2
+- hash=39fa8e528f1c7d8fbd40c0a276c99013 copies=2
+- hash=bd9947ad64fe4df4c53fa5672e8a0e60 copies=2
+- hash=a740012c2512074fc3752aedc6b8c101 copies=2
+- hash=17fe8c611bd36e7f56027f499a77dafa copies=2
+- hash=0833958dd6063c35b9a4fccf610f49f1 copies=2
+- hash=14dccce5e9e7e5fcec0fd9f525e12b3c copies=2
+
+Result: PASSED
+Exact duplicates are warnings because identical official text can legitimately appear in different sources.
