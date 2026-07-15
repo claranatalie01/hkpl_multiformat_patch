@@ -52,6 +52,7 @@ EVALUATION_DATASET_TABLE = os.getenv(
     "EVALUATION_DATASET_TABLE",
     "evaluation_dataset",
 )
+HOTPOTQA_DATASET_NAME = "hotpotqa"
 
 EVALUATION_DATASET_COLUMNS = [
     "domain",
@@ -311,6 +312,20 @@ def delete_existing_faq_chunks() -> int:
     return len(nodes)
 
 
+def clear_hkpl_chunks() -> int:
+    """Clear HKPL chunks while preserving benchmark rows in the shared table."""
+    table_name = f"data_{VECTOR_TABLE}"
+    with engine.begin() as connection:
+        result = connection.execute(
+            text(f"""
+                DELETE FROM {table_name}
+                WHERE metadata_->>'dataset' IS DISTINCT FROM :dataset
+            """),
+            {"dataset": HOTPOTQA_DATASET_NAME},
+        )
+    return int(result.rowcount or 0)
+
+
 def registered_documents_for_rebuild() -> list[dict]:
     """Return rebuildable registry rows, failing before vectors are cleared."""
     ensure_registry_schema()
@@ -458,6 +473,7 @@ def audit_knowledge_chunks() -> bool:
                 WITH actual AS (
                     SELECT metadata_->>'kb_document_id' AS document_id, COUNT(*) AS chunks
                     FROM {table_name}
+                    WHERE metadata_->>'dataset' IS DISTINCT FROM :benchmark_dataset
                     GROUP BY metadata_->>'kb_document_id'
                 )
                 SELECT
@@ -471,7 +487,8 @@ def audit_knowledge_chunks() -> bool:
                 WHERE documents.status <> 'deleted'
                   AND documents.chunk_count <> COALESCE(actual.chunks, 0)
                 ORDER BY documents.source_title
-            """)
+            """),
+            {"benchmark_dataset": HOTPOTQA_DATASET_NAME},
         ).mappings().all()
 
         stale_or_orphaned = connection.execute(
@@ -481,10 +498,18 @@ def audit_knowledge_chunks() -> bool:
                 LEFT JOIN knowledge_documents documents
                   ON chunks.metadata_->>'kb_document_id' = documents.document_id::text
                  AND documents.status <> 'deleted'
-                WHERE documents.document_id IS NULL
-                   OR chunks.metadata_->>'document_version' <> documents.version::text
+                WHERE (
+                    documents.document_id IS NULL
+                    AND chunks.metadata_->>'dataset'
+                        IS DISTINCT FROM :benchmark_dataset
+                ) OR (
+                    documents.document_id IS NOT NULL
+                    AND chunks.metadata_->>'document_version'
+                        <> documents.version::text
+                )
                 LIMIT 50
-            """)
+            """),
+            {"benchmark_dataset": HOTPOTQA_DATASET_NAME},
         ).scalars().all()
 
         split_records = connection.execute(
@@ -710,10 +735,11 @@ def main() -> None:
             f"Full rebuild preflight passed: FAQ source plus "
             f"{len(registered_documents)} registered documents are available."
         )
+        removed_chunks = clear_hkpl_chunks()
         print(
-            f"Clearing data_{VECTOR_TABLE} before rebuilding all knowledge."
+            f"Removed {removed_chunks} HKPL chunks from data_{VECTOR_TABLE}; "
+            "HotpotQA benchmark chunks were preserved."
         )
-        vector_store.clear()
 
     if not args.evaluation_only and not (rebuild_all and faq_is_registered):
         removed = delete_existing_faq_chunks()

@@ -24,9 +24,13 @@ def document_is_relevant(
     document: dict[str, Any],
     expected_document_id: str,
     expected_chunk_id: str,
+    expected_chunk_ids: list[str] | None = None,
 ) -> bool:
     chunk_id = document.get("chunk_id", "")
     document_id = document.get("document_id", "")
+
+    if expected_chunk_ids and chunk_id in expected_chunk_ids:
+        return True
 
     if expected_chunk_id and chunk_id == expected_chunk_id:
         return True
@@ -76,6 +80,7 @@ def log_document_relevance_annotations(
     retrieved_documents: list[dict[str, Any]],
     expected_document_id: str,
     expected_chunk_id: str,
+    expected_chunk_ids: list[str] | None = None,
 ) -> None:
     if not phoenix_annotations_enabled() or not retriever_span_id or not retrieved_documents:
         return
@@ -91,10 +96,13 @@ def log_document_relevance_annotations(
                 document,
                 expected_document_id=expected_document_id,
                 expected_chunk_id=expected_chunk_id,
+                expected_chunk_ids=expected_chunk_ids,
             )
             expected_label = (
                 "expected chunk"
-                if expected_chunk_id and document.get("chunk_id") == expected_chunk_id
+                if document.get("chunk_id") in (
+                    expected_chunk_ids or [expected_chunk_id]
+                )
                 else "expected document"
                 if relevant
                 else "not expected"
