@@ -99,8 +99,65 @@ docker compose run --rm langgraph-agent \
   python scripts/ingest_pgvector_llamaindex.py
 ```
 
-Do not set `REBUILD_ALL=true` after administrators have uploaded documents,
-because it intentionally clears the entire general vector collection.
+`--rebuild-all` rebuilds registered HKPL sources while preserving rows tagged
+as the HotpotQA benchmark corpus.
+
+## HotpotQA benchmark in the shared vector table
+
+HotpotQA and HKPL chunks coexist in `data_hkpl_knowledge`. HotpotQA rows are
+identified by `metadata_->>'dataset' = 'hotpotqa'`; HKPL rows retain their
+existing document metadata.
+
+Download a deterministic 1,000-question validation subset, create one vector
+chunk per unique paragraph, and replace only previous HotpotQA rows:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/hotpotqa_benchmark.py prepare --limit 1000
+```
+
+This deterministic subset creates 9,769 unique HotpotQA paragraph vectors.
+Embedding them can take several minutes. Re-running the command is safe: it
+replaces HotpotQA vectors and leaves HKPL vectors untouched.
+
+Evaluate retrieval and reranking across the complete combined vector table:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/hotpotqa_benchmark.py evaluate --limit 100
+```
+
+Include answer generation and official-style exact-match/token-F1 metrics:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/hotpotqa_benchmark.py evaluate \
+  --limit 100 --answers
+```
+
+Add the LlamaIndex correctness, faithfulness, and relevancy judges when a
+slower, more expensive full evaluation is needed:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/hotpotqa_benchmark.py evaluate \
+  --limit 100 --answers --llama-evaluators
+```
+
+Phoenix displays these runs as `HotpotQA RAG Query` traces in the existing
+`hkpl-rag` project. Results are also written to
+`data/hotpotqa/results.csv` and `data/hotpotqa/summary.json`.
+
+Verify both corpora are in the same physical vector table:
+
+```sql
+SELECT
+    COALESCE(metadata_->>'dataset', 'hkpl') AS corpus,
+    COUNT(*) AS chunks
+FROM data_hkpl_knowledge
+GROUP BY corpus
+ORDER BY corpus;
+```
 
 ## Test the chat endpoint
 

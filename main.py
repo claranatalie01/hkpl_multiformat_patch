@@ -34,6 +34,7 @@ from src.ingestion.readers import SUPPORTED_EXTENSIONS
 from src.ingestion.document_types import document_type_options, validate_document_type
 from src.ingestion.registry import (
     ensure_registry_schema,
+    find_active_web_document_by_source_url,
     get_document,
     list_documents,
 )
@@ -237,6 +238,13 @@ async def index_url(
 ):
     require_admin(x_admin_key)
 
+    existing_document = find_active_web_document_by_source_url(payload.url)
+    previous_path = (
+        UPLOAD_DIR / existing_document["stored_file_name"]
+        if existing_document
+        else None
+    )
+
     path, detected_title = save_webpage_to_uploads(
         url=payload.url,
         upload_dir=UPLOAD_DIR,
@@ -254,7 +262,15 @@ async def index_url(
         language=payload.language,
         effective_date=payload.effective_date,
         source_kind="webpage",
+        replace_document_id=(
+            str(existing_document["document_id"])
+            if existing_document
+            else None
+        ),
     )
+
+    if path != previous_path and result.get("status") == "duplicate":
+        path.unlink(missing_ok=True)
 
     return result
 

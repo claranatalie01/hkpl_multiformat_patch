@@ -146,58 +146,27 @@ def find_completed_duplicate(
     return _row_to_dict(row) if row else None
 
 
-def find_active_document_by_source_url(
-    source_url: str,
-    *,
-    source_type: str | None = None,
-    source_types: tuple[str, ...] | None = None,
-) -> Optional[dict]:
+def find_active_web_document_by_source_url(source_url: str) -> Optional[dict]:
     if not source_url:
         return None
-    if source_type and source_types:
-        raise ValueError("Use source_type or source_types, not both.")
-
-    source_type_filter = ""
-    parameters = {
-        "source_url": source_url,
-    }
-    if source_type:
-        source_type_filter = "AND source_type = :source_type"
-        parameters["source_type"] = source_type
-    elif source_types:
-        placeholders = []
-        for index, value in enumerate(source_types):
-            key = f"source_type_{index}"
-            placeholders.append(f":{key}")
-            parameters[key] = value
-        source_type_filter = (
-            "AND source_type IN (" + ", ".join(placeholders) + ")"
-        )
 
     with engine.connect() as connection:
         row = connection.execute(
             text(
-                f"""
+                """
                 SELECT *
                 FROM knowledge_documents
                 WHERE source_url = :source_url
                   AND status <> 'deleted'
-                  {source_type_filter}
+                  AND source_type IN ('crawler', 'webpage')
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """
             ),
-            parameters,
+            {"source_url": source_url},
         ).fetchone()
 
     return _row_to_dict(row) if row else None
-
-
-def find_active_web_document_by_source_url(source_url: str) -> Optional[dict]:
-    return find_active_document_by_source_url(
-        source_url,
-        source_types=("crawler", "webpage"),
-    )
 
 
 def create_document(

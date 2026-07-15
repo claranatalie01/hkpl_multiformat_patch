@@ -242,9 +242,11 @@ def crawl() -> dict:
                     ),
                 )
 
-                if path != previous_path:
-                    if result.get("status") == "duplicate":
-                        path.unlink(missing_ok=True)
+                if (
+                    path != previous_path
+                    and result.get("status") == "duplicate"
+                ):
+                    path.unlink(missing_ok=True)
 
                 save_hash(url, content_hash)
                 stats["indexed"] += 1

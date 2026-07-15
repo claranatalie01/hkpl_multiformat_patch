@@ -148,6 +148,10 @@ services:
       VECTOR_TABLE: hkpl_knowledge
       EVALUATION_DATASET_TABLE: evaluation_dataset
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
+      HOTPOTQA_EVALUATION_TABLE: hotpotqa_evaluation
+      HOTPOTQA_DATASET_PATH: /app/data/hotpotqa/hotpot_dev_distractor_v1.json
+      HOTPOTQA_RESULTS_PATH: /app/data/hotpotqa/results.csv
+      HOTPOTQA_SUMMARY_PATH: /app/data/hotpotqa/summary.json
       EMBED_DIM: "1024"
       SIMILARITY_TOP_K: "10"
       RERANK_TOP_N: "5"

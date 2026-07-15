@@ -25,7 +25,7 @@ def setup_phoenix_tracing() -> None:
         )
 
         tracer_provider = register(
-            project_name="hkpl-RAG",
+            project_name="hkpl-rag",
             endpoint=endpoint,
         )
 

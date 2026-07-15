@@ -21,7 +21,6 @@ from .registry import (
     ensure_registry_schema,
     find_completed_duplicate,
     get_document,
-    list_documents,
     mark_deleted,
     prepare_replacement,
     prepare_reindex,
@@ -73,65 +72,6 @@ def delete_old_versions(
             },
         )
     return int(result.rowcount or 0)
-
-
-def delete_orphaned_chunks() -> int:
-    """Remove chunks whose registry source is missing or deleted."""
-    with engine.begin() as connection:
-        result = connection.execute(
-            text(f"""
-                DELETE FROM {KNOWLEDGE_TABLE} chunks
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM knowledge_documents documents
-                    WHERE documents.document_id::text =
-                          chunks.metadata_->>'kb_document_id'
-                      AND documents.status <> 'deleted'
-                )
-            """)
-        )
-    return int(result.rowcount or 0)
-
-
-def delete_redundant_web_documents() -> dict:
-    """Keep one crawler/webpage registry source for each exact URL."""
-    groups: dict[str, list[dict]] = {}
-    for document in list_documents():
-        if document.get("source_type") not in {"crawler", "webpage"}:
-            continue
-        source_url = (document.get("source_url") or "").strip()
-        if source_url:
-            groups.setdefault(source_url, []).append(document)
-
-    removed_documents: list[str] = []
-    removed_chunks = 0
-    for documents in groups.values():
-        if len(documents) < 2:
-            continue
-        keeper = max(
-            documents,
-            key=lambda document: (
-                document.get("source_type") == "crawler",
-                document.get("updated_at"),
-            ),
-        )
-        for document in documents:
-            document_id = str(document["document_id"])
-            if document_id == str(keeper["document_id"]):
-                continue
-            result = delete_registered_document(
-                document_id,
-                delete_file=False,
-            )
-            removed_documents.append(document_id)
-            removed_chunks += int(result["chunks_removed"])
-
-    removed_chunks += delete_orphaned_chunks()
-    return {
-        "documents_removed": len(removed_documents),
-        "chunks_removed": removed_chunks,
-        "removed_document_ids": removed_documents,
-    }
 
 
 def register_upload(
