@@ -842,7 +842,7 @@ async def main() -> None:
         for dataset in selected_datasets
     }
     summary = {
-        "phoenix_project": os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag"),
+        "phoenix_project": os.getenv("PHOENIX_PROJECT_NAME", "rag-evaluation"),
         "vector_table": f"data_{VECTOR_TABLE}",
         "datasets": dataset_summaries,
         "macro_average": macro_average(dataset_summaries),
