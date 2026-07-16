@@ -35,7 +35,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.infrastructure.db import engine
 from src.infrastructure.embedding import embed_model
 from src.infrastructure.vector_store import VECTOR_TABLE, vector_store
-from src.nodes import http_llm
+from src.llm_client import http_llm
 from src.observability import setup_phoenix_tracing
 from src.phoenix_annotations import (
     log_document_relevance_annotations,

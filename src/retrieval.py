@@ -336,7 +336,10 @@ async def retrieve_nodes(query: str) -> List[NodeWithScore]:
         )
         span.set_attribute("retrieval.token_count.query", int(query_tokens))
         span.set_attribute("retrieval.token_count.total", int(query_tokens))
-        span.set_attribute("retrieval.token_count.is_estimated", bool(query_tokens_estimated))
+        span.set_attribute(
+            "retrieval.token_count.is_estimated",
+            bool(query_tokens_estimated),
+        )
         span.set_attribute("retrieval.token_count.tokenizer", query_tokenizer)
 
         candidates = await vector_retriever.aretrieve(query)

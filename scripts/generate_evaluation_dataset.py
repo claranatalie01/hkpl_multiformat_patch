@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.infrastructure.db import engine
-from src.nodes import http_llm
+from src.llm_client import http_llm
 
 
 OUTPUT_FILE = PROJECT_ROOT / "data" / "evaluation_dataset.csv"

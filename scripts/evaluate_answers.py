@@ -22,7 +22,7 @@ from llama_index.core.evaluation import CorrectnessEvaluator, FaithfulnessEvalua
 from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
 from llama_index.core.llms.callbacks import llm_completion_callback
 
-from src.nodes import http_llm
+from src.llm_client import http_llm
 from src.observability import setup_phoenix_tracing
 from src.infrastructure.db import engine
 from src.phoenix_annotations import (
