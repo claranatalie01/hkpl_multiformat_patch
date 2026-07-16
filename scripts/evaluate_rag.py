@@ -30,14 +30,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.infrastructure.db import engine
 from src.infrastructure.vector_store import VECTOR_TABLE
-from src.llm_client import http_llm
+from src.llm_client import http_llm, http_llm_with_usage
 from src.observability import setup_phoenix_tracing
 from src.phoenix_annotations import (
     log_document_relevance_annotations,
     log_rag_answer_annotations,
     log_span_annotations,
 )
-from src.retrieval import retrieve_nodes
+from src.retrieval import get_last_retrieval_trace, retrieve_nodes
 from src.token_counting import LLM_TOKENIZER_NAME, LLM_TOKENIZER_URL, count_tokens
 from src.tracing_helpers import set_json_attribute, set_llm_attributes, set_span_io
 
@@ -197,6 +197,22 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
     ]
 
 
+def load_corpus_counts() -> dict[str, int]:
+    vector_table = safe_table_name(f"data_{VECTOR_TABLE}")
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(f"""
+                SELECT
+                    COALESCE(NULLIF(metadata_->>'dataset', ''), 'hkpl') AS dataset,
+                    COUNT(*) AS vectors
+                FROM {vector_table}
+                GROUP BY dataset
+                ORDER BY dataset
+            """)
+        ).mappings().all()
+    return {str(row["dataset"]): int(row["vectors"]) for row in rows}
+
+
 def ranking_metrics(expected_ids: list[str], retrieved_ids: list[str], k: int) -> dict:
     expected = set(expected_ids)
     selected = set(retrieved_ids[:k])
@@ -288,29 +304,32 @@ Answer:
 """
     with tracer.start_as_current_span("LLM") as span:
         started = time.perf_counter()
-        answer = await http_llm(
+        llm_response = await http_llm_with_usage(
             prompt,
             temperature=0.0,
             max_tokens=EVALUATION_MAX_TOKENS,
             enable_thinking=False,
         )
-        prompt_tokens, prompt_estimated, tokenizer = await count_tokens(
-            prompt,
-            LLM_TOKENIZER_URL,
-            LLM_TOKENIZER_NAME,
-        )
-        completion_tokens, completion_estimated, _ = await count_tokens(
-            answer,
-            LLM_TOKENIZER_URL,
-            LLM_TOKENIZER_NAME,
-        )
-        usage = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-            "is_estimated": prompt_estimated or completion_estimated,
-            "tokenizer": tokenizer,
-        }
+        answer = llm_response.text
+        usage = llm_response.usage
+        if not usage["total_tokens"]:
+            prompt_tokens, prompt_estimated, tokenizer = await count_tokens(
+                prompt,
+                LLM_TOKENIZER_URL,
+                LLM_TOKENIZER_NAME,
+            )
+            completion_tokens, completion_estimated, _ = await count_tokens(
+                answer,
+                LLM_TOKENIZER_URL,
+                LLM_TOKENIZER_NAME,
+            )
+            usage = {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+                "is_estimated": prompt_estimated or completion_estimated,
+                "tokenizer": tokenizer,
+            }
         set_llm_attributes(
             span=span,
             model_name="qwen3.5-9b-http",
@@ -448,6 +467,22 @@ def metric_annotations(prefix: str, metrics: dict, mrr: float) -> list[dict]:
     return annotations
 
 
+def distractor_annotations(prefix: str, metrics: dict) -> list[dict]:
+    return [
+        {
+            "name": f"{prefix} Distractor Rate@{cutoff}",
+            "annotator_kind": "CODE",
+            "label": "clean" if metrics[cutoff]["rate"] == 0.0 else "contaminated",
+            "score": float(metrics[cutoff]["rate"]),
+            "explanation": (
+                "Fraction of selected documents originating from the "
+                "HotpotQA distractor corpus."
+            ),
+        }
+        for cutoff in CUTOFFS
+    ]
+
+
 async def evaluate_row(row: dict, evaluators: tuple) -> dict:
     question = row["question"]
     expected_answer = row["expected_answer"]
@@ -462,8 +497,8 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         set_json_attribute(span, "eval.expected_chunk_ids", expected_ids)
 
         started = time.perf_counter()
-        nodes = await retrieve_nodes(question)
-        retrieval_trace = getattr(retrieve_nodes, "last_trace", {})
+        nodes = await retrieve_nodes(question, include_distractors=True)
+        retrieval_trace = get_last_retrieval_trace()
         vector_documents = retrieval_trace.get(
             "vector_candidates_before_rerank",
             [],
@@ -713,7 +748,9 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         log_span_annotations(
             root_span_id,
             metric_annotations("Retrieval", retrieval_metrics, retrieval_mrr)
-            + metric_annotations("Reranker", reranker_metrics, reranker_mrr),
+            + metric_annotations("Reranker", reranker_metrics, reranker_mrr)
+            + distractor_annotations("Retrieval", retrieval_distractors)
+            + distractor_annotations("Reranker", reranker_distractors),
         )
         if evaluator_failed:
             log_span_annotations(
@@ -875,6 +912,11 @@ def log_summary_span(summary: dict) -> None:
         )
         span.set_attribute("eval.dataset", "hkpl")
         span.set_attribute("eval.distractor_dataset", "hotpotqa")
+        set_json_attribute(
+            span,
+            "eval.search_corpus_vectors",
+            summary["search_corpus_vectors"],
+        )
         span.set_attribute(
             "eval.total_questions",
             int(summary["total_questions"]),
@@ -887,10 +929,13 @@ def log_summary_span(summary: dict) -> None:
 async def main() -> None:
     args = parse_args()
     results_path, summary_path = report_paths(args)
-    if args.limit_per_dataset is not None and args.limit_per_dataset < 1:
-        raise ValueError("--limit-per-dataset must be positive.")
+    if args.limit is not None and args.limit < 1:
+        raise ValueError("--limit must be positive.")
 
-    rows = load_rows(args.dataset, args.limit_per_dataset)
+    rows = load_hkpl_rows(args.limit)
+    if not rows:
+        raise RuntimeError("No valid HKPL evaluation rows were loaded.")
+    corpus_counts = load_corpus_counts()
     if args.question_contains:
         needle = args.question_contains.casefold()
         rows = [row for row in rows if needle in row["question"].casefold()]
@@ -909,9 +954,12 @@ async def main() -> None:
             raise RuntimeError(
                 f"No evaluation question exactly matches {args.question_exact!r}."
             )
-    selected_datasets = list(dict.fromkeys(row["dataset"] for row in rows))
-    print(f"Loaded {len(rows)} evaluation rows: {selected_datasets}")
-    print(f"Retriever searches one vector table: data_{VECTOR_TABLE}")
+    print(f"Loaded {len(rows)} HKPL evaluation rows.")
+    print(
+        f"Retriever searches combined vector table: data_{VECTOR_TABLE} "
+        "(HKPL + HotpotQA distractors)"
+    )
+    print(f"Search corpus vectors: {corpus_counts}")
     print(f"Phoenix project: {os.getenv('PHOENIX_PROJECT_NAME', 'hkpl-rag')}")
 
     judge = QwenEvaluationLLM()
@@ -926,11 +974,7 @@ async def main() -> None:
             f"[{position}/{len(rows)}] [{row['dataset']}] {row['question']}"
         )
         try:
-            result = await evaluate_row(
-                row,
-                evaluators,
-                multi_hop=args.multi_hop,
-            )
+            result = await evaluate_row(row, evaluators)
         except Exception as error:
             print(f"FAILED: {error}")
             result = failed_result(row, error)
@@ -949,16 +993,13 @@ async def main() -> None:
         writer.writeheader()
         writer.writerows(results)
 
-    dataset_summaries = {
-        dataset: summarize([row for row in results if row["dataset"] == dataset])
-        for dataset in selected_datasets
-    }
-    summary = {
+    summary = summarize(results)
+    summary.update({
         "phoenix_project": os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag"),
         "vector_table": f"data_{VECTOR_TABLE}",
-        "datasets": dataset_summaries,
-        "macro_average": macro_average(dataset_summaries),
-        "question_weighted_average": summarize(results),
+        "evaluation_dataset": "hkpl",
+        "distractor_dataset": "hotpotqa",
+        "search_corpus_vectors": corpus_counts,
         "metric_definitions": {
             "hit_at_k": "At least one expected chunk appears in the top K.",
             "recall_at_k": "Fraction of expected chunks appearing in the top K.",
@@ -969,10 +1010,12 @@ async def main() -> None:
             ),
             "mrr": "Reciprocal rank of the first expected chunk.",
             "hallucination": "One minus the LlamaIndex faithfulness score.",
-            "macro_average": "Every dataset has equal weight.",
-            "question_weighted_average": "Every evaluation question has equal weight.",
+            "distractor_rate_at_k": (
+                "Fraction of the top K documents whose dataset metadata is "
+                "hotpotqa."
+            ),
         },
-    }
+    })
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(
         json.dumps(summary, indent=2, ensure_ascii=False),

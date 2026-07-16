@@ -12,6 +12,7 @@ dependencies = [
     "python-dotenv",
     "aiohttp",
     "requests",
+    "datasets",
     "sqlalchemy",
     "psycopg2-binary",
     "asyncpg",

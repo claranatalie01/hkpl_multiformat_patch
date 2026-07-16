@@ -148,10 +148,6 @@ services:
       VECTOR_TABLE: hkpl_knowledge
       EVALUATION_DATASET_TABLE: evaluation_dataset
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
-      HOTPOTQA_EVALUATION_TABLE: hotpotqa_evaluation
-      HOTPOTQA_DATASET_PATH: /app/data/hotpotqa/hotpot_dev_distractor_v1.json
-      HOTPOTQA_RESULTS_PATH: /app/data/hotpotqa/results.csv
-      HOTPOTQA_SUMMARY_PATH: /app/data/hotpotqa/summary.json
       EMBED_DIM: "1024"
       SIMILARITY_TOP_K: "10"
       RERANK_TOP_N: "5"
@@ -162,6 +158,7 @@ services:
       CHUNK_OVERLAP: "64"
       ATOMIC_MAX_TOKENS: "2048"
       RECORD_MAX_TOKENS: "8192"
+      MAX_CONTEXT_TOKENS: "12000"
       OCR_LANGUAGES: eng+chi_tra
       PHOENIX_ENABLED: "true"
       PHOENIX_PROJECT_NAME: hkpl-rag
@@ -178,6 +175,7 @@ services:
       EMBEDDING_TOKENIZER_NAME: llama.cpp:qwen3-embedding-0.6b
       RERANKER_TOKENIZER_NAME: llama.cpp:qwen3-reranker-0.6b
       TOKENIZER_TIMEOUT_SECONDS: "30"
+      HF_TOKEN: ${HF_TOKEN:-}
       DOCUMENT_TYPE_RULES_JSON: ${DOCUMENT_TYPE_RULES_JSON:-}
       LLM_PROMPT_COST_PER_1K_USD: "0"
       LLM_COMPLETION_COST_PER_1K_USD: "0"

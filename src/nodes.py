@@ -1,7 +1,6 @@
 import os
 import logging
 import json
-import asyncio
 import re
 import time
 from datetime import datetime
@@ -13,11 +12,11 @@ from .retrieval import retrieve_nodes
 from .memory import save_conversation_turn
 from .compliance import check_prohibited_keywords
 from .llm_client import http_llm
+from .token_counting import LLM_TOKENIZER_NAME, LLM_TOKENIZER_URL, count_tokens
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)          # ✅ moved after logger definition
 
 def get_current_datetime():
     """Returns the current date and time as a formatted string."""
@@ -420,15 +419,6 @@ async def rag_pipeline_node(state: LibraryBotState) -> dict:
         )
 
 
-    # Build context string passed to the answer generation node
-    if chunk_texts:
-        context = "\n\n".join(
-            f"[Source {i + 1}]\n{text}"
-            for i, text in enumerate(chunk_texts)
-        )
-    else:
-        context = "No relevant documents found."
-
     # Log retrieval details for debugging
     logger.debug(f"Retrieved {len(nodes)} nodes. Scores: {scores}")
 
@@ -440,7 +430,6 @@ async def rag_pipeline_node(state: LibraryBotState) -> dict:
     # Return retrieval results into LangGraph state
     return {
         "retrieved_chunks": chunk_texts,
-        "retrieved_context": context,
         "retrieved_scores": scores,
         "retrieved_sources": sources,
     }
@@ -506,77 +495,7 @@ def format_citations(sources: list[dict]) -> str:
     if not citation_lines:
         return ""
 
-    return "\n\nSources:\n" + "\n".join(citation_lines[:1])
-
-
-async def faithfulness_check_node(state: LibraryBotState) -> dict:
-    logger.info("[Node] Faithfulness Check")
-
-    answer = state.get("generated_answer") or state["messages"][-1].content
-    context = state.get("retrieved_context", "")
-
-    if not context or context == "No relevant documents found.":
-        fallback = (
-            "I don't have enough verified information in my knowledge base "
-            "to answer that reliably. Please try rephrasing or ask about a "
-            "specific HKPL service."
-        )
-
-        return {
-            "faithfulness_passed": False,
-            "faithfulness_reason": "No retrieved context available.",
-            "messages": [AIMessage(content=fallback)],
-            "generated_answer": fallback,
-        }
-
-    prompt = f"""
-You are checking whether an HKPL assistant answer is fully supported by the retrieved context.
-
-Return ONLY valid JSON.
-
-Format:
-{{"supported": true, "reason": "short reason"}}
-or
-{{"supported": false, "reason": "short reason"}}
-
-Rules:
-- Return supported=true if the answer is broadly supported by the retrieved context.
-- Do not reject because of minor wording differences.
-- Do not reject if the answer merges equivalent details from multiple retrieved sources.
-- Return supported=false only if the answer gives a clearly wrong instruction, unsupported phone number, unsupported service name, unsupported requirement, or unsupported URL.
-
-Retrieved context:
-{context}
-
-Assistant answer:
-{answer}
-
-JSON:
-"""
-
-    try:
-        raw = await http_llm(prompt, temperature=0.0, max_tokens=256)
-        raw = raw.strip()
-
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            raw = match.group(0)
-
-        result = json.loads(raw)
-        supported = bool(result.get("supported", False))
-        reason = result.get("reason", "")
-
-    except Exception as e:
-        logger.error(f"Faithfulness check failed: {e}")
-        supported = True
-        reason = "Faithfulness checker failed; answer allowed."
-
-    logger.info(f"Faithfulness result: supported={supported}, reason={reason}")
-
-    return {
-        "faithfulness_passed": supported,
-        "faithfulness_reason": reason,
-    }
+    return "\n\nSources:\n" + "\n".join(citation_lines[:3])
 
 
 def _is_fallback_answer(answer: str) -> bool:
@@ -619,7 +538,7 @@ async def rewrite_query_node(state: LibraryBotState) -> dict:
     question = state["messages"][-1].content
     history = state.get("conversation_history", [])
 
-    if not history:
+    if not history or not is_library_follow_up(question, history):
         return {
             "original_query": question,
             "rewritten_query": question,
@@ -704,22 +623,27 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
         }
 
     retrieved_chunks = state.get("retrieved_chunks", [])
-    max_context_chars = int(os.getenv("MAX_CONTEXT_CHARS", "8000"))
+    max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "12000"))
 
     selected_context_parts = []
-    used_chars = 0
+    used_tokens = 0
 
     for index, chunk in enumerate(retrieved_chunks):
         formatted_chunk = f"[Source {index + 1}]\n{chunk}"
+        chunk_tokens, _, _ = await count_tokens(
+            formatted_chunk,
+            LLM_TOKENIZER_URL,
+            LLM_TOKENIZER_NAME,
+        )
 
         if (
             selected_context_parts
-            and used_chars + len(formatted_chunk) > max_context_chars
+            and used_tokens + chunk_tokens > max_context_tokens
         ):
             break
 
         selected_context_parts.append(formatted_chunk)
-        used_chars += len(formatted_chunk)
+        used_tokens += chunk_tokens
 
     context = "\n\n".join(selected_context_parts)
 
