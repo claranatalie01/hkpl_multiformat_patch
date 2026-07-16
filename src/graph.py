@@ -4,7 +4,6 @@ from langgraph.graph import END, START, StateGraph
 
 from .nodes import (
     add_citations_node,
-    faithfulness_check_node,
     generate_answer_node,
     intent_router_node,
     output_safety_filter_node,
@@ -50,14 +49,6 @@ def after_intent(
     return "rag_path"
 
 
-def after_generate(
-    state: LibraryBotState,
-) -> Literal["rag_validation", "direct_citation_stage"]:
-    if state.get("request_type") == "normal_info":
-        return "direct_citation_stage"
-    return "rag_validation"
-
-
 def route_safety_decision(
     state: LibraryBotState,
 ) -> Literal["show", "block"]:
@@ -76,7 +67,6 @@ builder.add_node("intent_router", intent_router_node)
 builder.add_node("rewrite_query", rewrite_query_node)
 builder.add_node("rag_pipeline", rag_pipeline_node)
 builder.add_node("generate_answer", generate_answer_node)
-builder.add_node("faithfulness_check", faithfulness_check_node)
 builder.add_node("add_citations", add_citations_node)
 builder.add_node("output_safety_filter", output_safety_filter_node)
 builder.add_node("save_conversation", save_conversation_node)
@@ -117,16 +107,7 @@ builder.add_conditional_edges(
 builder.add_edge("rewrite_query", "rag_pipeline")
 builder.add_edge("rag_pipeline", "generate_answer")
 
-builder.add_conditional_edges(
-    "generate_answer",
-    after_generate,
-    {
-        "rag_validation": "faithfulness_check",
-        "direct_citation_stage": "add_citations",
-    },
-)
-
-builder.add_edge("faithfulness_check", "add_citations")
+builder.add_edge("generate_answer", "add_citations")
 builder.add_edge("add_citations", "output_safety_filter")
 
 builder.add_conditional_edges(

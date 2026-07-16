@@ -108,8 +108,9 @@ HotpotQA and HKPL chunks coexist in `data_hkpl_knowledge`. HotpotQA rows are
 identified by `metadata_->>'dataset' = 'hotpotqa'`; HKPL rows retain their
 existing document metadata.
 
-Download a deterministic 1,000-question validation subset, create one vector
-chunk per unique paragraph, and replace only previous HotpotQA rows:
+Download the official `hotpotqa/hotpot_qa` distractor validation Parquet,
+sample the first deterministic 1,000 examples, create one vector per unique
+paragraph, and replace only previous HotpotQA vectors:
 
 ```bash
 docker compose run --rm langgraph-agent \
@@ -120,47 +121,44 @@ This deterministic subset creates 9,769 unique HotpotQA paragraph vectors.
 Embedding them can take several minutes. Re-running the command is safe: it
 replaces HotpotQA vectors and leaves HKPL vectors untouched.
 
-### Generalized HKPL and HotpotQA evaluation
+### HKPL evaluation with HotpotQA distractor noise
 
-`scripts/evaluate_rag.py` is the recommended evaluation entry point for both
-datasets. It normalizes HKPL's single expected chunk and HotpotQA's multiple
-expected paragraphs into an `expected_chunk_ids` list, then applies the same
-retrieval, reranking, answer, evaluator, diagnosis, and Phoenix logic.
+`scripts/evaluate_rag.py` is the only evaluation entry point. It loads HKPL
+questions, expected answers, and expected chunks from `evaluation_dataset`,
+then searches the combined vector table containing both HKPL and HotpotQA
+paragraphs. HotpotQA contributes retrieval noise only; its questions and
+answers are not evaluation labels.
 
-Run a short smoke test with five questions from each dataset:
+Run a short smoke test with five HKPL questions:
 
 ```bash
 docker compose run --rm langgraph-agent \
-  uv run python scripts/evaluate_rag.py --limit-per-dataset 5
+  uv run python scripts/evaluate_rag.py --limit 5
 ```
 
-Run the complete combined evaluation:
+Run the complete evaluation:
 
 ```bash
 docker compose run --rm langgraph-agent \
   uv run python scripts/evaluate_rag.py
 ```
 
-Run only one dataset when investigating a domain-specific regression:
+Run one matching question when investigating a regression:
 
 ```bash
 docker compose run --rm langgraph-agent \
-  uv run python scripts/evaluate_rag.py --dataset hkpl
-
-docker compose run --rm langgraph-agent \
-  uv run python scripts/evaluate_rag.py --dataset hotpotqa
+  uv run python scripts/evaluate_rag.py \
+  --question-contains "Library Catalogue"
 ```
 
 Every question reports retrieval and reranker Hit, Recall, and Complete at
 1/3/5, MRR, LlamaIndex correctness, faithfulness, relevancy, hallucination
-derived from faithfulness, and a stage-specific RAG diagnosis. The summary
-contains separate HKPL and HotpotQA results, an equal-dataset macro average,
-and an overall question-weighted average.
+derived from faithfulness, a stage-specific RAG diagnosis, and HotpotQA
+distractor rates before and after reranking.
 
 Phoenix displays all runs in the `hkpl-rag` project as `RAG Evaluation Query`
-traces. Filter them with `eval.dataset=hkpl` or
-`eval.dataset=hotpotqa`. The aggregate is exported as
-`Combined RAG Evaluation Summary`.
+traces with `eval.dataset=hkpl`. The aggregate is exported as the HKPL RAG
+evaluation summary.
 
 Results are written to `data/rag_evaluation/results.csv` and
 `data/rag_evaluation/summary.json`.

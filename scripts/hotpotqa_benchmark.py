@@ -2,7 +2,6 @@
 
 import argparse
 import hashlib
-import json
 import os
 import sys
 from pathlib import Path
@@ -11,6 +10,7 @@ from urllib.parse import quote
 import requests
 from llama_index.core import StorageContext, VectorStoreIndex
 from llama_index.core.schema import TextNode
+from pyarrow import parquet
 from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -23,13 +23,13 @@ from src.infrastructure.vector_store import VECTOR_TABLE, vector_store
 
 DATASET_NAME = "hotpotqa"
 DEFAULT_SOURCE_URL = (
-    "https://huggingface.co/datasets/namlh2004/hotpotqa/resolve/main/"
-    "hotpot_dev_distractor_v1.json?download=true"
+    "https://huggingface.co/datasets/hotpotqa/hotpot_qa/resolve/main/"
+    "distractor/validation-00000-of-00001.parquet?download=true"
 )
 DATASET_PATH = Path(
     os.getenv(
         "HOTPOTQA_DATASET_PATH",
-        "/app/data/hotpotqa/hotpot_dev_distractor_v1.json",
+        "/app/data/hotpotqa/validation-00000-of-00001.parquet",
     )
 )
 TABLE_NAME = f"data_{VECTOR_TABLE}"
@@ -72,10 +72,7 @@ def download_dataset(source_url: str, force: bool) -> None:
 def load_examples(offset: int, limit: int) -> list[dict]:
     if offset < 0 or limit < 1:
         raise ValueError("Offset must be non-negative and limit must be positive.")
-    with DATASET_PATH.open(encoding="utf-8") as source:
-        examples = json.load(source)
-    if not isinstance(examples, list):
-        raise ValueError("HotpotQA source must contain a JSON list.")
+    examples = parquet.read_table(DATASET_PATH).to_pylist()
 
     selected = examples[offset : offset + limit]
     if not selected:
@@ -96,7 +93,15 @@ def build_distractor_nodes(examples: list[dict]) -> list[TextNode]:
     paragraphs: dict[str, dict] = {}
     for example in examples:
         example_id = str(example.get("_id") or example.get("id") or "")
-        for title, sentences in example.get("context", []):
+        context = example.get("context") or {}
+        if isinstance(context, dict):
+            context_rows = zip(
+                context.get("title") or [],
+                context.get("sentences") or [],
+            )
+        else:
+            context_rows = context
+        for title, sentences in context_rows:
             paragraph = "".join(str(sentence) for sentence in sentences).strip()
             if not paragraph:
                 continue

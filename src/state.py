@@ -29,23 +29,14 @@ class LibraryBotState(TypedDict):
     original_query: str
     rewritten_query: str
 
-    retrieved_context: str
     retrieved_chunks: List[str]
     retrieved_scores: List[float]
     retrieved_sources: List[Dict[str, Any]]
     generated_answer: str
-    faithfulness_passed: bool
-    faithfulness_reason: str
-
-    is_relevant: bool
-    rewrite_count: int
 
     is_output_safe: bool
-    tool_name: str
-    tool_args: Dict[str, Any]
     end_conversation: bool
 
     current_library_code: Optional[str]
     current_library_name: Optional[str]
-    current_datetime: str
     user_memory: Dict[str, Any]

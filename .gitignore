@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.log
+.env
+.venv/
+
+data/rag_evaluation/
+data/generation_results.csv
+data/generation_summary.json
+data/retrieval_results.csv
+data/retrieval_summary.json
+safety_intent_log.jsonl

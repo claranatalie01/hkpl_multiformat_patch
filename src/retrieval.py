@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+from contextvars import ContextVar
 from typing import List
 
 import aiohttp
@@ -45,6 +46,23 @@ index = VectorStoreIndex.from_vector_store(
 )
 
 vector_retriever = index.as_retriever(similarity_top_k=SIMILARITY_TOP_K)
+live_vector_retriever = index.as_retriever(
+    similarity_top_k=max(SIMILARITY_TOP_K * 3, SIMILARITY_TOP_K),
+)
+
+_reranker_token_usage: ContextVar[dict] = ContextVar(
+    "reranker_token_usage",
+    default={"reranker_input_tokens": 0, "is_estimated": False},
+)
+_retrieval_trace: ContextVar[dict] = ContextVar(
+    "retrieval_trace",
+    default={
+        "retriever_span_id": "",
+        "vector_candidates_before_rerank": [],
+        "final_chunks_after_rerank": [],
+        "token_usage": {},
+    },
+)
 
 
 def node_to_trace_dict(
@@ -104,10 +122,6 @@ class HTTPReranker:
     def __init__(self, reranker_url: str, top_n: int = 3):
         self.reranker_url = reranker_url
         self.top_n = top_n
-        self.last_token_usage = {
-            "reranker_input_tokens": 0,
-            "is_estimated": False,
-        }
 
     async def arerank(self, nodes: List[NodeWithScore], query: str) -> List[NodeWithScore]:
         with tracer.start_as_current_span("Reranker") as span:
@@ -134,10 +148,10 @@ class HTTPReranker:
             span.set_attribute("reranker.input_document_count", len(before_rerank))
 
             if not nodes:
-                self.last_token_usage = {
+                _reranker_token_usage.set({
                     "reranker_input_tokens": 0,
                     "is_estimated": False,
-                }
+                })
                 set_span_io(span, "RERANKER", output_value={"after_rerank": []})
                 set_document_list_attributes(span, "reranker.output_documents", [])
                 return []
@@ -154,10 +168,10 @@ class HTTPReranker:
             span.set_attribute("reranker.token_count.total", int(reranker_input_tokens))
             span.set_attribute("reranker.token_count.is_estimated", bool(reranker_tokens_estimated))
             span.set_attribute("reranker.token_count.tokenizer", reranker_tokenizer)
-            self.last_token_usage = {
+            _reranker_token_usage.set({
                 "reranker_input_tokens": int(reranker_input_tokens),
                 "is_estimated": bool(reranker_tokens_estimated),
-            }
+            })
 
             timeout = aiohttp.ClientTimeout(total=RERANKER_TIMEOUT_SECONDS)
             start = time.time()
@@ -314,7 +328,16 @@ class HTTPReranker:
 reranker = HTTPReranker(reranker_url=RERANKER_URL, top_n=RERANK_TOP_N)
 
 
-async def retrieve_nodes(query: str) -> List[NodeWithScore]:
+def get_last_retrieval_trace() -> dict:
+    """Return diagnostics for the current async request context."""
+    return _retrieval_trace.get()
+
+
+async def retrieve_nodes(
+    query: str,
+    *,
+    include_distractors: bool = False,
+) -> List[NodeWithScore]:
     with tracer.start_as_current_span("Retriever") as span:
         retriever_span_id = format_span_id(span.get_span_context().span_id)
 
@@ -325,6 +348,7 @@ async def retrieve_nodes(query: str) -> List[NodeWithScore]:
                 "query": query,
                 "similarity_top_k": SIMILARITY_TOP_K,
                 "rerank_top_n": RERANK_TOP_N,
+                "include_distractors": include_distractors,
             },
         )
 
@@ -342,7 +366,26 @@ async def retrieve_nodes(query: str) -> List[NodeWithScore]:
         )
         span.set_attribute("retrieval.token_count.tokenizer", query_tokenizer)
 
-        candidates = await vector_retriever.aretrieve(query)
+        retriever = (
+            vector_retriever
+            if include_distractors
+            else live_vector_retriever
+        )
+        raw_candidates = await retriever.aretrieve(query)
+        if include_distractors:
+            candidates = raw_candidates
+            filtered_distractors = 0
+        else:
+            filtered_distractors = sum(
+                1
+                for node in raw_candidates
+                if (node.node.metadata or {}).get("dataset") == "hotpotqa"
+            )
+            candidates = [
+                node
+                for node in raw_candidates
+                if (node.node.metadata or {}).get("dataset") != "hotpotqa"
+            ][:SIMILARITY_TOP_K]
         vector_latency = time.time() - start
 
         vector_candidates = [
@@ -362,6 +405,8 @@ async def retrieve_nodes(query: str) -> List[NodeWithScore]:
 
         span.set_attribute("retrieval.vector_latency_seconds", round(vector_latency, 4))
         span.set_attribute("retrieval.candidate_count", len(candidates))
+        span.set_attribute("retrieval.raw_candidate_count", len(raw_candidates))
+        span.set_attribute("retrieval.filtered_distractor_count", filtered_distractors)
         set_json_attribute(span, "rag.vector_candidates_before_rerank", vector_candidates)
         set_document_list_attributes(span, "retrieval.documents", vector_candidates)
         set_span_io(
@@ -379,9 +424,9 @@ async def retrieve_nodes(query: str) -> List[NodeWithScore]:
         node_to_trace_dict(node, i + 1, "final_score")
         for i, node in enumerate(reranked)
     ]
-    reranker_token_usage = getattr(reranker, "last_token_usage", {})
+    reranker_token_usage = _reranker_token_usage.get()
 
-    retrieve_nodes.last_trace = {
+    _retrieval_trace.set({
         "retriever_span_id": retriever_span_id,
         "vector_candidates_before_rerank": vector_candidates,
         "final_chunks_after_rerank": final_chunks,
@@ -393,16 +438,9 @@ async def retrieve_nodes(query: str) -> List[NodeWithScore]:
             "is_estimated": bool(query_tokens_estimated)
             or bool(reranker_token_usage.get("is_estimated", False)),
         },
-    }
+    })
 
     return reranked
-
-
-retrieve_nodes.last_trace = {
-    "retriever_span_id": "",
-    "vector_candidates_before_rerank": [],
-    "final_chunks_after_rerank": [],
-}
 
 logger.info(
     "Retrieval configured: table=data_%s, vector_top_k=%s, rerank_top_n=%s",

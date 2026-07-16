@@ -148,7 +148,7 @@ services:
       VECTOR_TABLE: hkpl_knowledge
       EVALUATION_DATASET_TABLE: evaluation_dataset
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
-      HOTPOTQA_DATASET_PATH: /app/data/hotpotqa/hotpot_dev_distractor_v1.json
+      HOTPOTQA_DATASET_PATH: /app/data/hotpotqa/validation-00000-of-00001.parquet
       EMBED_DIM: "1024"
       SIMILARITY_TOP_K: "10"
       RERANK_TOP_N: "5"
@@ -159,6 +159,7 @@ services:
       CHUNK_OVERLAP: "64"
       ATOMIC_MAX_TOKENS: "2048"
       RECORD_MAX_TOKENS: "8192"
+      MAX_CONTEXT_TOKENS: "12000"
       OCR_LANGUAGES: eng+chi_tra
       PHOENIX_ENABLED: "true"
       PHOENIX_PROJECT_NAME: hkpl-rag

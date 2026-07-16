@@ -30,14 +30,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.infrastructure.db import engine
 from src.infrastructure.vector_store import VECTOR_TABLE
-from src.llm_client import http_llm
+from src.llm_client import http_llm, http_llm_with_usage
 from src.observability import setup_phoenix_tracing
 from src.phoenix_annotations import (
     log_document_relevance_annotations,
     log_rag_answer_annotations,
     log_span_annotations,
 )
-from src.retrieval import retrieve_nodes
+from src.retrieval import get_last_retrieval_trace, retrieve_nodes
 from src.token_counting import LLM_TOKENIZER_NAME, LLM_TOKENIZER_URL, count_tokens
 from src.tracing_helpers import set_json_attribute, set_llm_attributes, set_span_io
 
@@ -304,29 +304,32 @@ Answer:
 """
     with tracer.start_as_current_span("LLM") as span:
         started = time.perf_counter()
-        answer = await http_llm(
+        llm_response = await http_llm_with_usage(
             prompt,
             temperature=0.0,
             max_tokens=EVALUATION_MAX_TOKENS,
             enable_thinking=False,
         )
-        prompt_tokens, prompt_estimated, tokenizer = await count_tokens(
-            prompt,
-            LLM_TOKENIZER_URL,
-            LLM_TOKENIZER_NAME,
-        )
-        completion_tokens, completion_estimated, _ = await count_tokens(
-            answer,
-            LLM_TOKENIZER_URL,
-            LLM_TOKENIZER_NAME,
-        )
-        usage = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-            "is_estimated": prompt_estimated or completion_estimated,
-            "tokenizer": tokenizer,
-        }
+        answer = llm_response.text
+        usage = llm_response.usage
+        if not usage["total_tokens"]:
+            prompt_tokens, prompt_estimated, tokenizer = await count_tokens(
+                prompt,
+                LLM_TOKENIZER_URL,
+                LLM_TOKENIZER_NAME,
+            )
+            completion_tokens, completion_estimated, _ = await count_tokens(
+                answer,
+                LLM_TOKENIZER_URL,
+                LLM_TOKENIZER_NAME,
+            )
+            usage = {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+                "is_estimated": prompt_estimated or completion_estimated,
+                "tokenizer": tokenizer,
+            }
         set_llm_attributes(
             span=span,
             model_name="qwen3.5-9b-http",
@@ -494,8 +497,8 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         set_json_attribute(span, "eval.expected_chunk_ids", expected_ids)
 
         started = time.perf_counter()
-        nodes = await retrieve_nodes(question)
-        retrieval_trace = getattr(retrieve_nodes, "last_trace", {})
+        nodes = await retrieve_nodes(question, include_distractors=True)
+        retrieval_trace = get_last_retrieval_trace()
         vector_documents = retrieval_trace.get(
             "vector_candidates_before_rerank",
             [],

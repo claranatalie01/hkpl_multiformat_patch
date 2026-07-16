@@ -47,7 +47,6 @@ from src.ingestion.service import (
     reindex_registered_document,
 )
 from src.memory import load_conversation_history
-from src.nodes import get_current_datetime
 
 
 logger = logging.getLogger(__name__)
@@ -86,6 +85,43 @@ class UrlIndexRequest(BaseModel):
 class TestQueryRequest(BaseModel):
     question: str
     session_id: str = "admin-test-query"
+
+
+def build_initial_state(
+    *,
+    question: str,
+    session_id: str,
+    conversation_history: list,
+    input_type: str = "text",
+    stt_confidence: float = 1.0,
+    request_type: str = "normal_info",
+    current_library: dict | None = None,
+    user_memory: dict | None = None,
+) -> dict:
+    return {
+        "messages": [HumanMessage(content=question)],
+        "session_id": session_id,
+        "conversation_history": conversation_history,
+        "original_query": question,
+        "rewritten_query": question,
+        "input_type": input_type,
+        "stt_confidence": stt_confidence,
+        "intent": "",
+        "request_type": request_type,
+        "retrieved_chunks": [],
+        "retrieved_scores": [],
+        "retrieved_sources": [],
+        "generated_answer": "",
+        "is_output_safe": True,
+        "end_conversation": False,
+        "current_library_code": (
+            current_library["code"] if current_library else None
+        ),
+        "current_library_name": (
+            current_library["name"] if current_library else None
+        ),
+        "user_memory": user_memory or {},
+    }
 
 
 
@@ -184,33 +220,12 @@ async def admin_test_query(
 ):
     require_admin(x_admin_key)
 
-    initial_state = {
-        "messages": [HumanMessage(content=payload.question)],
-        "session_id": payload.session_id,
-        "conversation_history": [],
-        "original_query": payload.question,
-        "rewritten_query": payload.question,
-        "input_type": "text",
-        "stt_confidence": 1.0,
-        "request_type": "rag_search",
-        "retrieved_context": "",
-        "retrieved_chunks": [],
-        "retrieved_scores": [],
-        "retrieved_sources": [],
-        "generated_answer": "",
-        "faithfulness_passed": True,
-        "faithfulness_reason": "",
-        "is_relevant": False,
-        "rewrite_count": 0,
-        "is_output_safe": True,
-        "end_conversation": False,
-        "tool_name": "",
-        "tool_args": {},
-        "current_library_code": None,
-        "current_library_name": None,
-        "current_datetime": get_current_datetime(),
-        "user_memory": {},
-    }
+    initial_state = build_initial_state(
+        question=payload.question,
+        session_id=payload.session_id,
+        conversation_history=[],
+        request_type="rag_search",
+    )
 
     final_answer = ""
     visited_nodes = []
@@ -443,54 +458,15 @@ async def chat_stream(
         payload.session_id
     )
 
-    initial_state = {
-        "messages": [
-            HumanMessage(
-                content=payload.input_string
-            )
-        ],
-        "session_id": payload.session_id,
-        "conversation_history": history,
-        "original_query": payload.input_string,
-        "rewritten_query": payload.input_string,
-        "input_type": (
-            "voice"
-            if payload.is_voice
-            else "text"
-        ),
-        "stt_confidence": payload.stt_confidence,
-        "intent": "",
-        "request_type": "normal_info",
-        "retrieved_context": "",
-        "retrieved_chunks": [],
-        "retrieved_scores": [],
-        "retrieved_sources": [],
-        "generated_answer": "",
-        "faithfulness_passed": True,
-        "faithfulness_reason": "",
-        "is_relevant": False,
-        "rewrite_count": 0,
-        "is_output_safe": True,
-        "end_conversation": False,
-        "tool_name": "",
-        "tool_args": {},
-        "current_library_code": (
-            current_library["code"]
-            if current_library
-            else None
-        ),
-        "current_library_name": (
-            current_library["name"]
-            if current_library
-            else None
-        ),
-        "current_datetime": (
-            get_current_datetime()
-        ),
-        "user_memory": (
-            payload.user_memory or {}
-        ),
-    }
+    initial_state = build_initial_state(
+        question=payload.input_string,
+        session_id=payload.session_id,
+        conversation_history=history,
+        input_type="voice" if payload.is_voice else "text",
+        stt_confidence=payload.stt_confidence,
+        current_library=current_library,
+        user_memory=payload.user_memory,
+    )
 
     async def event_generator():
         async for chunk in compiled_workflow.astream(
