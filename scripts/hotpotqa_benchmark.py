@@ -226,26 +226,29 @@ def build_nodes_and_rows(examples: list[dict]) -> tuple[list[TextNode], list[dic
     nodes: list[TextNode] = []
     for chunk_id, record in paragraphs.items():
         title = record["title"]
+        metadata = {
+            "dataset": DATASET_NAME,
+            "corpus": DATASET_NAME,
+            "kb_document_id": chunk_id,
+            "document_id": chunk_id,
+            "chunk_id": chunk_id,
+            "source_title": title,
+            "source_url": (
+                "https://en.wikipedia.org/wiki/"
+                + quote(title.replace(" ", "_"))
+            ),
+            "source_type": "benchmark",
+            "document_type": "prose",
+            "chunk_strategy": "atomic",
+            "document_version": 1,
+            "hotpotqa_example_ids": sorted(record["example_ids"]),
+        }
         node = TextNode(
             id_=chunk_id,
-            text=record["text"],
-            metadata={
-                "dataset": DATASET_NAME,
-                "corpus": DATASET_NAME,
-                "kb_document_id": chunk_id,
-                "document_id": chunk_id,
-                "chunk_id": chunk_id,
-                "source_title": title,
-                "source_url": (
-                    "https://en.wikipedia.org/wiki/"
-                    + quote(title.replace(" ", "_"))
-                ),
-                "source_type": "benchmark",
-                "document_type": "prose",
-                "chunk_strategy": "atomic",
-                "document_version": 1,
-                "hotpotqa_example_ids": sorted(record["example_ids"]),
-            },
+            text=f"Title: {title}\n\n{record['text']}",
+            metadata=metadata,
+            excluded_embed_metadata_keys=list(metadata),
+            excluded_llm_metadata_keys=list(metadata),
         )
         nodes.append(node)
 
@@ -770,6 +773,43 @@ async def evaluate(args: argparse.Namespace) -> None:
         json.dumps(summary, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+    with tracer.start_as_current_span("HotpotQA Evaluation Summary") as span:
+        set_span_io(
+            span,
+            "EVALUATOR",
+            input_value={
+                "dataset": DATASET_NAME,
+                "evaluation_table": EVALUATION_TABLE,
+                "result_file": str(RESULTS_PATH),
+            },
+            output_value=summary,
+        )
+        span.set_attribute("eval.dataset", DATASET_NAME)
+        span.set_attribute("eval.total_questions", len(results))
+        span.set_attribute(
+            "eval.vector_recall_at_5",
+            float(summary["average_vector_recall_at_5"]),
+        )
+        span.set_attribute(
+            "eval.vector_mrr",
+            float(summary["average_vector_mrr"]),
+        )
+        span.set_attribute(
+            "eval.rerank_complete_at_5",
+            float(summary["average_rerank_complete_at_5"]),
+        )
+        if args.answers:
+            span.set_attribute(
+                "eval.answer_exact_match",
+                float(summary["average_answer_exact_match"]),
+            )
+            span.set_attribute(
+                "eval.answer_f1",
+                float(summary["average_answer_f1"]),
+            )
+        set_json_attribute(span, "eval.diagnosis_counts", summary["diagnosis_counts"])
+
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
 
