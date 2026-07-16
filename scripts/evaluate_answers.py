@@ -22,7 +22,7 @@ from llama_index.core.evaluation import CorrectnessEvaluator, FaithfulnessEvalua
 from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
 from llama_index.core.llms.callbacks import llm_completion_callback
 
-from src.nodes import http_llm
+from src.llm_client import http_llm
 from src.observability import setup_phoenix_tracing
 from src.infrastructure.db import engine
 from src.phoenix_annotations import (
@@ -332,6 +332,7 @@ async def evaluate_one(
         )
         span.set_attribute("rag.root_span_id", root_span_id)
 
+        span.set_attribute("eval.dataset", "hkpl")
         span.set_attribute("eval.question", query)
         span.set_attribute("eval.expected_answer", expected_answer)
         span.set_attribute("eval.expected_source_document_id", expected_document_id)
@@ -658,6 +659,7 @@ async def main() -> None:
             output_value=summary,
         )
         span.set_attribute("eval.total_questions", int(total))
+        span.set_attribute("eval.dataset", "hkpl")
         span.set_attribute("eval.average_correctness", float(summary["average_correctness"]))
         span.set_attribute("eval.average_faithfulness", float(summary["average_faithfulness"]))
         span.set_attribute("eval.average_relevancy", float(summary["average_relevancy"]))

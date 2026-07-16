@@ -30,7 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.infrastructure.db import engine
 from src.infrastructure.vector_store import VECTOR_TABLE
-from src.nodes import http_llm
+from src.llm_client import http_llm
 from src.observability import setup_phoenix_tracing
 from src.phoenix_annotations import (
     log_document_relevance_annotations,
@@ -42,10 +42,6 @@ from src.token_counting import LLM_TOKENIZER_NAME, LLM_TOKENIZER_URL, count_toke
 from src.tracing_helpers import set_json_attribute, set_llm_attributes, set_span_io
 
 HKPL_EVALUATION_TABLE = os.getenv("EVALUATION_DATASET_TABLE", "evaluation_dataset")
-HOTPOTQA_EVALUATION_TABLE = os.getenv(
-    "HOTPOTQA_EVALUATION_TABLE",
-    "hotpotqa_evaluation",
-)
 RESULTS_PATH = Path(
     os.getenv(
         "RAG_EVALUATION_RESULTS_PATH",
@@ -61,10 +57,9 @@ SUMMARY_PATH = Path(
 LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
 EVALUATION_MAX_TOKENS = int(os.getenv("EVALUATION_MAX_TOKENS", "1024"))
 CUTOFFS = (1, 3, 5)
-DATASETS = ("hkpl", "hotpotqa")
 
 setup_phoenix_tracing()
-tracer = trace.get_tracer("generalized-rag-evaluation")
+tracer = trace.get_tracer("hkpl-rag-noise-evaluation")
 
 
 class QwenEvaluationLLM(CustomLLM):
@@ -98,28 +93,61 @@ class QwenEvaluationLLM(CustomLLM):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate HKPL and HotpotQA with one retrieval, reranking, answer, "
-            "and Phoenix evaluation pipeline."
+            "Evaluate HKPL questions while searching the combined HKPL and "
+            "HotpotQA distractor vector corpus."
         )
     )
     parser.add_argument(
-        "--dataset",
-        choices=("all", *DATASETS),
-        default="all",
-        help="Evaluate both datasets or only one dataset.",
-    )
-    parser.add_argument(
-        "--limit-per-dataset",
+        "--limit",
         type=int,
         default=None,
-        help="Optional deterministic limit applied independently to each dataset.",
+        help="Optional deterministic limit on HKPL evaluation questions.",
     )
-    parser.add_argument(
+    question_filter = parser.add_mutually_exclusive_group()
+    question_filter.add_argument(
         "--question-contains",
         default="",
         help="Evaluate only questions containing this case-insensitive text.",
     )
+    question_filter.add_argument(
+        "--question-exact",
+        default="",
+        help="Evaluate one question using a case-insensitive exact match.",
+    )
     return parser.parse_args()
+
+
+def report_paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    is_full_evaluation = (
+        args.limit is None
+        and not args.question_contains
+        and not args.question_exact
+    )
+    if is_full_evaluation:
+        return RESULTS_PATH, SUMMARY_PATH
+
+    tags = ["hkpl"]
+    if args.limit is not None:
+        tags.append(f"limit-{args.limit}")
+
+    question_filter = args.question_exact or args.question_contains
+    if question_filter:
+        match_type = "exact" if args.question_exact else "contains"
+        question_slug = re.sub(
+            r"[^a-z0-9]+",
+            "-",
+            question_filter.casefold(),
+        ).strip("-")[:48]
+        tags.append(f"{match_type}-{question_slug or 'question'}")
+
+    tag = ".".join(tags)
+    results_path = RESULTS_PATH.with_name(
+        f"{RESULTS_PATH.stem}.{tag}{RESULTS_PATH.suffix}"
+    )
+    summary_path = SUMMARY_PATH.with_name(
+        f"{SUMMARY_PATH.stem}.{tag}{SUMMARY_PATH.suffix}"
+    )
+    return results_path, summary_path
 
 
 def safe_table_name(value: str) -> str:
@@ -169,57 +197,20 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
     ]
 
 
-def load_hotpotqa_rows(limit: int | None) -> list[dict]:
-    table = safe_table_name(HOTPOTQA_EVALUATION_TABLE)
-    limit_clause = "LIMIT :limit" if limit is not None else ""
-    parameters = {"limit": limit} if limit is not None else {}
+def load_corpus_counts() -> dict[str, int]:
+    vector_table = safe_table_name(f"data_{VECTOR_TABLE}")
     with engine.connect() as connection:
         rows = connection.execute(
             text(f"""
                 SELECT
-                    example_id,
-                    question,
-                    expected_answer,
-                    question_type,
-                    difficulty,
-                    gold_chunk_ids
-                FROM {table}
-                ORDER BY example_id
-                {limit_clause}
-            """),
-            parameters,
+                    COALESCE(NULLIF(metadata_->>'dataset', ''), 'hkpl') AS dataset,
+                    COUNT(*) AS vectors
+                FROM {vector_table}
+                GROUP BY dataset
+                ORDER BY dataset
+            """)
         ).mappings().all()
-
-    normalized = []
-    for row in rows:
-        chunk_ids = row["gold_chunk_ids"]
-        if isinstance(chunk_ids, str):
-            chunk_ids = json.loads(chunk_ids)
-        chunk_ids = [str(chunk_id) for chunk_id in chunk_ids]
-        normalized.append(
-            {
-                "evaluation_id": f"hotpotqa:{row['example_id']}",
-                "dataset": "hotpotqa",
-                "domain": str(row.get("question_type") or ""),
-                "difficulty": str(row.get("difficulty") or ""),
-                "question": str(row["question"]),
-                "expected_answer": str(row["expected_answer"]),
-                "expected_document_ids": chunk_ids,
-                "expected_chunk_ids": chunk_ids,
-            }
-        )
-    return normalized
-
-
-def load_rows(dataset: str, limit: int | None) -> list[dict]:
-    rows = []
-    if dataset in ("all", "hkpl"):
-        rows.extend(load_hkpl_rows(limit))
-    if dataset in ("all", "hotpotqa"):
-        rows.extend(load_hotpotqa_rows(limit))
-    if not rows:
-        raise RuntimeError("No evaluation rows were loaded from PostgreSQL.")
-    return rows
+    return {str(row["dataset"]): int(row["vectors"]) for row in rows}
 
 
 def ranking_metrics(expected_ids: list[str], retrieved_ids: list[str], k: int) -> dict:
@@ -243,6 +234,19 @@ def reciprocal_rank(expected_ids: list[str], retrieved_ids: list[str]) -> float:
 
 def ranked_chunk_ids(documents: list[dict]) -> list[str]:
     return [str(document.get("chunk_id") or "") for document in documents]
+
+
+def distractor_metrics(documents: list[dict], k: int) -> dict:
+    selected = documents[:k]
+    hotpotqa_count = sum(
+        str(document.get("metadata", {}).get("dataset") or "").lower()
+        == "hotpotqa"
+        for document in selected
+    )
+    return {
+        "count": hotpotqa_count,
+        "rate": hotpotqa_count / len(selected) if selected else 0.0,
+    }
 
 
 def build_context(nodes) -> tuple[str, list[str], list[dict]]:
@@ -400,14 +404,16 @@ def diagnose(
 ) -> tuple[str, str]:
     expected = set(expected_ids)
     if not expected.issubset(vector_ids):
+        missing = expected.difference(vector_ids)
         return (
             "retrieval_problem",
-            "One or more expected chunks were not returned by PGVector.",
+            f"PGVector missed {len(missing)} of {len(expected)} expected chunks.",
         )
     if not expected.issubset(reranked_ids):
+        missing = expected.difference(reranked_ids)
         return (
             "reranker_problem",
-            "All expected chunks were retrieved, but one or more were removed by reranking.",
+            f"Reranking removed {len(missing)} of {len(expected)} expected chunks.",
         )
     if not expected.issubset(context_ids):
         return (
@@ -458,6 +464,22 @@ def metric_annotations(prefix: str, metrics: dict, mrr: float) -> list[dict]:
     return annotations
 
 
+def distractor_annotations(prefix: str, metrics: dict) -> list[dict]:
+    return [
+        {
+            "name": f"{prefix} Distractor Rate@{cutoff}",
+            "annotator_kind": "CODE",
+            "label": "clean" if metrics[cutoff]["rate"] == 0.0 else "contaminated",
+            "score": float(metrics[cutoff]["rate"]),
+            "explanation": (
+                "Fraction of selected documents originating from the "
+                "HotpotQA distractor corpus."
+            ),
+        }
+        for cutoff in CUTOFFS
+    ]
+
+
 async def evaluate_row(row: dict, evaluators: tuple) -> dict:
     question = row["question"]
     expected_answer = row["expected_answer"]
@@ -492,6 +514,14 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             cutoff: ranking_metrics(expected_ids, reranked_ids, cutoff)
             for cutoff in CUTOFFS
         }
+        retrieval_distractors = {
+            cutoff: distractor_metrics(vector_documents, cutoff)
+            for cutoff in CUTOFFS
+        }
+        reranker_distractors = {
+            cutoff: distractor_metrics(reranked_documents, cutoff)
+            for cutoff in CUTOFFS
+        }
         retrieval_mrr = reciprocal_rank(expected_ids, vector_ids)
         reranker_mrr = reciprocal_rank(expected_ids, reranked_ids)
         all_candidate_metrics = ranking_metrics(
@@ -499,6 +529,13 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             vector_ids,
             len(vector_ids),
         )
+        expected_set = set(expected_ids)
+        retrieved_expected_ids = [
+            chunk_id for chunk_id in vector_ids if chunk_id in expected_set
+        ]
+        reranked_expected_ids = [
+            chunk_id for chunk_id in reranked_ids if chunk_id in expected_set
+        ]
 
         context, contexts, sources = build_context(nodes)
         context_ids = [source["chunk_id"] for source in sources]
@@ -586,6 +623,15 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             "expected_answer": expected_answer,
             "generated_answer": answer,
             "expected_chunk_ids": json.dumps(expected_ids),
+            "expected_chunk_count": len(expected_ids),
+            "retrieved_expected_chunk_ids": json.dumps(retrieved_expected_ids),
+            "missing_retrieval_chunk_ids": json.dumps(
+                sorted(expected_set.difference(vector_ids))
+            ),
+            "reranked_expected_chunk_ids": json.dumps(reranked_expected_ids),
+            "missing_reranker_chunk_ids": json.dumps(
+                sorted(expected_set.difference(reranked_ids))
+            ),
             "retrieval_mrr": retrieval_mrr,
             "reranker_mrr": reranker_mrr,
             "retrieval_candidate_count": len(vector_ids),
@@ -622,6 +668,17 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             for cutoff in CUTOFFS:
                 for metric in ("hit", "recall", "complete"):
                     result[f"{prefix}_{metric}_at_{cutoff}"] = metrics[cutoff][metric]
+        for prefix, metrics in (
+            ("retrieval", retrieval_distractors),
+            ("reranker", reranker_distractors),
+        ):
+            for cutoff in CUTOFFS:
+                result[f"{prefix}_hotpotqa_count_at_{cutoff}"] = metrics[cutoff][
+                    "count"
+                ]
+                result[f"{prefix}_distractor_rate_at_{cutoff}"] = metrics[cutoff][
+                    "rate"
+                ]
 
         span.set_attribute(SpanAttributes.OUTPUT_VALUE, answer)
         span.set_attribute("eval.correctness", correctness)
@@ -649,6 +706,15 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
                         f"eval.{prefix}.{metric}_at_{cutoff}",
                         float(metrics[cutoff][metric]),
                     )
+        for prefix, metrics in (
+            ("retrieval", retrieval_distractors),
+            ("reranker", reranker_distractors),
+        ):
+            for cutoff in CUTOFFS:
+                span.set_attribute(
+                    f"eval.{prefix}.distractor_rate_at_{cutoff}",
+                    float(metrics[cutoff]["rate"]),
+                )
         span.set_attribute("rag.diagnosis", diagnosis)
         span.set_attribute("rag.latency_seconds", rag_latency_seconds)
         span.set_attribute(
@@ -658,6 +724,16 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         span.set_attribute("rag.token_count.total_pipeline", pipeline_tokens)
         span.set_attribute("rag.token_count.is_estimated", tokens_estimated)
         set_json_attribute(span, "rag.evaluation_output", result)
+        set_json_attribute(
+            span,
+            "eval.missing_retrieval_chunk_ids",
+            sorted(expected_set.difference(vector_ids)),
+        )
+        set_json_attribute(
+            span,
+            "eval.missing_reranker_chunk_ids",
+            sorted(expected_set.difference(reranked_ids)),
+        )
 
         log_document_relevance_annotations(
             retriever_span_id=retrieval_trace.get("retriever_span_id", ""),
@@ -669,7 +745,9 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         log_span_annotations(
             root_span_id,
             metric_annotations("Retrieval", retrieval_metrics, retrieval_mrr)
-            + metric_annotations("Reranker", reranker_metrics, reranker_mrr),
+            + metric_annotations("Reranker", reranker_metrics, reranker_mrr)
+            + distractor_annotations("Retrieval", retrieval_distractors)
+            + distractor_annotations("Reranker", reranker_distractors),
         )
         if evaluator_failed:
             log_span_annotations(
@@ -709,6 +787,11 @@ def failed_result(row: dict, error: Exception) -> dict:
         "expected_answer": row["expected_answer"],
         "generated_answer": "",
         "expected_chunk_ids": json.dumps(row["expected_chunk_ids"]),
+        "expected_chunk_count": len(row["expected_chunk_ids"]),
+        "retrieved_expected_chunk_ids": "[]",
+        "missing_retrieval_chunk_ids": json.dumps(row["expected_chunk_ids"]),
+        "reranked_expected_chunk_ids": "[]",
+        "missing_reranker_chunk_ids": json.dumps(row["expected_chunk_ids"]),
         "retrieval_mrr": 0.0,
         "reranker_mrr": 0.0,
         "retrieval_candidate_count": 0,
@@ -742,6 +825,8 @@ def failed_result(row: dict, error: Exception) -> dict:
         for cutoff in CUTOFFS:
             for metric in ("hit", "recall", "complete"):
                 result[f"{prefix}_{metric}_at_{cutoff}"] = 0.0
+            result[f"{prefix}_hotpotqa_count_at_{cutoff}"] = 0
+            result[f"{prefix}_distractor_rate_at_{cutoff}"] = 0.0
     return result
 
 
@@ -801,58 +886,53 @@ def summarize(results: list[dict]) -> dict:
             for metric in ("hit", "recall", "complete"):
                 field = f"{prefix}_{metric}_at_{cutoff}"
                 summary[field] = average(field)
+            summary[f"{prefix}_average_hotpotqa_count_at_{cutoff}"] = average(
+                f"{prefix}_hotpotqa_count_at_{cutoff}"
+            )
+            summary[f"{prefix}_distractor_rate_at_{cutoff}"] = average(
+                f"{prefix}_distractor_rate_at_{cutoff}"
+            )
     return summary
 
 
-def macro_average(dataset_summaries: dict[str, dict]) -> dict:
-    summaries = [summary for summary in dataset_summaries.values() if summary]
-    if not summaries:
-        return {}
-    excluded = {
-        "total_questions",
-        "answer_evaluated_questions",
-        "diagnosis_counts",
-    }
-    numeric_keys = [
-        key
-        for key, value in summaries[0].items()
-        if key not in excluded and isinstance(value, (int, float))
-    ]
-    return {
-        key: mean(float(summary[key]) for summary in summaries)
-        for key in numeric_keys
-    }
-
-
 def log_summary_span(summary: dict) -> None:
-    with tracer.start_as_current_span("Combined RAG Evaluation Summary") as span:
+    with tracer.start_as_current_span("HKPL Noise Evaluation Summary") as span:
         set_span_io(
             span,
             "EVALUATOR",
             input_value={
-                "datasets": list(summary["datasets"]),
+                "evaluation_dataset": "hkpl",
+                "distractor_dataset": "hotpotqa",
                 "vector_table": summary["vector_table"],
             },
             output_value=summary,
         )
-        span.set_attribute("eval.dataset", "combined")
+        span.set_attribute("eval.dataset", "hkpl")
+        span.set_attribute("eval.distractor_dataset", "hotpotqa")
+        set_json_attribute(
+            span,
+            "eval.search_corpus_vectors",
+            summary["search_corpus_vectors"],
+        )
         span.set_attribute(
             "eval.total_questions",
-            int(summary["question_weighted_average"]["total_questions"]),
+            int(summary["total_questions"]),
         )
-        for group_name in ("macro_average", "question_weighted_average"):
-            for metric, value in summary[group_name].items():
-                if isinstance(value, (int, float)):
-                    span.set_attribute(f"eval.{group_name}.{metric}", float(value))
-        set_json_attribute(span, "eval.dataset_summaries", summary["datasets"])
+        for metric, value in summary.items():
+            if isinstance(value, (int, float)):
+                span.set_attribute(f"eval.{metric}", float(value))
 
 
 async def main() -> None:
     args = parse_args()
-    if args.limit_per_dataset is not None and args.limit_per_dataset < 1:
-        raise ValueError("--limit-per-dataset must be positive.")
+    results_path, summary_path = report_paths(args)
+    if args.limit is not None and args.limit < 1:
+        raise ValueError("--limit must be positive.")
 
-    rows = load_rows(args.dataset, args.limit_per_dataset)
+    rows = load_hkpl_rows(args.limit)
+    if not rows:
+        raise RuntimeError("No valid HKPL evaluation rows were loaded.")
+    corpus_counts = load_corpus_counts()
     if args.question_contains:
         needle = args.question_contains.casefold()
         rows = [row for row in rows if needle in row["question"].casefold()]
@@ -860,9 +940,23 @@ async def main() -> None:
             raise RuntimeError(
                 f"No evaluation question contains {args.question_contains!r}."
             )
-    selected_datasets = list(dict.fromkeys(row["dataset"] for row in rows))
-    print(f"Loaded {len(rows)} evaluation rows: {selected_datasets}")
-    print(f"Retriever searches one vector table: data_{VECTOR_TABLE}")
+    elif args.question_exact:
+        expected_question = args.question_exact.casefold().strip()
+        rows = [
+            row
+            for row in rows
+            if row["question"].casefold().strip() == expected_question
+        ]
+        if not rows:
+            raise RuntimeError(
+                f"No evaluation question exactly matches {args.question_exact!r}."
+            )
+    print(f"Loaded {len(rows)} HKPL evaluation rows.")
+    print(
+        f"Retriever searches combined vector table: data_{VECTOR_TABLE} "
+        "(HKPL + HotpotQA distractors)"
+    )
+    print(f"Search corpus vectors: {corpus_counts}")
     print(f"Phoenix project: {os.getenv('PHOENIX_PROJECT_NAME', 'hkpl-rag')}")
 
     judge = QwenEvaluationLLM()
@@ -890,22 +984,19 @@ async def main() -> None:
             f"diagnosis={result['diagnosis']}"
         )
 
-    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with RESULTS_PATH.open("w", newline="", encoding="utf-8") as output:
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    with results_path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=results[0].keys())
         writer.writeheader()
         writer.writerows(results)
 
-    dataset_summaries = {
-        dataset: summarize([row for row in results if row["dataset"] == dataset])
-        for dataset in selected_datasets
-    }
-    summary = {
+    summary = summarize(results)
+    summary.update({
         "phoenix_project": os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag"),
         "vector_table": f"data_{VECTOR_TABLE}",
-        "datasets": dataset_summaries,
-        "macro_average": macro_average(dataset_summaries),
-        "question_weighted_average": summarize(results),
+        "evaluation_dataset": "hkpl",
+        "distractor_dataset": "hotpotqa",
+        "search_corpus_vectors": corpus_counts,
         "metric_definitions": {
             "hit_at_k": "At least one expected chunk appears in the top K.",
             "recall_at_k": "Fraction of expected chunks appearing in the top K.",
@@ -916,19 +1007,21 @@ async def main() -> None:
             ),
             "mrr": "Reciprocal rank of the first expected chunk.",
             "hallucination": "One minus the LlamaIndex faithfulness score.",
-            "macro_average": "Every dataset has equal weight.",
-            "question_weighted_average": "Every evaluation question has equal weight.",
+            "distractor_rate_at_k": (
+                "Fraction of the top K documents whose dataset metadata is "
+                "hotpotqa."
+            ),
         },
-    }
-    SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SUMMARY_PATH.write_text(
+    })
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(
         json.dumps(summary, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     log_summary_span(summary)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
-    print(f"Saved results to: {RESULTS_PATH}")
-    print(f"Saved summary to: {SUMMARY_PATH}")
+    print(f"Saved results to: {results_path}")
+    print(f"Saved summary to: {summary_path}")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ from .state import LibraryBotState
 from .retrieval import retrieve_nodes
 from .memory import save_conversation_turn
 from .compliance import check_prohibited_keywords
-import aiohttp
+from .llm_client import http_llm
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -22,40 +22,6 @@ logger.setLevel(logging.DEBUG)          # ✅ moved after logger definition
 def get_current_datetime():
     """Returns the current date and time as a formatted string."""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-# ----------------------------------------------------------------------
-# HTTP endpoint for LLM (answer generation)
-# ----------------------------------------------------------------------
-LLM_URL = os.getenv("LLM_URL", "http://llm:8080/v1/chat/completions")
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "16000"))
-
-async def http_llm(
-    prompt: str,
-    temperature: float = 0.0,
-    max_tokens: int | None = None,
-    enable_thinking: bool = False,
-) -> str:
-    max_tokens = max_tokens or LLM_MAX_TOKENS
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "model": "qwen3.5-9b",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": False,
-        "chat_template_kwargs": {"enable_thinking": enable_thinking},
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(LLM_URL, json=payload, headers=headers) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise Exception(f"LLM service error {resp.status}: {text}")
-            data = await resp.json()
-            logger.debug(f"LLM raw response: {data}")
-            response = data["choices"][0]["message"]["content"]
-            if not response or len(response.strip()) == 0:
-                response = "I'm sorry, I couldn't generate a proper answer. Please try again."
-            return response
 
 # ----------------------------------------------------------------------
 # Nodes
