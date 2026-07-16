@@ -108,9 +108,13 @@ HotpotQA and HKPL chunks coexist in `data_hkpl_knowledge`. HotpotQA rows are
 identified by `metadata_->>'dataset' = 'hotpotqa'`; HKPL rows retain their
 existing document metadata.
 
-Download the official `hotpotqa/hotpot_qa` distractor validation Parquet,
-sample the first deterministic 1,000 examples, create one vector per unique
+Load the first deterministic 1,000 examples from the official
+`hotpotqa/hotpot_qa` distractor validation split with Hugging Face
+`datasets.load_dataset(..., streaming=True)`, create one vector per unique
 paragraph, and replace only previous HotpotQA vectors:
+
+The dataset is public and does not require authentication. Optionally set
+`HF_TOKEN` in `.env` to use authenticated Hugging Face rate limits.
 
 ```bash
 docker compose run --rm langgraph-agent \

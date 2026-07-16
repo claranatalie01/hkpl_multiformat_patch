@@ -2,15 +2,14 @@
 
 import argparse
 import hashlib
-import os
 import sys
+from itertools import islice
 from pathlib import Path
 from urllib.parse import quote
 
-import requests
+from datasets import load_dataset
 from llama_index.core import StorageContext, VectorStoreIndex
 from llama_index.core.schema import TextNode
-from pyarrow import parquet
 from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,16 +21,9 @@ from src.infrastructure.vector_store import VECTOR_TABLE, vector_store
 
 
 DATASET_NAME = "hotpotqa"
-DEFAULT_SOURCE_URL = (
-    "https://huggingface.co/datasets/hotpotqa/hotpot_qa/resolve/main/"
-    "distractor/validation-00000-of-00001.parquet?download=true"
-)
-DATASET_PATH = Path(
-    os.getenv(
-        "HOTPOTQA_DATASET_PATH",
-        "/app/data/hotpotqa/validation-00000-of-00001.parquet",
-    )
-)
+DATASET_REPOSITORY = "hotpotqa/hotpot_qa"
+DATASET_CONFIG = "distractor"
+DATASET_SPLIT = "validation"
 TABLE_NAME = f"data_{VECTOR_TABLE}"
 
 
@@ -49,37 +41,30 @@ def parse_args() -> argparse.Namespace:
     )
     prepare.add_argument("--limit", type=int, default=1000)
     prepare.add_argument("--offset", type=int, default=0)
-    prepare.add_argument("--source-url", default=DEFAULT_SOURCE_URL)
-    prepare.add_argument("--force-download", action="store_true")
     return parser.parse_args()
-
-
-def download_dataset(source_url: str, force: bool) -> None:
-    if DATASET_PATH.is_file() and not force:
-        return
-
-    DATASET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = DATASET_PATH.with_suffix(DATASET_PATH.suffix + ".part")
-    with requests.get(source_url, stream=True, timeout=300) as response:
-        response.raise_for_status()
-        with temporary_path.open("wb") as output:
-            for block in response.iter_content(chunk_size=1024 * 1024):
-                if block:
-                    output.write(block)
-    temporary_path.replace(DATASET_PATH)
 
 
 def load_examples(offset: int, limit: int) -> list[dict]:
     if offset < 0 or limit < 1:
         raise ValueError("Offset must be non-negative and limit must be positive.")
-    examples = parquet.read_table(DATASET_PATH).to_pylist()
 
-    selected = examples[offset : offset + limit]
-    if not selected:
+    dataset = load_dataset(
+        DATASET_REPOSITORY,
+        DATASET_CONFIG,
+        split=DATASET_SPLIT,
+        streaming=True,
+    )
+    examples = [
+        dict(example)
+        for example in islice(dataset, offset, offset + limit)
+    ]
+
+    if len(examples) != limit:
         raise ValueError(
-            f"No examples selected from offset {offset} with limit {limit}."
+            f"Requested {limit} examples from offset {offset}, but the "
+            f"dataset returned {len(examples)}."
         )
-    return selected
+    return examples
 
 
 def paragraph_id(title: str, paragraph: str) -> str:
@@ -172,7 +157,6 @@ def replace_hotpotqa_vectors(nodes: list[TextNode]) -> int:
 
 
 def prepare(args: argparse.Namespace) -> None:
-    download_dataset(args.source_url, args.force_download)
     examples = load_examples(args.offset, args.limit)
     nodes = build_distractor_nodes(examples)
     deleted = replace_hotpotqa_vectors(nodes)
