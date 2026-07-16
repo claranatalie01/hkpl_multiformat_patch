@@ -226,26 +226,29 @@ def build_nodes_and_rows(examples: list[dict]) -> tuple[list[TextNode], list[dic
     nodes: list[TextNode] = []
     for chunk_id, record in paragraphs.items():
         title = record["title"]
+        metadata = {
+            "dataset": DATASET_NAME,
+            "corpus": DATASET_NAME,
+            "kb_document_id": chunk_id,
+            "document_id": chunk_id,
+            "chunk_id": chunk_id,
+            "source_title": title,
+            "source_url": (
+                "https://en.wikipedia.org/wiki/"
+                + quote(title.replace(" ", "_"))
+            ),
+            "source_type": "benchmark",
+            "document_type": "prose",
+            "chunk_strategy": "atomic",
+            "document_version": 1,
+            "hotpotqa_example_ids": sorted(record["example_ids"]),
+        }
         node = TextNode(
             id_=chunk_id,
-            text=record["text"],
-            metadata={
-                "dataset": DATASET_NAME,
-                "corpus": DATASET_NAME,
-                "kb_document_id": chunk_id,
-                "document_id": chunk_id,
-                "chunk_id": chunk_id,
-                "source_title": title,
-                "source_url": (
-                    "https://en.wikipedia.org/wiki/"
-                    + quote(title.replace(" ", "_"))
-                ),
-                "source_type": "benchmark",
-                "document_type": "prose",
-                "chunk_strategy": "atomic",
-                "document_version": 1,
-                "hotpotqa_example_ids": sorted(record["example_ids"]),
-            },
+            text=f"Title: {title}\n\n{record['text']}",
+            metadata=metadata,
+            excluded_embed_metadata_keys=list(metadata),
+            excluded_llm_metadata_keys=list(metadata),
         )
         nodes.append(node)
 

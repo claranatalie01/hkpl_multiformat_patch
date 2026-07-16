@@ -114,6 +114,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional deterministic limit applied independently to each dataset.",
     )
+    parser.add_argument(
+        "--question-contains",
+        default="",
+        help="Evaluate only questions containing this case-insensitive text.",
+    )
     return parser.parse_args()
 
 
@@ -489,6 +494,11 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         }
         retrieval_mrr = reciprocal_rank(expected_ids, vector_ids)
         reranker_mrr = reciprocal_rank(expected_ids, reranked_ids)
+        all_candidate_metrics = ranking_metrics(
+            expected_ids,
+            vector_ids,
+            len(vector_ids),
+        )
 
         context, contexts, sources = build_context(nodes)
         context_ids = [source["chunk_id"] for source in sources]
@@ -498,6 +508,8 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             LLM_TOKENIZER_URL,
             LLM_TOKENIZER_NAME,
         )
+        rag_latency_seconds = round(time.perf_counter() - started, 4)
+        evaluation_started = time.perf_counter()
 
         correctness, correctness_reason, correctness_failed = await run_evaluator(
             "correctness_evaluator",
@@ -528,6 +540,10 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         )
         evaluator_failed = (
             correctness_failed or faithfulness_failed or relevancy_failed
+        )
+        evaluation_latency_seconds = round(
+            time.perf_counter() - evaluation_started,
+            4,
         )
         hallucination = (
             0.0
@@ -572,6 +588,9 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             "expected_chunk_ids": json.dumps(expected_ids),
             "retrieval_mrr": retrieval_mrr,
             "reranker_mrr": reranker_mrr,
+            "retrieval_candidate_count": len(vector_ids),
+            "retrieval_recall_all_candidates": all_candidate_metrics["recall"],
+            "retrieval_complete_all_candidates": all_candidate_metrics["complete"],
             "correctness": correctness,
             "correctness_normalized": max(0.0, min(1.0, correctness / 5.0)),
             "faithfulness": faithfulness,
@@ -592,7 +611,9 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             "pipeline_total_tokens": pipeline_tokens,
             "tokens_are_estimated": tokens_estimated,
             "tokenizer": tokenizer,
-            "latency_seconds": round(time.perf_counter() - started, 4),
+            "rag_latency_seconds": rag_latency_seconds,
+            "evaluation_latency_seconds": evaluation_latency_seconds,
+            "total_latency_seconds": round(time.perf_counter() - started, 4),
         }
         for prefix, metrics in (
             ("retrieval", retrieval_metrics),
@@ -610,6 +631,14 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         span.set_attribute("eval.evaluator_failed", evaluator_failed)
         span.set_attribute("eval.retrieval_mrr", retrieval_mrr)
         span.set_attribute("eval.reranker_mrr", reranker_mrr)
+        span.set_attribute(
+            "eval.retrieval.recall_all_candidates",
+            float(all_candidate_metrics["recall"]),
+        )
+        span.set_attribute(
+            "eval.retrieval.complete_all_candidates",
+            float(all_candidate_metrics["complete"]),
+        )
         for prefix, metrics in (
             ("retrieval", retrieval_metrics),
             ("reranker", reranker_metrics),
@@ -621,6 +650,11 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
                         float(metrics[cutoff][metric]),
                     )
         span.set_attribute("rag.diagnosis", diagnosis)
+        span.set_attribute("rag.latency_seconds", rag_latency_seconds)
+        span.set_attribute(
+            "eval.latency_seconds",
+            evaluation_latency_seconds,
+        )
         span.set_attribute("rag.token_count.total_pipeline", pipeline_tokens)
         span.set_attribute("rag.token_count.is_estimated", tokens_estimated)
         set_json_attribute(span, "rag.evaluation_output", result)
@@ -677,6 +711,9 @@ def failed_result(row: dict, error: Exception) -> dict:
         "expected_chunk_ids": json.dumps(row["expected_chunk_ids"]),
         "retrieval_mrr": 0.0,
         "reranker_mrr": 0.0,
+        "retrieval_candidate_count": 0,
+        "retrieval_recall_all_candidates": 0.0,
+        "retrieval_complete_all_candidates": 0.0,
         "correctness": 0.0,
         "correctness_normalized": 0.0,
         "faithfulness": 0.0,
@@ -697,7 +734,9 @@ def failed_result(row: dict, error: Exception) -> dict:
         "pipeline_total_tokens": 0,
         "tokens_are_estimated": True,
         "tokenizer": "",
-        "latency_seconds": 0.0,
+        "rag_latency_seconds": 0.0,
+        "evaluation_latency_seconds": 0.0,
+        "total_latency_seconds": 0.0,
     }
     for prefix in ("retrieval", "reranker"):
         for cutoff in CUTOFFS:
@@ -725,12 +764,25 @@ def summarize(results: list[dict]) -> dict:
         "answer_evaluated_questions": len(judged_results),
         "retrieval_mrr": average("retrieval_mrr"),
         "reranker_mrr": average("reranker_mrr"),
+        "average_retrieval_candidate_count": average(
+            "retrieval_candidate_count"
+        ),
+        "retrieval_recall_all_candidates": average(
+            "retrieval_recall_all_candidates"
+        ),
+        "retrieval_complete_all_candidates": average(
+            "retrieval_complete_all_candidates"
+        ),
         "average_correctness": judged_average("correctness"),
         "average_correctness_normalized": judged_average("correctness_normalized"),
         "average_faithfulness": judged_average("faithfulness"),
         "average_relevancy": judged_average("relevancy"),
         "average_hallucination": judged_average("hallucination"),
-        "average_latency_seconds": average("latency_seconds"),
+        "average_rag_latency_seconds": average("rag_latency_seconds"),
+        "average_evaluation_latency_seconds": average(
+            "evaluation_latency_seconds"
+        ),
+        "average_total_latency_seconds": average("total_latency_seconds"),
         "average_retriever_query_tokens": average("retriever_query_tokens"),
         "average_reranker_input_tokens": average("reranker_input_tokens"),
         "average_context_tokens": average("context_tokens"),
@@ -801,6 +853,13 @@ async def main() -> None:
         raise ValueError("--limit-per-dataset must be positive.")
 
     rows = load_rows(args.dataset, args.limit_per_dataset)
+    if args.question_contains:
+        needle = args.question_contains.casefold()
+        rows = [row for row in rows if needle in row["question"].casefold()]
+        if not rows:
+            raise RuntimeError(
+                f"No evaluation question contains {args.question_contains!r}."
+            )
     selected_datasets = list(dict.fromkeys(row["dataset"] for row in rows))
     print(f"Loaded {len(rows)} evaluation rows: {selected_datasets}")
     print(f"Retriever searches one vector table: data_{VECTOR_TABLE}")
@@ -851,6 +910,10 @@ async def main() -> None:
             "hit_at_k": "At least one expected chunk appears in the top K.",
             "recall_at_k": "Fraction of expected chunks appearing in the top K.",
             "complete_at_k": "All expected chunks appear in the top K.",
+            "complete_all_candidates": (
+                "All expected chunks appear anywhere in the vector candidates "
+                "provided to the reranker."
+            ),
             "mrr": "Reciprocal rank of the first expected chunk.",
             "hallucination": "One minus the LlamaIndex faithfulness score.",
             "macro_average": "Every dataset has equal weight.",
