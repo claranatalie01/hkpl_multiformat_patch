@@ -46,6 +46,10 @@ CRAWL_STATE_DIR = Path("/app/storage/crawler_state")
 CRAWL_STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+class LowContentPageError(ValueError):
+    """The fetched page has too little indexable text to be useful."""
+
+
 def env_flag(name: str, default: bool) -> bool:
     fallback = "true" if default else "false"
     return os.getenv(name, fallback).strip().lower() in {"1", "true", "yes", "on"}
@@ -161,7 +165,7 @@ def extract_main_html(html: str) -> tuple[str, str]:
     # This avoids indexing empty/login/search/navigation pages
     # without hardcoding specific URL paths.
     if len(extracted_text) < 200:
-        raise ValueError(
+        raise LowContentPageError(
             f"Skipped page because extracted text is too short: {len(extracted_text)} characters"
         )
 
@@ -299,6 +303,7 @@ def crawl(
         "discovered": 0,
         "html_indexed": 0,
         "pdf_indexed": 0,
+        "skipped_low_content": 0,
         "skipped_robots": 0,
         "skipped_unsupported": 0,
     }
@@ -404,6 +409,9 @@ def crawl(
                     if link not in visited:
                         queue.append((link, depth + 1))
 
+        except LowContentPageError as exc:
+            stats["skipped_low_content"] += 1
+            logger.info("Skipped low-content page %s: %s", url, exc)
         except Exception as exc:
             stats["failed"] += 1
             logger.exception("Failed to crawl %s: %s", url, exc)

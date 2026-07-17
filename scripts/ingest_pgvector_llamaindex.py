@@ -467,6 +467,18 @@ def audit_knowledge_chunks() -> bool:
             """)
         ).mappings().all()
 
+        corpus_rows = connection.execute(
+            text(f"""
+                SELECT
+                    COALESCE(NULLIF(metadata_->>'dataset', ''), 'hkpl') AS dataset,
+                    COALESCE(NULLIF(metadata_->>'corpus_role', ''), 'primary') AS corpus_role,
+                    COUNT(*) AS chunks
+                FROM {table_name}
+                GROUP BY dataset, corpus_role
+                ORDER BY dataset, corpus_role
+            """)
+        ).mappings().all()
+
         registry_mismatches = connection.execute(
             text(f"""
                 WITH actual AS (
@@ -530,7 +542,15 @@ def audit_knowledge_chunks() -> bool:
 
         duplicate_groups = connection.execute(
             text(f"""
-                SELECT md5(text) AS content_hash, COUNT(*) AS copies
+                SELECT
+                    md5(text) AS content_hash,
+                    COUNT(*) AS copies,
+                    COUNT(DISTINCT metadata_->>'kb_document_id') AS documents,
+                    STRING_AGG(
+                        DISTINCT COALESCE(NULLIF(metadata_->>'dataset', ''), 'hkpl'),
+                        ', '
+                    ) AS datasets,
+                    LEFT(MIN(regexp_replace(text, '\\s+', ' ', 'g')), 180) AS preview
                 FROM {table_name}
                 GROUP BY md5(text)
                 HAVING COUNT(*) > 1
@@ -547,7 +567,7 @@ def audit_knowledge_chunks() -> bool:
             """)
         ).mappings().all()
 
-    faq_issues: list[str] = []
+    faq_issues: list[dict] = []
     directory_issues: list[str] = []
     announcement_issues: list[str] = []
     dated_entry = re.compile(r"(?m)^\(?\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s*\)?")
@@ -559,16 +579,27 @@ def audit_knowledge_chunks() -> bool:
         document_type = metadata.get("document_type")
 
         if document_type == "faq":
-            questions = set(re.findall(r"(?im)^\s*Q(\d+)\s*[:.)]", content))
-            answers = set(re.findall(r"(?im)^\s*A(\d+)\s*[:.)]", content))
-            labelled_question = bool(re.search(r"(?im)^\s*question\s*:", content))
-            labelled_answer = bool(re.search(r"(?im)^\s*answer\s*:", content))
-            if (not questions and not labelled_question) or (
-                questions and not questions.issubset(answers)
-            ) or (
-                labelled_question != labelled_answer
-            ):
-                faq_issues.append(node_id)
+            questions = set(re.findall(r"(?i)\bQ(\d+)\s*[:.)]", content))
+            answers = set(re.findall(r"(?i)\bA(\d+)\s*[:.)]", content))
+            labelled_question = bool(re.search(r"(?i)\bquestion\s*:", content))
+            labelled_answer = bool(re.search(r"(?i)\banswer\s*:", content))
+            issue_reason = ""
+            if (questions or answers) and questions != answers:
+                issue_reason = (
+                    f"numbered labels differ: Q={sorted(questions)} "
+                    f"A={sorted(answers)}"
+                )
+            elif labelled_question != labelled_answer:
+                issue_reason = "Question:/Answer: labels are not paired"
+
+            if issue_reason:
+                faq_issues.append({
+                    "node_id": node_id,
+                    "reason": issue_reason,
+                    "title": metadata.get("source_title", ""),
+                    "url": metadata.get("source_url") or metadata.get("url", ""),
+                    "preview": re.sub(r"\s+", " ", content).strip()[:240],
+                })
         elif document_type == "directory":
             if not metadata.get("library_name"):
                 directory_issues.append(node_id)
@@ -593,11 +624,17 @@ def audit_knowledge_chunks() -> bool:
     }
 
     print("=" * 80)
-    print("HKPL Knowledge Chunk Audit")
+    print("Shared Knowledge Chunk Audit")
     print("=" * 80)
     print(f"Total chunks       : {summary['total_chunks']}")
     print(f"Vector documents   : {summary['vector_documents']}")
     print(f"Embedding dimension: {EMBED_DIM}")
+    print("\nCorpus distribution:")
+    for row in corpus_rows:
+        print(
+            f"- {row['dataset']}/{row['corpus_role']}: "
+            f"{row['chunks']} chunks"
+        )
     print("\nDocument type and strategy distribution:")
     for row in type_rows:
         print(
@@ -618,10 +655,22 @@ def audit_knowledge_chunks() -> bool:
                 f"- {row['file_name']} section={row['section_index']} "
                 f"chunks={row['chunks']} document={row['document_id']}"
             )
+    if faq_issues:
+        print("\nFAQ pairing issues:")
+        for issue in faq_issues[:20]:
+            print(
+                f"- {issue['node_id']} reason={issue['reason']} "
+                f"title={issue['title']} url={issue['url']}"
+            )
+            print(f"  preview={issue['preview']}")
     if duplicate_groups:
         print("\nReview warning: exact duplicate chunk text exists:")
         for row in duplicate_groups:
-            print(f"- hash={row['content_hash']} copies={row['copies']}")
+            print(
+                f"- hash={row['content_hash']} copies={row['copies']} "
+                f"documents={row['documents']} datasets={row['datasets']}"
+            )
+            print(f"  preview={row['preview']}")
 
     passed = all(count == 0 for count in checks.values())
     print("\nResult:", "PASSED" if passed else "FAILED")
