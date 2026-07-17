@@ -52,8 +52,6 @@ EVALUATION_DATASET_TABLE = os.getenv(
     "EVALUATION_DATASET_TABLE",
     "evaluation_dataset",
 )
-HOTPOTQA_DATASET_NAME = "hotpotqa"
-
 EVALUATION_DATASET_COLUMNS = [
     "domain",
     "query",
@@ -319,9 +317,10 @@ def clear_hkpl_chunks() -> int:
         result = connection.execute(
             text(f"""
                 DELETE FROM {table_name}
-                WHERE metadata_->>'dataset' IS DISTINCT FROM :dataset
+                WHERE COALESCE(metadata_->>'corpus_role', '') <> 'distractor'
+                  AND COALESCE(metadata_->>'dataset', '')
+                      NOT IN ('hotpotqa', 'webz_news')
             """),
-            {"dataset": HOTPOTQA_DATASET_NAME},
         )
     return int(result.rowcount or 0)
 
@@ -473,7 +472,9 @@ def audit_knowledge_chunks() -> bool:
                 WITH actual AS (
                     SELECT metadata_->>'kb_document_id' AS document_id, COUNT(*) AS chunks
                     FROM {table_name}
-                    WHERE metadata_->>'dataset' IS DISTINCT FROM :benchmark_dataset
+                    WHERE COALESCE(metadata_->>'corpus_role', '') <> 'distractor'
+                      AND COALESCE(metadata_->>'dataset', '')
+                          NOT IN ('hotpotqa', 'webz_news')
                     GROUP BY metadata_->>'kb_document_id'
                 )
                 SELECT
@@ -488,7 +489,6 @@ def audit_knowledge_chunks() -> bool:
                   AND documents.chunk_count <> COALESCE(actual.chunks, 0)
                 ORDER BY documents.source_title
             """),
-            {"benchmark_dataset": HOTPOTQA_DATASET_NAME},
         ).mappings().all()
 
         stale_or_orphaned = connection.execute(
@@ -500,8 +500,10 @@ def audit_knowledge_chunks() -> bool:
                  AND documents.status <> 'deleted'
                 WHERE (
                     documents.document_id IS NULL
-                    AND chunks.metadata_->>'dataset'
-                        IS DISTINCT FROM :benchmark_dataset
+                    AND COALESCE(chunks.metadata_->>'corpus_role', '')
+                        <> 'distractor'
+                    AND COALESCE(chunks.metadata_->>'dataset', '')
+                        NOT IN ('hotpotqa', 'webz_news')
                 ) OR (
                     documents.document_id IS NOT NULL
                     AND chunks.metadata_->>'document_version'
@@ -509,7 +511,6 @@ def audit_knowledge_chunks() -> bool:
                 )
                 LIMIT 50
             """),
-            {"benchmark_dataset": HOTPOTQA_DATASET_NAME},
         ).scalars().all()
 
         split_records = connection.execute(
@@ -738,7 +739,7 @@ def main() -> None:
         removed_chunks = clear_hkpl_chunks()
         print(
             f"Removed {removed_chunks} HKPL chunks from data_{VECTOR_TABLE}; "
-            "HotpotQA benchmark chunks were preserved."
+            "distractor corpus chunks were preserved."
         )
 
     if not args.evaluation_only and not (rebuild_all and faq_is_registered):

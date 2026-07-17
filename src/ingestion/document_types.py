@@ -68,6 +68,13 @@ DOCUMENT_TYPE_RULES = {
         "file_types": ["csv", "xlsx", "xlsm", "json", "jsonl", "xml"],
         "patterns": [],
     },
+    "news": {
+        "label": "News article",
+        "description": "One article per document, split at sentence boundaries with its title repeated in every chunk.",
+        "chunk_strategy": "prose",
+        "admin_selectable": False,
+        "patterns": [],
+    },
     "prose": {
         "label": "General prose",
         "description": "Narrative webpages, PDFs, and documents split into overlapping prose chunks.",

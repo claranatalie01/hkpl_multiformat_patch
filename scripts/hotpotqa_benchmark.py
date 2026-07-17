@@ -8,23 +8,22 @@ from pathlib import Path
 from urllib.parse import quote
 
 from datasets import load_dataset
-from llama_index.core import StorageContext, VectorStoreIndex
 from llama_index.core.schema import TextNode
-from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.infrastructure.db import engine
-from src.infrastructure.embedding import embed_model
-from src.infrastructure.vector_store import VECTOR_TABLE, vector_store
+from src.corpus import (
+    DISTRACTOR_CORPUS_ROLE,
+    VECTOR_TABLE_NAME,
+    replace_dataset_vectors,
+)
 
 
 DATASET_NAME = "hotpotqa"
 DATASET_REPOSITORY = "hotpotqa/hotpot_qa"
 DATASET_CONFIG = "distractor"
 DATASET_SPLIT = "validation"
-TABLE_NAME = f"data_{VECTOR_TABLE}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,6 +107,7 @@ def build_distractor_nodes(examples: list[dict]) -> list[TextNode]:
         metadata = {
             "dataset": DATASET_NAME,
             "corpus": DATASET_NAME,
+            "corpus_role": DISTRACTOR_CORPUS_ROLE,
             "kb_document_id": chunk_id,
             "document_id": chunk_id,
             "chunk_id": chunk_id,
@@ -136,34 +136,14 @@ def build_distractor_nodes(examples: list[dict]) -> list[TextNode]:
     return nodes
 
 
-def replace_hotpotqa_vectors(nodes: list[TextNode]) -> int:
-    with engine.begin() as connection:
-        deleted = connection.execute(
-            text(f"""
-                DELETE FROM {TABLE_NAME}
-                WHERE metadata_->>'dataset' = :dataset
-            """),
-            {"dataset": DATASET_NAME},
-        )
-
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-    VectorStoreIndex(
-        nodes,
-        storage_context=storage_context,
-        embed_model=embed_model,
-        show_progress=True,
-    )
-    return int(deleted.rowcount or 0)
-
-
 def prepare(args: argparse.Namespace) -> None:
     examples = load_examples(args.offset, args.limit)
     nodes = build_distractor_nodes(examples)
-    deleted = replace_hotpotqa_vectors(nodes)
+    deleted = replace_dataset_vectors(DATASET_NAME, nodes)
     print(f"Removed previous HotpotQA distractor vectors: {deleted}")
     print(f"HotpotQA examples sampled: {len(examples)}")
     print(f"Unique HotpotQA distractor paragraphs: {len(nodes)}")
-    print(f"Shared vector table: {TABLE_NAME}")
+    print(f"Shared vector table: {VECTOR_TABLE_NAME}")
     print("No HotpotQA questions or expected answers were stored for evaluation.")
 
 

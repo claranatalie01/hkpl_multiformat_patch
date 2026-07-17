@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 
 data/rag_evaluation/
+data/webz_news/
 data/generation_results.csv
 data/generation_summary.json
 data/retrieval_results.csv

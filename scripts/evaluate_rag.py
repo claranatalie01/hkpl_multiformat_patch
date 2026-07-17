@@ -30,6 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.infrastructure.db import engine
 from src.infrastructure.vector_store import VECTOR_TABLE
+from src.corpus import is_distractor_metadata
 from src.llm_client import http_llm, http_llm_with_usage
 from src.observability import setup_phoenix_tracing
 from src.phoenix_annotations import (
@@ -94,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Evaluate HKPL questions while searching the combined HKPL and "
-            "HotpotQA distractor vector corpus."
+            "distractor vector corpora."
         )
     )
     parser.add_argument(
@@ -238,14 +239,16 @@ def ranked_chunk_ids(documents: list[dict]) -> list[str]:
 
 def distractor_metrics(documents: list[dict], k: int) -> dict:
     selected = documents[:k]
-    hotpotqa_count = sum(
-        str(document.get("metadata", {}).get("dataset") or "").lower()
-        == "hotpotqa"
+    datasets = Counter(
+        str(document.get("metadata", {}).get("dataset") or "unknown").lower()
         for document in selected
+        if is_distractor_metadata(document.get("metadata"))
     )
+    distractor_count = sum(datasets.values())
     return {
-        "count": hotpotqa_count,
-        "rate": hotpotqa_count / len(selected) if selected else 0.0,
+        "count": distractor_count,
+        "rate": distractor_count / len(selected) if selected else 0.0,
+        "by_dataset": dict(sorted(datasets.items())),
     }
 
 
@@ -476,7 +479,7 @@ def distractor_annotations(prefix: str, metrics: dict) -> list[dict]:
             "score": float(metrics[cutoff]["rate"]),
             "explanation": (
                 "Fraction of selected documents originating from the "
-                "HotpotQA distractor corpus."
+                "configured distractor corpora."
             ),
         }
         for cutoff in CUTOFFS
@@ -676,12 +679,16 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             ("reranker", reranker_distractors),
         ):
             for cutoff in CUTOFFS:
-                result[f"{prefix}_hotpotqa_count_at_{cutoff}"] = metrics[cutoff][
+                result[f"{prefix}_distractor_count_at_{cutoff}"] = metrics[cutoff][
                     "count"
                 ]
                 result[f"{prefix}_distractor_rate_at_{cutoff}"] = metrics[cutoff][
                     "rate"
                 ]
+                result[f"{prefix}_distractor_datasets_at_{cutoff}"] = json.dumps(
+                    metrics[cutoff]["by_dataset"],
+                    sort_keys=True,
+                )
 
         span.set_attribute(SpanAttributes.OUTPUT_VALUE, answer)
         span.set_attribute("eval.correctness", correctness)
@@ -717,6 +724,11 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
                 span.set_attribute(
                     f"eval.{prefix}.distractor_rate_at_{cutoff}",
                     float(metrics[cutoff]["rate"]),
+                )
+                set_json_attribute(
+                    span,
+                    f"eval.{prefix}.distractor_datasets_at_{cutoff}",
+                    metrics[cutoff]["by_dataset"],
                 )
         span.set_attribute("rag.diagnosis", diagnosis)
         span.set_attribute("rag.latency_seconds", rag_latency_seconds)
@@ -828,8 +840,9 @@ def failed_result(row: dict, error: Exception) -> dict:
         for cutoff in CUTOFFS:
             for metric in ("hit", "recall", "complete"):
                 result[f"{prefix}_{metric}_at_{cutoff}"] = 0.0
-            result[f"{prefix}_hotpotqa_count_at_{cutoff}"] = 0
+            result[f"{prefix}_distractor_count_at_{cutoff}"] = 0
             result[f"{prefix}_distractor_rate_at_{cutoff}"] = 0.0
+            result[f"{prefix}_distractor_datasets_at_{cutoff}"] = "{}"
     return result
 
 
@@ -889,12 +902,29 @@ def summarize(results: list[dict]) -> dict:
             for metric in ("hit", "recall", "complete"):
                 field = f"{prefix}_{metric}_at_{cutoff}"
                 summary[field] = average(field)
-            summary[f"{prefix}_average_hotpotqa_count_at_{cutoff}"] = average(
-                f"{prefix}_hotpotqa_count_at_{cutoff}"
+            summary[f"{prefix}_average_distractor_count_at_{cutoff}"] = average(
+                f"{prefix}_distractor_count_at_{cutoff}"
             )
             summary[f"{prefix}_distractor_rate_at_{cutoff}"] = average(
                 f"{prefix}_distractor_rate_at_{cutoff}"
             )
+            corpus_counts: Counter = Counter()
+            for row in results:
+                corpus_counts.update(
+                    json.loads(
+                        row[f"{prefix}_distractor_datasets_at_{cutoff}"]
+                    )
+                )
+            summary[f"{prefix}_distractor_counts_by_dataset_at_{cutoff}"] = dict(
+                sorted(corpus_counts.items())
+            )
+            average_field = (
+                f"{prefix}_average_distractor_count_by_dataset_at_{cutoff}"
+            )
+            summary[average_field] = {
+                dataset: count / len(results)
+                for dataset, count in sorted(corpus_counts.items())
+            }
     return summary
 
 
@@ -905,13 +935,17 @@ def log_summary_span(summary: dict) -> None:
             "EVALUATOR",
             input_value={
                 "evaluation_dataset": "hkpl",
-                "distractor_dataset": "hotpotqa",
+                "distractor_datasets": summary["distractor_datasets"],
                 "vector_table": summary["vector_table"],
             },
             output_value=summary,
         )
         span.set_attribute("eval.dataset", "hkpl")
-        span.set_attribute("eval.distractor_dataset", "hotpotqa")
+        set_json_attribute(
+            span,
+            "eval.distractor_datasets",
+            summary["distractor_datasets"],
+        )
         set_json_attribute(
             span,
             "eval.search_corpus_vectors",
@@ -957,7 +991,7 @@ async def main() -> None:
     print(f"Loaded {len(rows)} HKPL evaluation rows.")
     print(
         f"Retriever searches combined vector table: data_{VECTOR_TABLE} "
-        "(HKPL + HotpotQA distractors)"
+        "(HKPL + all configured distractor corpora)"
     )
     print(f"Search corpus vectors: {corpus_counts}")
     print(f"Phoenix project: {os.getenv('PHOENIX_PROJECT_NAME', 'hkpl-rag')}")
@@ -998,7 +1032,9 @@ async def main() -> None:
         "phoenix_project": os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag"),
         "vector_table": f"data_{VECTOR_TABLE}",
         "evaluation_dataset": "hkpl",
-        "distractor_dataset": "hotpotqa",
+        "distractor_datasets": sorted(
+            dataset for dataset in corpus_counts if dataset != "hkpl"
+        ),
         "search_corpus_vectors": corpus_counts,
         "metric_definitions": {
             "hit_at_k": "At least one expected chunk appears in the top K.",
@@ -1012,7 +1048,7 @@ async def main() -> None:
             "hallucination": "One minus the LlamaIndex faithfulness score.",
             "distractor_rate_at_k": (
                 "Fraction of the top K documents whose dataset metadata is "
-                "hotpotqa."
+                "marked as a distractor corpus."
             ),
         },
     })
