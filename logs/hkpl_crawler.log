@@ -3712,3 +3712,374 @@ Traceback (most recent call last):
     import requests
 ModuleNotFoundError: No module named 'requests'
 
+ Container hkpl_phoenix Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-ac244b6fc6a1 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-ac244b6fc6a1 Created 
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/
+INFO:src.ingestion.service:Document ingestion completed: {'document_id': '8e28f067-9f45-4a81-81e2-f3df020b95ce', 'status': 'completed', 'file_name': 'crawler_f48bc9dadeeed2fc.html', 'document_version': 8, 'sections_extracted': 12, 'chunks_created': 12, 'old_chunks_removed': 12}
+INFO:hkpl_crawler:Indexed https://www.hkpl.gov.hk/en/ result={'document_id': '8e28f067-9f45-4a81-81e2-f3df020b95ce', 'status': 'completed', 'file_name': 'crawler_f48bc9dadeeed2fc.html', 'document_version': 8, 'sections_extracted': 12, 'chunks_created': 12, 'old_chunks_removed': 12}
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/extension-activities/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/extension-activities/: Skipped page because extracted text is too short: 24 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 24 characters
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/about-us/services/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/services/: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/about-us/services/
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 213, in crawl
+    raw_html = fetch(url)
+               ^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 170, in fetch
+    response.raise_for_status()
+  File "/app/.venv/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/about-us/services/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/e-resources/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/collections/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/collections/: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/collections/
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 213, in crawl
+    raw_html = fetch(url)
+               ^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 170, in fetch
+    response.raise_for_status()
+  File "/app/.venv/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/collections/
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/HKCL/intro.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/aboutus-prddln.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/barrier-free.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/collection-develop/collection-of-views-on-library-collections.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/collection-develop/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/contact-us.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/faq-password.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/forms.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/intro/intro.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/job-vacancies.html
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/job-vacancies.html: Skipped page because extracted text is too short: 86 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 86 characters
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/books/Titles.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/newsletter/2026.html
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/publication/newsletter/2026.html: Skipped page because extracted text is too short: 179 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 179 characters
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/newsletter/terms.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/SLS-Self-services-Equipment.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/book-registration/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/hiring/HKCL/facilities.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/lending/email.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/library-station/catalogue.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/library-station/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/mobileapp.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/faq.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/form.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/guangdong.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/change_my_password.html
+INFO:hkpl_crawler:Indexed https://www.hkpl.gov.hk/en/change_my_password.html result={'status': 'duplicate', 'document_id': '8e28f067-9f45-4a81-81e2-f3df020b95ce', 'file_name': 'crawler_f48bc9dadeeed2fc.html'}
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/collections/catalogues/catalogue.html
+{'visited': 30, 'indexed': 2, 'unchanged': 23, 'failed': 5, 'discovered': 207}
+
+ Container hkpl_llm Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-e952975d7224 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-e952975d7224 Created 
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/extension-activities/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/extension-activities/: Skipped page because extracted text is too short: 24 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 24 characters
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/about-us/services/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/services/: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/about-us/services/
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 213, in crawl
+    raw_html = fetch(url)
+               ^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 170, in fetch
+    response.raise_for_status()
+  File "/app/.venv/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/about-us/services/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/e-resources/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/collections/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/collections/: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/collections/
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 213, in crawl
+    raw_html = fetch(url)
+               ^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 170, in fetch
+    response.raise_for_status()
+  File "/app/.venv/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/collections/
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/HKCL/intro.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/aboutus-prddln.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/barrier-free.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/collection-develop/collection-of-views-on-library-collections.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/collection-develop/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/contact-us.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/faq-password.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/forms.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/intro/intro.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/job-vacancies.html
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/job-vacancies.html: Skipped page because extracted text is too short: 86 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 86 characters
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/books/Titles.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/newsletter/2026.html
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/publication/newsletter/2026.html: Skipped page because extracted text is too short: 179 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 179 characters
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/newsletter/terms.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/SLS-Self-services-Equipment.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/book-registration/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/hiring/HKCL/facilities.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/lending/email.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/library-station/catalogue.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/library-station/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/mobileapp.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/faq.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/form.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/guangdong.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/change_my_password.html
+INFO:src.ingestion.service:Document ingestion completed: {'document_id': 'bf34e06f-ea8e-48a9-9ce0-62ca7d158bf9', 'status': 'completed', 'file_name': 'crawler_de78b22a701a5377.html', 'document_version': 1, 'sections_extracted': 12, 'chunks_created': 12, 'old_chunks_removed': 0}
+INFO:hkpl_crawler:Indexed https://www.hkpl.gov.hk/en/change_my_password.html result={'document_id': 'bf34e06f-ea8e-48a9-9ce0-62ca7d158bf9', 'status': 'completed', 'file_name': 'crawler_de78b22a701a5377.html', 'document_version': 1, 'sections_extracted': 12, 'chunks_created': 12, 'old_chunks_removed': 0}
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/collections/catalogues/catalogue.html
+{'visited': 30, 'indexed': 1, 'unchanged': 24, 'failed': 5, 'discovered': 207}
+
+ Container hkpl_embedding Running 
+ Container hkpl_llm Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-576049e33581 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-576049e33581 Created 
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/
+INFO:src.ingestion.service:Document ingestion completed: {'document_id': '8e28f067-9f45-4a81-81e2-f3df020b95ce', 'status': 'completed', 'file_name': 'crawler_f48bc9dadeeed2fc.html', 'document_version': 9, 'sections_extracted': 12, 'chunks_created': 12, 'old_chunks_removed': 12}
+INFO:hkpl_crawler:Indexed https://www.hkpl.gov.hk/en/ result={'document_id': '8e28f067-9f45-4a81-81e2-f3df020b95ce', 'status': 'completed', 'file_name': 'crawler_f48bc9dadeeed2fc.html', 'document_version': 9, 'sections_extracted': 12, 'chunks_created': 12, 'old_chunks_removed': 12}
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/extension-activities/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/extension-activities/: Skipped page because extracted text is too short: 24 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 24 characters
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/about-us/services/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/services/: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/about-us/services/
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 213, in crawl
+    raw_html = fetch(url)
+               ^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 170, in fetch
+    response.raise_for_status()
+  File "/app/.venv/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/about-us/services/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/e-resources/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/collections/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/collections/: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/collections/
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 213, in crawl
+    raw_html = fetch(url)
+               ^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 170, in fetch
+    response.raise_for_status()
+  File "/app/.venv/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/collections/
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/HKCL/intro.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/aboutus-prddln.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/barrier-free.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/collection-develop/collection-of-views-on-library-collections.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/collection-develop/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/contact-us.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/faq-password.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/forms.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/intro/intro.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/job-vacancies.html
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/job-vacancies.html: Skipped page because extracted text is too short: 86 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 86 characters
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/books/Titles.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/newsletter/2026.html
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/publication/newsletter/2026.html: Skipped page because extracted text is too short: 179 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 179 characters
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/newsletter/terms.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/SLS-Self-services-Equipment.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/book-registration/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/hiring/HKCL/facilities.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/lending/email.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/library-station/catalogue.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/library-station/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/mobileapp.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/faq.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/form.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/guangdong.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/change_my_password.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/collections/catalogues/catalogue.html
+{'visited': 30, 'indexed': 1, 'unchanged': 24, 'failed': 5, 'discovered': 207}
+
+ Container hkpl_llm Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_embedding Running 
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-1be15c3e0ff2 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-1be15c3e0ff2 Created 
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/extension-activities/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/extension-activities/: Skipped page because extracted text is too short: 24 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 24 characters
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/about-us/services/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/services/: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/about-us/services/
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 213, in crawl
+    raw_html = fetch(url)
+               ^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 170, in fetch
+    response.raise_for_status()
+  File "/app/.venv/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/about-us/services/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/e-resources/
+INFO:hkpl_crawler:Fetching depth=0 url=https://www.hkpl.gov.hk/en/collections/
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/collections/: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/collections/
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 213, in crawl
+    raw_html = fetch(url)
+               ^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 170, in fetch
+    response.raise_for_status()
+  File "/app/.venv/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://www.hkpl.gov.hk/en/collections/
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/HKCL/intro.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/aboutus-prddln.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/barrier-free.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/collection-develop/collection-of-views-on-library-collections.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/collection-develop/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/contact-us.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/faq-password.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/forms.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/intro/intro.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/job-vacancies.html
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/job-vacancies.html: Skipped page because extracted text is too short: 86 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 86 characters
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/books/Titles.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/newsletter/2026.html
+ERROR:hkpl_crawler:Failed to crawl https://www.hkpl.gov.hk/en/about-us/publication/newsletter/2026.html: Skipped page because extracted text is too short: 179 characters
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 214, in crawl
+    title, main_html = extract_main_html(raw_html)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 129, in extract_main_html
+    raise ValueError(
+ValueError: Skipped page because extracted text is too short: 179 characters
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/publication/newsletter/terms.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/SLS-Self-services-Equipment.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/book-registration/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/hiring/HKCL/facilities.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/lending/email.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/library-station/catalogue.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/library-station/introduction.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/about-us/services/mobileapp.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/faq.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/form.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/ask-a-librarian/guangdong.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/change_my_password.html
+INFO:hkpl_crawler:Fetching depth=1 url=https://www.hkpl.gov.hk/en/collections/catalogues/catalogue.html
+{'visited': 30, 'indexed': 0, 'unchanged': 25, 'failed': 5, 'discovered': 207}
+

@@ -172,6 +172,9 @@ def prepare_documents_for_chunking(documents: List[Document]) -> List[Document]:
         document.metadata.update(
             {
                 **metadata,
+                "dataset": metadata.get("dataset") or "hkpl",
+                "corpus": metadata.get("corpus") or "hkpl",
+                "corpus_role": metadata.get("corpus_role") or "primary",
                 "chunk_strategy": strategy,
                 "document_type": doc_type,
             }
@@ -209,11 +212,19 @@ def chunk_documents(documents: List[Document]) -> List[BaseNode]:
         document_nodes = splitter.get_nodes_from_documents([document])
 
         kb_document_id = str(
-            document.metadata.get("document_id", "")
-        ).split(":")[0]
+            document.metadata.get("kb_document_id")
+            or document.metadata.get("document_id", "")
+        )
 
         for local_index, node in enumerate(document_nodes):
             content = node.get_content()
+
+            if document_type == "news":
+                title = str(node.metadata.get("source_title") or "").strip()
+                title_line = f"Title: {title}" if title else ""
+                if title_line and not content.startswith(title_line):
+                    content = f"{title_line}\n\n{content}"
+                    node.text = content
 
             if len(content.strip()) < 50:
                 continue

@@ -11,7 +11,13 @@ from opentelemetry.trace import format_span_id
 
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.schema import NodeWithScore
+from llama_index.core.vector_stores import MetadataFilter, MetadataFilters
 
+from .corpus import (
+    PRIMARY_CORPUS_ROLE,
+    is_distractor_metadata,
+    normalize_corpus_roles,
+)
 from .infrastructure.embedding import embed_model
 from .infrastructure.vector_store import VECTOR_TABLE, vector_store
 from src.tracing_helpers import (
@@ -45,9 +51,18 @@ index = VectorStoreIndex.from_vector_store(
     embed_model=embed_model,
 )
 
+normalize_corpus_roles()
 vector_retriever = index.as_retriever(similarity_top_k=SIMILARITY_TOP_K)
 live_vector_retriever = index.as_retriever(
-    similarity_top_k=max(SIMILARITY_TOP_K * 3, SIMILARITY_TOP_K),
+    similarity_top_k=SIMILARITY_TOP_K,
+    filters=MetadataFilters(
+        filters=[
+            MetadataFilter(
+                key="corpus_role",
+                value=PRIMARY_CORPUS_ROLE,
+            )
+        ]
+    ),
 )
 
 _reranker_token_usage: ContextVar[dict] = ContextVar(
@@ -379,12 +394,12 @@ async def retrieve_nodes(
             filtered_distractors = sum(
                 1
                 for node in raw_candidates
-                if (node.node.metadata or {}).get("dataset") == "hotpotqa"
+                if is_distractor_metadata(node.node.metadata)
             )
             candidates = [
                 node
                 for node in raw_candidates
-                if (node.node.metadata or {}).get("dataset") != "hotpotqa"
+                if not is_distractor_metadata(node.node.metadata)
             ][:SIMILARITY_TOP_K]
         vector_latency = time.time() - start
 

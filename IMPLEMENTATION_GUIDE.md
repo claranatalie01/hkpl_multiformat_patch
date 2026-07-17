@@ -100,7 +100,7 @@ docker compose run --rm langgraph-agent \
 ```
 
 `--rebuild-all` rebuilds registered HKPL sources while preserving rows tagged
-as the HotpotQA benchmark corpus.
+as distractor corpora.
 
 ## HotpotQA benchmark in the shared vector table
 
@@ -125,13 +125,44 @@ This deterministic subset creates 9,769 unique HotpotQA paragraph vectors.
 Embedding them can take several minutes. Re-running the command is safe: it
 replaces HotpotQA vectors and leaves HKPL vectors untouched.
 
-### HKPL evaluation with HotpotQA distractor noise
+## Webz.io news distractor corpus
+
+The news loader reads the public `Webhose/free-news-datasets` repository. Each
+JSON article remains a separate document. Its body is split at sentence
+boundaries into 512-token chunks with 64-token overlap, and the article title
+is repeated in every chunk. Articles are never joined together.
+
+Review the repository terms before ingestion. List available weekly archives:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/webz_news_benchmark.py list --limit 20
+```
+
+Ingest the latest archive, up to 1,000 articles:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/webz_news_benchmark.py prepare \
+  --archive latest --limit 1000 --accept-terms
+```
+
+For a reproducible experiment, replace `latest` with an exact filename from
+the list command. The ZIP is cached under `data/webz_news/`. Re-running the
+command replaces only rows tagged `dataset=webz_news`; HKPL and HotpotQA rows
+remain untouched.
+
+Repeat `--archive ARCHIVE_NAME.zip` to combine several themes. `--limit` is the
+total article limit across all selected archives; avoid ingesting the entire
+repository unless that scale is part of the experiment.
+
+### HKPL evaluation with combined distractor noise
 
 `scripts/evaluate_rag.py` is the only evaluation entry point. It loads HKPL
 questions, expected answers, and expected chunks from `evaluation_dataset`,
-then searches the combined vector table containing both HKPL and HotpotQA
-paragraphs. HotpotQA contributes retrieval noise only; its questions and
-answers are not evaluation labels.
+then searches the combined vector table containing HKPL, HotpotQA paragraphs,
+and Webz.io news chunks. The external corpora contribute retrieval noise only;
+their questions and answers are not evaluation labels.
 
 Run a short smoke test with five HKPL questions:
 
@@ -157,8 +188,9 @@ docker compose run --rm langgraph-agent \
 
 Every question reports retrieval and reranker Hit, Recall, and Complete at
 1/3/5, MRR, LlamaIndex correctness, faithfulness, relevancy, hallucination
-derived from faithfulness, a stage-specific RAG diagnosis, and HotpotQA
-distractor rates before and after reranking.
+derived from faithfulness, a stage-specific RAG diagnosis, and generic
+distractor rates before and after reranking. The per-query CSV also identifies
+which distractor datasets occupied the measured cutoffs.
 
 Phoenix displays all runs in the `hkpl-rag` project as `RAG Evaluation Query`
 traces with `eval.dataset=hkpl`. The aggregate is exported as the HKPL RAG
@@ -167,7 +199,7 @@ evaluation summary.
 Results are written to `data/rag_evaluation/results.csv` and
 `data/rag_evaluation/summary.json`.
 
-Verify both corpora are in the same physical vector table:
+Verify all corpora are in the same physical vector table:
 
 ```sql
 SELECT
@@ -259,6 +291,8 @@ docker compose run --rm langgraph-agent \
 ## Chunking behaviour
 
 - FAQ, CSV, Excel, XML, JSON, and JSONL records use an atomic strategy.
+- News uses article boundaries plus sentence-aware prose chunks; the title is
+  repeated in every chunk.
 - PDF, DOCX, PPTX, Markdown, TXT, HTML, and OCR text use overlapping prose
   chunks.
 - Default prose chunk size: 512 tokens.
