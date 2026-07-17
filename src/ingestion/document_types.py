@@ -16,8 +16,8 @@ DOCUMENT_TYPE_RULES = {
         "chunk_strategy": "faq_entries",
         "admin_selectable": True,
         "patterns": [
-            r"\bquestion\s*:",
-            r"(?:^|\n)\s*q\d+\s*[:.)]",
+            r"\bquestion\s*:.*?\banswer\s*:",
+            r"(?:^|\n)\s*q(\d+)\s*[:.)].*?(?:^|\n)\s*a\1\s*[:.)]",
         ],
     },
     "directory": {
