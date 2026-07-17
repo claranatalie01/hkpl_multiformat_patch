@@ -1,0 +1,109 @@
+<div id="content">
+<div class="container">
+<div style="text-align:center">Single Sign-on System <a href="#remarks" style="font-size: 13px" title="Login Help">(Login Help)</a></div>
+<div class="login-block">
+<div>
+<button class="butn-login butn-register" onclick="window.location.href='/en/login.html?chamo=1&amp;info=1'" type="button">Register Email Address / Mobile Phone Number</button>
+</div>
+<br/>
+<form action="/iw/login.php" id="login" method="POST">
+<div class="log-inp">
+<h2 class="title">My Account</h2>
+<div class="pale">
+<p>
+<label for="account">Library Account</label>
+<input autocomplete="off" class="ip-acct masked-input" data-hint="Library Card / ID Card No." id="account" name="USER" placeholder="Library Card / ID Card No." title="Library Card / ID Card No." type="text"/>
+<label class="cb-show" for="show">
+<input id="show" type="checkbox"/><span>Show no.</span>
+</label>
+</p>
+<p>
+<label for="password">Password</label>
+<span class="input-group">
+<input autocomplete="off" class="ip-pass" id="password" name="PASSWORD" placeholder="Password" required="" type="password"/>
+<button id="togglePassword" type="button">
+<img id="togglePasswordEye" src="/common/images/fa-eye.svg" style="vertical-align: middle;width:18px;height: 21px;display: none"/>
+<img id="togglePasswordEyeSlash" src="/common/images/fa-eye-slash.svg" style="vertical-align: middle;width:18px;height: 21px;"/>
+</button>
+</span>
+</p>
+<p>
+<a class="forgetPwd" href="https://webcat.hkpl.gov.hk/wicket/bookmarkable/com.vtls.chamo.webapp.component.patron.ForgotPasswordPage?theme=WEB&amp;locale=en">Forgot your password?</a>
+</p>
+<div class="captcha_div">
+
+</div>
+<div class="error-msg">
+<div class="cap_err error" style="display:none;">[WRN-SSO-0003] Caps Lock is on</div>
+</div>
+<div class="error-msg-extra">
+<div class="error">
+<h4 class="error">[Special Notice]</h4>
+                                    To further enhance the security of readers’ online accounts, with effect from 7 June
+                                    2022, passwords for login to library online accounts must contain at least 8
+                                    characters including uppercase letter, lowercase letter, digit and special
+                                    character. Otherwise, the system will request immediate change of password upon
+                                    login, and this must be completed before access to the account is allowed. Example
+                                    of strong password: Abwin10% (Please do not use it as your password.)
+                                    <br/><br/>For details, please refer to the related <a href="/en/about-us/faq-password.html">FAQ</a>
+                                    on change of account password
+                                </div>
+</div>
+</div>
+</div>
+<div class="butn">
+<input name="target" type="hidden" value="/auth/login?target=/"/>
+<input name="lang" type="hidden" value="en"/>
+<input name="chamo" type="hidden" value=""/>
+<input name="entryPage" type="hidden" value="/en/login.php"/>
+<input name="queryString" type="hidden" value=""/>
+<input id="pwExpiryAction" name="pwExpiryAction" type="hidden"/>
+<input id="noPwExpiryAlert" name="noPwExpiryAlert" type="hidden"/>
+<button class="butn-login butn-login-en" id="submitButton" type="button">Login</button>
+</div>
+</form>
+<hr/>
+<div id="div-iamsmart" style="text-align: center;">
+<button class="btn-iamsmart-login" href="javascript:void(0);" id="btn-iamsmart-login">
+<img src="/common/login/common/images/icon-dark.png" style="padding: 0px 5px;"/>
+<span class="btn-index-iamsmart-login-buttontext">Continue with iAM Smart</span>
+</button>
+<a href="https://www.iamsmart.gov.hk/en" target="_blank">More Info &gt;</a>
+</div>
+<div class="richeditor notes" id="remarks" style="height: 1000px;">
+<p>
+                        Remarks: <br/>
+                        (1) After binding the account with “iAM Smart”, you can choose to log in your library account
+                        via “iAM Smart”. To unbind your account, please log in, and then make changes to “My Setting”.
+                        For details, please refer to <a href="/en/about-us/faq-iamsmart.html">“Frequently Asked
+                            Questions”</a> ; <br/>
+                        (2) If you have applied for using your smart ID card to enjoy library services, you can enter
+                        your HKID card number in the library account field. Please enter all letter(s) and digits of
+                        your HKID card number without the bracket, e.g. a1234567 for HKID card no. A123456(7); <br/>
+<span class="password-error-msg">
+					(3) The system default password will be the last 4 digits of your registered phone number.  The system will request you to change your password immediately upon first-time login, and this must be completed before access to the account is allowed.  Regular change of password is essential for protection of your personal account.  You should avoid perpetual use of the same password.  Please <a href="/en/about-us/services/lending/password-pin/steps-of-changing-password.html">click here</a> for the “Step-by-Step Guide for Changing Password”; </span><br/>
+                        (4) To reset your password, please click the "Forgot your password?” link. You will be requested
+                        to input your registered email address for the account in order to receive the temporary
+                        password after reset. If you have forgotten or have not registered your email address, you are
+                        required to visit a public library in person to have your password reset; <br/>
+                        (5) For protection of personal privacy, please remember to log out your account and close the
+                        browser before leaving. <br/>
+</p>
+</div>
+<!--
+                <div class="wcag">
+
+                    <a href="http://www.w3.org/WAI/WCAG2AA-Conformance"><img src="/common/login/common/images/wcag.png" alt="wcag" height="31"></a>
+
+                </div>
+                -->
+</div>
+</div>
+<div id="pwExpiryAlertDialog" title="Reminder: Change Your Password">
+<p>
+                    Your password is due to expire
+                                        day(s) later, i.e. on .
+                    Please change it as soon as possible. To enhance security, the previous 8 passwords should not be reused.
+                </p>
+</div>
+</div>

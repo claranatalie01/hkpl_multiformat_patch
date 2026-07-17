@@ -17,7 +17,7 @@ DOCUMENT_TYPE_RULES = {
         "admin_selectable": True,
         "patterns": [
             r"\bquestion\s*:.*?\banswer\s*:",
-            r"(?:^|\n)\s*q(\d+)\s*[:.)].*?(?:^|\n)\s*a\1\s*[:.)]",
+            r"\bq(\d+)\s*[:.)].*?\ba\1\s*[:.)]",
         ],
     },
     "directory": {
