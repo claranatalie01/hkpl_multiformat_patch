@@ -34,12 +34,13 @@ def normalize_corpus_roles() -> None:
         connection.execute(
             text(f"""
                 UPDATE {VECTOR_TABLE_NAME}
-                SET metadata_ = jsonb_set(
-                    metadata_,
-                    '{{dataset}}',
-                    to_jsonb(CAST(:primary_dataset AS text)),
-                    true
-                )
+                SET metadata_ = (
+                    COALESCE(metadata_::jsonb, '{{}}'::jsonb)
+                    || jsonb_build_object(
+                        'dataset',
+                        CAST(:primary_dataset AS text)
+                    )
+                )::json
                 WHERE COALESCE(metadata_->>'dataset', '') = ''
             """),
             {"primary_dataset": PRIMARY_DATASET},
@@ -47,12 +48,13 @@ def normalize_corpus_roles() -> None:
         connection.execute(
             text(f"""
                 UPDATE {VECTOR_TABLE_NAME}
-                SET metadata_ = jsonb_set(
-                    metadata_,
-                    '{{corpus_role}}',
-                    to_jsonb(CAST(:distractor_role AS text)),
-                    true
-                )
+                SET metadata_ = (
+                    COALESCE(metadata_::jsonb, '{{}}'::jsonb)
+                    || jsonb_build_object(
+                        'corpus_role',
+                        CAST(:distractor_role AS text)
+                    )
+                )::json
                 WHERE metadata_->>'dataset' = ANY(CAST(:datasets AS text[]))
                   AND COALESCE(metadata_->>'corpus_role', '')
                       IS DISTINCT FROM :distractor_role
@@ -65,12 +67,13 @@ def normalize_corpus_roles() -> None:
         connection.execute(
             text(f"""
                 UPDATE {VECTOR_TABLE_NAME}
-                SET metadata_ = jsonb_set(
-                    metadata_,
-                    '{{corpus_role}}',
-                    to_jsonb(CAST(:primary_role AS text)),
-                    true
-                )
+                SET metadata_ = (
+                    COALESCE(metadata_::jsonb, '{{}}'::jsonb)
+                    || jsonb_build_object(
+                        'corpus_role',
+                        CAST(:primary_role AS text)
+                    )
+                )::json
                 WHERE COALESCE(metadata_->>'corpus_role', '') = ''
                   AND metadata_->>'dataset'
                       <> ALL(CAST(:distractor_datasets AS text[]))
@@ -88,6 +91,16 @@ def replace_dataset_vectors(dataset: str, nodes: Iterable[BaseNode]) -> int:
         raise ValueError("A non-primary dataset name is required.")
 
     materialized_nodes = list(nodes)
+    for node in materialized_nodes:
+        node.metadata.update({
+            "dataset": dataset,
+            "corpus": dataset,
+            "corpus_role": DISTRACTOR_CORPUS_ROLE,
+        })
+
+    # Validate and normalize the existing metadata before deleting or
+    # embedding anything. New nodes already carry the normalized labels.
+    normalize_corpus_roles()
     with engine.begin() as connection:
         deleted = connection.execute(
             text(f"""
@@ -105,5 +118,4 @@ def replace_dataset_vectors(dataset: str, nodes: Iterable[BaseNode]) -> int:
             embed_model=embed_model,
             show_progress=True,
         )
-    normalize_corpus_roles()
     return int(deleted.rowcount or 0)
