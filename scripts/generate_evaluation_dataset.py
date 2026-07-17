@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import asyncio
 import csv
 import json
@@ -60,7 +61,11 @@ def infer_domain(title: str, text_value: str) -> str:
     return "general"
 
 
-def load_chunks() -> list[dict]:
+def load_chunks(
+    *,
+    excluded_chunk_ids: set[str] | None = None,
+    limit: int | None = None,
+) -> list[dict]:
     with engine.connect() as connection:
         rows = connection.execute(
             text("""
@@ -80,6 +85,8 @@ def load_chunks() -> list[dict]:
                     FROM data_hkpl_knowledge
                     WHERE text IS NOT NULL
                       AND LENGTH(TRIM(text)) >= :min_chars
+                      AND COALESCE(NULLIF(metadata_->>'dataset', ''), 'hkpl') = 'hkpl'
+                      AND COALESCE(NULLIF(metadata_->>'corpus_role', ''), 'primary') = 'primary'
                 )
                 SELECT *
                 FROM ranked_chunks
@@ -110,7 +117,43 @@ def load_chunks() -> list[dict]:
             }
         )
 
-    return chunks
+    excluded_chunk_ids = excluded_chunk_ids or set()
+    chunks = [
+        chunk for chunk in chunks
+        if chunk["chunk_id"] not in excluded_chunk_ids
+    ]
+    return chunks[:limit] if limit is not None else chunks
+
+
+def load_existing_rows() -> list[dict]:
+    if not OUTPUT_FILE.exists():
+        return []
+    with OUTPUT_FILE.open("r", newline="", encoding="utf-8") as file:
+        return [dict(row) for row in csv.DictReader(file) if row.get("query")]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate evaluation candidates from HKPL vector chunks."
+    )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help=(
+            "Keep existing rows and generate only from source chunks that are "
+            "not already represented."
+        ),
+    )
+    parser.add_argument(
+        "--limit-chunks",
+        type=int,
+        default=None,
+        help="Generate from at most this many new HKPL chunks.",
+    )
+    args = parser.parse_args()
+    if args.limit_chunks is not None and args.limit_chunks < 1:
+        parser.error("--limit-chunks must be positive")
+    return args
 
 
 async def generate_questions_for_chunk(chunk: dict) -> list[dict]:
@@ -229,10 +272,25 @@ def remove_ambiguous_duplicates(rows: list[dict]) -> list[dict]:
 
 
 async def main() -> None:
-    chunks = load_chunks()
-    print(f"Loaded {len(chunks)} chunks from data_hkpl_knowledge.")
+    args = parse_args()
+    existing_rows = load_existing_rows() if args.append else []
+    represented_chunk_ids = {
+        row.get("source_chunk_id", "")
+        for row in existing_rows
+        if row.get("source_chunk_id")
+    }
+    chunks = load_chunks(
+        excluded_chunk_ids=represented_chunk_ids,
+        limit=args.limit_chunks,
+    )
+    print(
+        f"Loaded {len(chunks)} new HKPL chunks from data_hkpl_knowledge; "
+        "distractor corpora were excluded."
+    )
+    if args.append:
+        print(f"Keeping {len(existing_rows)} existing evaluation rows.")
 
-    all_rows = []
+    generated_rows = []
 
     for index, chunk in enumerate(chunks, start=1):
         print(
@@ -241,10 +299,11 @@ async def main() -> None:
         )
 
         rows = await generate_questions_for_chunk(chunk)
-        all_rows.extend(rows)
+        generated_rows.extend(rows)
 
         print(f"  Generated {len(rows)} question(s).")
 
+    all_rows = [*existing_rows, *generated_rows]
     before = len(all_rows)
     all_rows = remove_ambiguous_duplicates(all_rows)
     after = len(all_rows)

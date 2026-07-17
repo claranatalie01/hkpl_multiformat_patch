@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import logging
 import os
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -20,28 +23,60 @@ def normalize_score(value: float, maximum: float = 1.0) -> float:
     return max(0.0, min(1.0, score))
 
 
-def document_is_relevant(
+def normalize_evidence_text(value: str) -> str:
+    normalized = str(value or "").casefold()
+    normalized = normalized.translate(
+        str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
+    )
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def document_relevance_reason(
     document: dict[str, Any],
     expected_document_id: str,
     expected_chunk_id: str,
     expected_chunk_ids: list[str] | None = None,
-) -> bool:
-    chunk_id = document.get("chunk_id", "")
-    document_id = document.get("document_id", "")
+    expected_context_snippet: str = "",
+) -> str:
+    chunk_id = str(document.get("chunk_id") or "")
+    document_id = str(document.get("document_id") or "")
+    expected_ids = set(expected_chunk_ids or [])
+    if expected_chunk_id:
+        expected_ids.add(expected_chunk_id)
 
-    if expected_chunk_ids and chunk_id in expected_chunk_ids:
-        return True
+    if chunk_id in expected_ids:
+        return "exact expected chunk"
 
-    if expected_chunk_id and chunk_id == expected_chunk_id:
-        return True
+    snippet = normalize_evidence_text(expected_context_snippet)
+    document_text = normalize_evidence_text(
+        document.get("text") or document.get("text_preview") or ""
+    )
+    if snippet and snippet in document_text:
+        return "contains expected evidence"
 
     if expected_document_id and (
         document_id == expected_document_id
         or chunk_id.startswith(expected_document_id)
     ):
-        return True
+        return "expected document"
 
-    return False
+    return "not expected"
+
+
+def document_is_relevant(
+    document: dict[str, Any],
+    expected_document_id: str,
+    expected_chunk_id: str,
+    expected_chunk_ids: list[str] | None = None,
+    expected_context_snippet: str = "",
+) -> bool:
+    return document_relevance_reason(
+        document,
+        expected_document_id,
+        expected_chunk_id,
+        expected_chunk_ids,
+        expected_context_snippet,
+    ) != "not expected"
 
 
 def log_span_annotations(span_id: str, annotations: list[dict[str, Any]]) -> None:
@@ -81,6 +116,7 @@ def log_document_relevance_annotations(
     expected_document_id: str,
     expected_chunk_id: str,
     expected_chunk_ids: list[str] | None = None,
+    expected_context_snippet: str = "",
 ) -> None:
     if not phoenix_annotations_enabled() or not retriever_span_id or not retrieved_documents:
         return
@@ -97,15 +133,14 @@ def log_document_relevance_annotations(
                 expected_document_id=expected_document_id,
                 expected_chunk_id=expected_chunk_id,
                 expected_chunk_ids=expected_chunk_ids,
+                expected_context_snippet=expected_context_snippet,
             )
-            expected_label = (
-                "expected chunk"
-                if document.get("chunk_id") in (
-                    expected_chunk_ids or [expected_chunk_id]
-                )
-                else "expected document"
-                if relevant
-                else "not expected"
+            expected_label = document_relevance_reason(
+                document,
+                expected_document_id,
+                expected_chunk_id,
+                expected_chunk_ids,
+                expected_context_snippet,
             )
 
             rows.append(

@@ -37,6 +37,7 @@ from src.phoenix_annotations import (
     log_document_relevance_annotations,
     log_rag_answer_annotations,
     log_span_annotations,
+    normalize_evidence_text,
 )
 from src.retrieval import get_last_retrieval_trace, retrieve_nodes
 from src.token_counting import LLM_TOKENIZER_NAME, LLM_TOKENIZER_URL, count_tokens
@@ -170,6 +171,7 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
                     domain,
                     query,
                     expected_answer_text,
+                    expected_context_snippet,
                     source_document_id,
                     source_chunk_id
                 FROM {table}
@@ -191,6 +193,9 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
             "domain": str(row.get("domain") or ""),
             "question": str(row["query"]),
             "expected_answer": str(row["expected_answer_text"]),
+            "expected_context_snippet": str(
+                row.get("expected_context_snippet") or ""
+            ),
             "expected_document_ids": [str(row["source_document_id"])],
             "expected_chunk_ids": [str(row["source_chunk_id"])],
         }
@@ -235,6 +240,30 @@ def reciprocal_rank(expected_ids: list[str], retrieved_ids: list[str]) -> float:
 
 def ranked_chunk_ids(documents: list[dict]) -> list[str]:
     return [str(document.get("chunk_id") or "") for document in documents]
+
+
+def evidence_match(documents: list[dict], expected_snippet: str, k: int) -> dict:
+    snippet = normalize_evidence_text(expected_snippet)
+    matched_ids = []
+    if snippet:
+        for document in documents[:k]:
+            document_text = normalize_evidence_text(
+                document.get("text") or document.get("text_preview") or ""
+            )
+            if snippet in document_text:
+                matched_ids.append(str(document.get("chunk_id") or ""))
+    return {
+        "hit": float(bool(matched_ids)),
+        "matched_chunk_ids": matched_ids,
+    }
+
+
+def reference_match_mode(exact_match: bool, evidence_match_found: bool) -> str:
+    if exact_match:
+        return "exact_chunk"
+    if evidence_match_found:
+        return "equivalent_evidence"
+    return "missing"
 
 
 def distractor_metrics(documents: list[dict], k: int) -> dict:
@@ -400,31 +429,27 @@ async def run_evaluator(name: str, payload: dict, call) -> tuple[float, str, boo
 
 
 def diagnose(
-    expected_ids: list[str],
-    vector_ids: list[str],
-    reranked_ids: list[str],
-    context_ids: list[str],
+    retrieval_match_mode: str,
+    reranker_match_mode: str,
+    context_match_mode: str,
     correctness: float,
     faithfulness: float,
     relevancy: float,
 ) -> tuple[str, str]:
-    expected = set(expected_ids)
-    if not expected.issubset(vector_ids):
-        missing = expected.difference(vector_ids)
+    if retrieval_match_mode == "missing":
         return (
             "retrieval_problem",
-            f"PGVector missed {len(missing)} of {len(expected)} expected chunks.",
+            "PGVector retrieved neither the labeled chunk nor equivalent gold evidence.",
         )
-    if not expected.issubset(reranked_ids):
-        missing = expected.difference(reranked_ids)
+    if reranker_match_mode == "missing":
         return (
             "reranker_problem",
-            f"Reranking removed {len(missing)} of {len(expected)} expected chunks.",
+            "Reranking removed both the labeled chunk and equivalent gold evidence.",
         )
-    if not expected.issubset(context_ids):
+    if context_match_mode == "missing":
         return (
             "context_building_problem",
-            "Expected reranked evidence was not included in the LLM context.",
+            "Neither the labeled chunk nor equivalent gold evidence reached the LLM context.",
         )
     if correctness < 3.0:
         return (
@@ -438,8 +463,25 @@ def diagnose(
         )
     return (
         "working_correctly",
-        "Retrieval, reranking, context construction, and generation passed.",
+        "Retrieval, reranking, context construction, and generation passed "
+        f"(retrieval={retrieval_match_mode}, reranker={reranker_match_mode}).",
     )
+
+
+def evidence_annotations(prefix: str, metrics: dict) -> list[dict]:
+    return [
+        {
+            "name": f"{prefix} Evidence Hit@{cutoff}",
+            "annotator_kind": "CODE",
+            "label": "pass" if metrics[cutoff]["hit"] >= 1.0 else "fail",
+            "score": float(metrics[cutoff]["hit"]),
+            "explanation": (
+                "Whether a selected chunk contains the labeled supporting "
+                "evidence, independent of its chunk ID."
+            ),
+        }
+        for cutoff in CUTOFFS
+    ]
 
 
 def metric_annotations(prefix: str, metrics: dict, mrr: float) -> list[dict]:
@@ -490,6 +532,7 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
     question = row["question"]
     expected_answer = row["expected_answer"]
     expected_ids = row["expected_chunk_ids"]
+    expected_snippet = row.get("expected_context_snippet", "")
     with tracer.start_as_current_span("RAG Evaluation Query") as span:
         root_span_id = format_span_id(span.get_span_context().span_id)
         set_span_io(span, "CHAIN", input_value=question)
@@ -497,6 +540,7 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         span.set_attribute("eval.evaluation_id", row["evaluation_id"])
         span.set_attribute("eval.question", question)
         span.set_attribute("eval.expected_answer", expected_answer)
+        span.set_attribute("eval.expected_context_snippet", expected_snippet)
         set_json_attribute(span, "eval.expected_chunk_ids", expected_ids)
 
         started = time.perf_counter()
@@ -520,6 +564,14 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             cutoff: ranking_metrics(expected_ids, reranked_ids, cutoff)
             for cutoff in CUTOFFS
         }
+        retrieval_evidence_metrics = {
+            cutoff: evidence_match(vector_documents, expected_snippet, cutoff)
+            for cutoff in CUTOFFS
+        }
+        reranker_evidence_metrics = {
+            cutoff: evidence_match(reranked_documents, expected_snippet, cutoff)
+            for cutoff in CUTOFFS
+        }
         retrieval_distractors = {
             cutoff: distractor_metrics(vector_documents, cutoff)
             for cutoff in CUTOFFS
@@ -535,6 +587,11 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             vector_ids,
             len(vector_ids),
         )
+        all_candidate_evidence = evidence_match(
+            vector_documents,
+            expected_snippet,
+            len(vector_documents),
+        )
         expected_set = set(expected_ids)
         retrieved_expected_ids = [
             chunk_id for chunk_id in vector_ids if chunk_id in expected_set
@@ -545,6 +602,28 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
 
         context, contexts, sources = build_context(nodes)
         context_ids = [source["chunk_id"] for source in sources]
+        retrieval_match_mode = reference_match_mode(
+            bool(all_candidate_metrics["complete"]),
+            bool(all_candidate_evidence["hit"]),
+        )
+        reranker_match_mode = reference_match_mode(
+            set(expected_ids).issubset(reranked_ids),
+            bool(
+                evidence_match(
+                    reranked_documents,
+                    expected_snippet,
+                    len(reranked_documents),
+                )["hit"]
+            ),
+        )
+        context_match_mode = reference_match_mode(
+            set(expected_ids).issubset(context_ids),
+            bool(
+                normalize_evidence_text(expected_snippet)
+                and normalize_evidence_text(expected_snippet)
+                in normalize_evidence_text(context)
+            ),
+        )
         answer, usage = await generate_answer(question, context)
         context_tokens, context_estimated, tokenizer = await count_tokens(
             context,
@@ -601,10 +680,9 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             )
         else:
             diagnosis, recommendation = diagnose(
-                expected_ids,
-                vector_ids,
-                reranked_ids,
-                context_ids,
+                retrieval_match_mode,
+                reranker_match_mode,
+                context_match_mode,
                 correctness,
                 faithfulness,
                 relevancy,
@@ -627,6 +705,7 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             "difficulty": row.get("difficulty", ""),
             "question": question,
             "expected_answer": expected_answer,
+            "expected_context_snippet": expected_snippet,
             "generated_answer": answer,
             "expected_chunk_ids": json.dumps(expected_ids),
             "expected_chunk_count": len(expected_ids),
@@ -643,6 +722,13 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             "retrieval_candidate_count": len(vector_ids),
             "retrieval_recall_all_candidates": all_candidate_metrics["recall"],
             "retrieval_complete_all_candidates": all_candidate_metrics["complete"],
+            "retrieval_evidence_hit_all_candidates": all_candidate_evidence["hit"],
+            "retrieval_evidence_chunk_ids_all_candidates": json.dumps(
+                all_candidate_evidence["matched_chunk_ids"]
+            ),
+            "retrieval_reference_match_mode": retrieval_match_mode,
+            "reranker_reference_match_mode": reranker_match_mode,
+            "context_reference_match_mode": context_match_mode,
             "correctness": correctness,
             "correctness_normalized": max(0.0, min(1.0, correctness / 5.0)),
             "faithfulness": faithfulness,
@@ -675,6 +761,15 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
                 for metric in ("hit", "recall", "complete"):
                     result[f"{prefix}_{metric}_at_{cutoff}"] = metrics[cutoff][metric]
         for prefix, metrics in (
+            ("retrieval", retrieval_evidence_metrics),
+            ("reranker", reranker_evidence_metrics),
+        ):
+            for cutoff in CUTOFFS:
+                result[f"{prefix}_evidence_hit_at_{cutoff}"] = metrics[cutoff]["hit"]
+                result[f"{prefix}_evidence_chunk_ids_at_{cutoff}"] = json.dumps(
+                    metrics[cutoff]["matched_chunk_ids"]
+                )
+        for prefix, metrics in (
             ("retrieval", retrieval_distractors),
             ("reranker", reranker_distractors),
         ):
@@ -706,6 +801,13 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             "eval.retrieval.complete_all_candidates",
             float(all_candidate_metrics["complete"]),
         )
+        span.set_attribute(
+            "eval.retrieval.evidence_hit_all_candidates",
+            float(all_candidate_evidence["hit"]),
+        )
+        span.set_attribute("eval.retrieval.reference_match_mode", retrieval_match_mode)
+        span.set_attribute("eval.reranker.reference_match_mode", reranker_match_mode)
+        span.set_attribute("eval.context.reference_match_mode", context_match_mode)
         for prefix, metrics in (
             ("retrieval", retrieval_metrics),
             ("reranker", reranker_metrics),
@@ -716,6 +818,15 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
                         f"eval.{prefix}.{metric}_at_{cutoff}",
                         float(metrics[cutoff][metric]),
                     )
+        for prefix, metrics in (
+            ("retrieval", retrieval_evidence_metrics),
+            ("reranker", reranker_evidence_metrics),
+        ):
+            for cutoff in CUTOFFS:
+                span.set_attribute(
+                    f"eval.{prefix}.evidence_hit_at_{cutoff}",
+                    float(metrics[cutoff]["hit"]),
+                )
         for prefix, metrics in (
             ("retrieval", retrieval_distractors),
             ("reranker", reranker_distractors),
@@ -756,11 +867,14 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             expected_document_id="",
             expected_chunk_id="",
             expected_chunk_ids=expected_ids,
+            expected_context_snippet=expected_snippet,
         )
         log_span_annotations(
             root_span_id,
             metric_annotations("Retrieval", retrieval_metrics, retrieval_mrr)
             + metric_annotations("Reranker", reranker_metrics, reranker_mrr)
+            + evidence_annotations("Retrieval", retrieval_evidence_metrics)
+            + evidence_annotations("Reranker", reranker_evidence_metrics)
             + distractor_annotations("Retrieval", retrieval_distractors)
             + distractor_annotations("Reranker", reranker_distractors),
         )
@@ -800,6 +914,7 @@ def failed_result(row: dict, error: Exception) -> dict:
         "difficulty": row.get("difficulty", ""),
         "question": row["question"],
         "expected_answer": row["expected_answer"],
+        "expected_context_snippet": row.get("expected_context_snippet", ""),
         "generated_answer": "",
         "expected_chunk_ids": json.dumps(row["expected_chunk_ids"]),
         "expected_chunk_count": len(row["expected_chunk_ids"]),
@@ -812,6 +927,11 @@ def failed_result(row: dict, error: Exception) -> dict:
         "retrieval_candidate_count": 0,
         "retrieval_recall_all_candidates": 0.0,
         "retrieval_complete_all_candidates": 0.0,
+        "retrieval_evidence_hit_all_candidates": 0.0,
+        "retrieval_evidence_chunk_ids_all_candidates": "[]",
+        "retrieval_reference_match_mode": "missing",
+        "reranker_reference_match_mode": "missing",
+        "context_reference_match_mode": "missing",
         "correctness": 0.0,
         "correctness_normalized": 0.0,
         "faithfulness": 0.0,
@@ -840,6 +960,8 @@ def failed_result(row: dict, error: Exception) -> dict:
         for cutoff in CUTOFFS:
             for metric in ("hit", "recall", "complete"):
                 result[f"{prefix}_{metric}_at_{cutoff}"] = 0.0
+            result[f"{prefix}_evidence_hit_at_{cutoff}"] = 0.0
+            result[f"{prefix}_evidence_chunk_ids_at_{cutoff}"] = "[]"
             result[f"{prefix}_distractor_count_at_{cutoff}"] = 0
             result[f"{prefix}_distractor_rate_at_{cutoff}"] = 0.0
             result[f"{prefix}_distractor_datasets_at_{cutoff}"] = "{}"
@@ -874,6 +996,9 @@ def summarize(results: list[dict]) -> dict:
         "retrieval_complete_all_candidates": average(
             "retrieval_complete_all_candidates"
         ),
+        "retrieval_evidence_hit_all_candidates": average(
+            "retrieval_evidence_hit_all_candidates"
+        ),
         "average_correctness": judged_average("correctness"),
         "average_correctness_normalized": judged_average("correctness_normalized"),
         "average_faithfulness": judged_average("faithfulness"),
@@ -902,6 +1027,9 @@ def summarize(results: list[dict]) -> dict:
             for metric in ("hit", "recall", "complete"):
                 field = f"{prefix}_{metric}_at_{cutoff}"
                 summary[field] = average(field)
+            summary[f"{prefix}_evidence_hit_at_{cutoff}"] = average(
+                f"{prefix}_evidence_hit_at_{cutoff}"
+            )
             summary[f"{prefix}_average_distractor_count_at_{cutoff}"] = average(
                 f"{prefix}_distractor_count_at_{cutoff}"
             )
@@ -1043,6 +1171,15 @@ async def main() -> None:
             "complete_all_candidates": (
                 "All expected chunks appear anywhere in the vector candidates "
                 "provided to the reranker."
+            ),
+            "evidence_hit_at_k": (
+                "At least one top-K chunk contains the labeled supporting "
+                "evidence, even if its chunk ID differs from the gold chunk."
+            ),
+            "reference_match_mode": (
+                "exact_chunk when the labeled chunk is present, "
+                "equivalent_evidence when another chunk contains the gold "
+                "snippet, otherwise missing. Diagnosis uses this mode."
             ),
             "mrr": "Reciprocal rank of the first expected chunk.",
             "hallucination": "One minus the LlamaIndex faithfulness score.",
