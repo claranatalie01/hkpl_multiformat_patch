@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 
@@ -5,7 +7,7 @@ logger = logging.getLogger(__name__)
 _tracing_initialized = False
 
 
-def setup_phoenix_tracing() -> None:
+def setup_phoenix_tracing(project_name: str | None = None) -> None:
     global _tracing_initialized
 
     if _tracing_initialized:
@@ -23,9 +25,13 @@ def setup_phoenix_tracing() -> None:
             "PHOENIX_COLLECTOR_ENDPOINT",
             "http://phoenix:6006/v1/traces",
         )
+        selected_project = (
+            project_name
+            or os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag")
+        )
 
         tracer_provider = register(
-            project_name="hkpl-rag",
+            project_name=selected_project,
             endpoint=endpoint,
         )
 
@@ -34,7 +40,61 @@ def setup_phoenix_tracing() -> None:
         )
 
         _tracing_initialized = True
-        logger.info("Phoenix tracing enabled: %s", endpoint)
+        logger.info(
+            "Phoenix tracing enabled: project=%s endpoint=%s",
+            selected_project,
+            endpoint,
+        )
+
+    except Exception:
+        logger.exception("Failed to enable Phoenix tracing.")
+from __future__ import annotations
+
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+_tracing_initialized = False
+
+
+def setup_phoenix_tracing(project_name: str | None = None) -> None:
+    global _tracing_initialized
+
+    if _tracing_initialized:
+        return
+
+    if os.getenv("PHOENIX_ENABLED", "false").lower() != "true":
+        logger.info("Phoenix tracing disabled.")
+        return
+
+    try:
+        from phoenix.otel import register
+        from openinference.instrumentation.llama_index import LlamaIndexInstrumentor
+
+        endpoint = os.getenv(
+            "PHOENIX_COLLECTOR_ENDPOINT",
+            "http://phoenix:6006/v1/traces",
+        )
+        selected_project = (
+            project_name
+            or os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag")
+        )
+
+        tracer_provider = register(
+            project_name=selected_project,
+            endpoint=endpoint,
+        )
+
+        LlamaIndexInstrumentor().instrument(
+            tracer_provider=tracer_provider,
+        )
+
+        _tracing_initialized = True
+        logger.info(
+            "Phoenix tracing enabled: project=%s endpoint=%s",
+            selected_project,
+            endpoint,
+        )
 
     except Exception:
         logger.exception("Failed to enable Phoenix tracing.")

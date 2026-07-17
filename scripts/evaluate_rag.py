@@ -60,7 +60,6 @@ LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
 EVALUATION_MAX_TOKENS = int(os.getenv("EVALUATION_MAX_TOKENS", "1024"))
 CUTOFFS = (1, 3, 5)
 
-setup_phoenix_tracing()
 tracer = trace.get_tracer("hkpl-rag-noise-evaluation")
 
 
@@ -104,6 +103,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional deterministic limit on HKPL evaluation questions.",
+    )
+    parser.add_argument(
+        "--phoenix-project",
+        default=os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag"),
+        help="Phoenix project that receives this evaluation run's traces.",
     )
     question_filter = parser.add_mutually_exclusive_group()
     question_filter.add_argument(
@@ -1090,6 +1094,8 @@ def log_summary_span(summary: dict) -> None:
 
 async def main() -> None:
     args = parse_args()
+    os.environ["PHOENIX_PROJECT_NAME"] = args.phoenix_project
+    setup_phoenix_tracing(project_name=args.phoenix_project)
     results_path, summary_path = report_paths(args)
     if args.limit is not None and args.limit < 1:
         raise ValueError("--limit must be positive.")

@@ -166,7 +166,7 @@ services:
       HKPL_CRAWLER_INCLUDE_QUERY_URLS: "false"
       OCR_LANGUAGES: eng+chi_tra
       PHOENIX_ENABLED: "true"
-      PHOENIX_PROJECT_NAME: hkpl_evaluation
+      PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-hkpl-rag}
       PHOENIX_BASE_URL: "http://phoenix:6006"
       PHOENIX_LOG_EVAL_ANNOTATIONS: "true"
       PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"
