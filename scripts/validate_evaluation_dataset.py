@@ -4,7 +4,9 @@ import argparse
 import csv
 import os
 import re
+import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import text
@@ -29,6 +31,21 @@ def normalize(value: str) -> str:
     value = re.sub(r"\s+", " ", value)
     value = re.sub(r"[\"'“”‘’]", "", value)
     return value
+
+
+def compact_normalize(value: str) -> str:
+    return re.sub(r"\W+", "", str(value or "").casefold(), flags=re.UNICODE)
+
+
+def formatting_tolerant_contains(expected: str, actual: str) -> bool:
+    normalized_expected = normalize(expected)
+    normalized_actual = normalize(actual)
+    if normalized_expected and normalized_expected in normalized_actual:
+        return True
+
+    compact_expected = compact_normalize(expected)
+    compact_actual = compact_normalize(actual)
+    return len(compact_expected) >= 40 and compact_expected in compact_actual
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,6 +128,19 @@ def find_replacement(connection, item: dict) -> tuple[dict | None, str]:
         snippet_matches.sort(key=lambda candidate: len(candidate["chunk_text"]))
         return snippet_matches[0], "exact_snippet"
 
+    compact_snippet = compact_normalize(item.get("expected_context_snippet") or "")
+    compact_snippet_matches = [
+        candidate
+        for candidate, chunk_text in normalized_candidates
+        if len(compact_snippet) >= 40
+        and compact_snippet in compact_normalize(chunk_text)
+    ]
+    if compact_snippet_matches:
+        compact_snippet_matches.sort(
+            key=lambda candidate: len(candidate["chunk_text"])
+        )
+        return compact_snippet_matches[0], "formatting_normalized_snippet"
+
     answer_matches = [
         candidate
         for candidate, chunk_text in normalized_candidates
@@ -120,6 +150,18 @@ def find_replacement(connection, item: dict) -> tuple[dict | None, str]:
         return answer_matches[0], "unique_exact_answer"
     if len(answer_matches) > 1:
         return None, "ambiguous_answer_match"
+
+    compact_answer = compact_normalize(item.get("expected_answer_text") or "")
+    compact_answer_matches = [
+        candidate
+        for candidate, chunk_text in normalized_candidates
+        if len(compact_answer) >= 40
+        and compact_answer in compact_normalize(chunk_text)
+    ]
+    if len(compact_answer_matches) == 1:
+        return compact_answer_matches[0], "unique_formatting_normalized_answer"
+    if len(compact_answer_matches) > 1:
+        return None, "ambiguous_formatting_normalized_answer"
     return None, "evidence_not_found"
 
 
@@ -162,6 +204,50 @@ def synchronize_csv(repaired_rows: list[dict]) -> int:
         writer.writerows(rows)
     temporary_path.replace(EVALUATION_DATASET_PATH)
     return updated
+
+
+def delete_rows_from_csv(deleted_rows: list[dict]) -> int:
+    if not EVALUATION_DATASET_PATH.is_file() or not deleted_rows:
+        return 0
+
+    deleted_keys = {
+        (str(item.get("query") or ""), str(item.get("source_chunk_id") or ""))
+        for item in deleted_rows
+    }
+    with EVALUATION_DATASET_PATH.open(
+        newline="",
+        encoding="utf-8-sig",
+    ) as source:
+        reader = csv.DictReader(source)
+        fieldnames = list(reader.fieldnames or [])
+        original_rows = list(reader)
+
+    retained_rows = [
+        row
+        for row in original_rows
+        if (
+            str(row.get("query") or ""),
+            str(row.get("source_chunk_id") or ""),
+        ) not in deleted_keys
+    ]
+    temporary_path = EVALUATION_DATASET_PATH.with_suffix(".csv.tmp")
+    with temporary_path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(retained_rows)
+    temporary_path.replace(EVALUATION_DATASET_PATH)
+    return len(original_rows) - len(retained_rows)
+
+
+def backup_evaluation_csv() -> Path | None:
+    if not EVALUATION_DATASET_PATH.is_file():
+        return None
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = EVALUATION_DATASET_PATH.with_name(
+        f"{EVALUATION_DATASET_PATH.stem}.before-validation-{timestamp}.csv"
+    )
+    shutil.copy2(EVALUATION_DATASET_PATH, backup_path)
+    return backup_path
 
 
 def main() -> None:
@@ -224,10 +310,9 @@ def main() -> None:
                 continue
 
             normalized_chunk = normalize(chunk_text)
-            normalized_snippet = normalize(expected_snippet)
             normalized_answer = normalize(expected_answer)
 
-            if normalized_snippet and normalized_snippet in normalized_chunk:
+            if formatting_tolerant_contains(expected_snippet, chunk_text):
                 snippet_found += 1
             else:
                 missing_snippets.append(item)
@@ -281,6 +366,10 @@ def main() -> None:
                 "and unresolved counts, then rerun with "
                 "--repair-missing-chunks --yes."
             )
+
+        backup_path = backup_evaluation_csv()
+        if backup_path:
+            print(f"Backed up evaluation CSV to {backup_path}.")
 
         repaired = 0
         with engine.begin() as connection:
@@ -336,6 +425,10 @@ def main() -> None:
             print("No rows with missing expected chunks to delete.")
             return
 
+        backup_path = backup_evaluation_csv()
+        if backup_path:
+            print(f"Backed up evaluation CSV to {backup_path}.")
+
         with engine.begin() as connection:
             deleted = connection.execute(
                 text(f"""
@@ -347,6 +440,12 @@ def main() -> None:
 
         print()
         print(f"Deleted {deleted} rows with missing expected chunks.")
+        csv_deletions = delete_rows_from_csv(missing_chunks)
+        if EVALUATION_DATASET_PATH.is_file():
+            print(
+                f"Deleted {csv_deletions} matching rows from "
+                f"{EVALUATION_DATASET_PATH}."
+            )
 
 
 if __name__ == "__main__":
