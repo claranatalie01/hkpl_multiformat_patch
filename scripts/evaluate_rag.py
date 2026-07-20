@@ -207,6 +207,38 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
     ]
 
 
+def load_hkpl_coverage() -> dict[str, int | float]:
+    """Count intended labels and labels still linked to searchable chunks."""
+    table = safe_table_name(HKPL_EVALUATION_TABLE)
+    vector_table = safe_table_name(f"data_{VECTOR_TABLE}")
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(f"""
+                SELECT
+                    COUNT(*) AS intended_questions,
+                    COUNT(*) FILTER (
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM {vector_table} knowledge
+                            WHERE knowledge.metadata_->>'chunk_id' =
+                                  {table}.source_chunk_id
+                        )
+                    ) AS valid_questions
+                FROM {table}
+            """)
+        ).mappings().one()
+
+    intended = int(row["intended_questions"])
+    valid = int(row["valid_questions"])
+    return {
+        "intended_questions": intended,
+        "valid_questions": valid,
+        "evaluation_dataset_coverage": (
+            valid / intended if intended else 0.0
+        ),
+    }
+
+
 def load_corpus_counts() -> dict[str, int]:
     vector_table = safe_table_name(f"data_{VECTOR_TABLE}")
     with engine.connect() as connection:
@@ -472,63 +504,52 @@ def diagnose(
     )
 
 
-def evidence_annotations(prefix: str, metrics: dict) -> list[dict]:
+def focused_pipeline_annotations(
+    retrieval_evidence_all_candidates: dict,
+    reranker_evidence_at_5: dict,
+    reranker_distractors_at_5: dict,
+) -> list[dict]:
     return [
         {
-            "name": f"{prefix} Evidence Hit@{cutoff}",
+            "name": "Retriever Evidence Hit@10",
             "annotator_kind": "CODE",
-            "label": "pass" if metrics[cutoff]["hit"] >= 1.0 else "fail",
-            "score": float(metrics[cutoff]["hit"]),
-            "explanation": (
-                "Whether a selected chunk contains the labeled supporting "
-                "evidence, independent of its chunk ID."
+            "label": (
+                "pass"
+                if retrieval_evidence_all_candidates["hit"] >= 1.0
+                else "fail"
             ),
-        }
-        for cutoff in CUTOFFS
-    ]
-
-
-def metric_annotations(prefix: str, metrics: dict, mrr: float) -> list[dict]:
-    annotations = []
-    for cutoff in CUTOFFS:
-        for metric in ("hit", "recall", "complete"):
-            score = float(metrics[cutoff][metric])
-            annotations.append(
-                {
-                    "name": f"{prefix} {metric.title()}@{cutoff}",
-                    "annotator_kind": "CODE",
-                    "label": "pass" if score >= 1.0 else "fail",
-                    "score": score,
-                    "explanation": (
-                        f"{metric.title()}@{cutoff} against all expected chunks."
-                    ),
-                }
-            )
-    annotations.append(
-        {
-            "name": f"{prefix} MRR",
-            "annotator_kind": "CODE",
-            "label": "found" if mrr > 0 else "not_found",
-            "score": float(mrr),
-            "explanation": "Reciprocal rank of the first expected chunk.",
-        }
-    )
-    return annotations
-
-
-def distractor_annotations(prefix: str, metrics: dict) -> list[dict]:
-    return [
-        {
-            "name": f"{prefix} Distractor Rate@{cutoff}",
-            "annotator_kind": "CODE",
-            "label": "clean" if metrics[cutoff]["rate"] == 0.0 else "contaminated",
-            "score": float(metrics[cutoff]["rate"]),
+            "score": float(retrieval_evidence_all_candidates["hit"]),
             "explanation": (
-                "Fraction of selected documents originating from the "
+                "Whether labeled evidence appeared among the ten vector "
+                "candidates sent to the reranker."
+            ),
+        },
+        {
+            "name": "Reranker Evidence Hit@5",
+            "annotator_kind": "CODE",
+            "label": (
+                "pass" if reranker_evidence_at_5["hit"] >= 1.0 else "fail"
+            ),
+            "score": float(reranker_evidence_at_5["hit"]),
+            "explanation": (
+                "Whether labeled evidence appeared among the five reranked "
+                "chunks supplied to the answer generator."
+            ),
+        },
+        {
+            "name": "Distractor Rate@5",
+            "annotator_kind": "CODE",
+            "label": (
+                "clean"
+                if reranker_distractors_at_5["rate"] == 0.0
+                else "contaminated"
+            ),
+            "score": float(reranker_distractors_at_5["rate"]),
+            "explanation": (
+                "Fraction of the five final context chunks originating from "
                 "configured distractor corpora."
             ),
-        }
-        for cutoff in CUTOFFS
+        },
     ]
 
 
@@ -875,12 +896,11 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         )
         log_span_annotations(
             root_span_id,
-            metric_annotations("Retrieval", retrieval_metrics, retrieval_mrr)
-            + metric_annotations("Reranker", reranker_metrics, reranker_mrr)
-            + evidence_annotations("Retrieval", retrieval_evidence_metrics)
-            + evidence_annotations("Reranker", reranker_evidence_metrics)
-            + distractor_annotations("Retrieval", retrieval_distractors)
-            + distractor_annotations("Reranker", reranker_distractors),
+            focused_pipeline_annotations(
+                all_candidate_evidence,
+                reranker_evidence_metrics[5],
+                reranker_distractors[5],
+            ),
         )
         if evaluator_failed:
             log_span_annotations(
@@ -902,8 +922,6 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
                 correctness_reason=correctness_reason,
                 faithfulness_score=faithfulness,
                 faithfulness_reason=faithfulness_reason,
-                relevancy_score=relevancy,
-                relevancy_reason=relevancy_reason,
                 diagnosis=diagnosis,
                 recommendation=recommendation,
             )
@@ -972,9 +990,31 @@ def failed_result(row: dict, error: Exception) -> dict:
     return result
 
 
+def percentile(values: list[float], percentile_value: float) -> float:
+    """Return a linearly interpolated percentile for a non-empty sample."""
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * percentile_value
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
 def summarize(results: list[dict]) -> dict:
     if not results:
-        return {"total_questions": 0}
+        return {
+            "hit_rate": {},
+            "average_token_usage": {},
+            "quality_guardrails": {},
+            "latency_seconds": {},
+            "robustness": {},
+            "reliability": {},
+            "per_domain": {},
+        }
 
     def average(field: str) -> float:
         return mean(float(row[field]) for row in results)
@@ -986,110 +1026,138 @@ def summarize(results: list[dict]) -> dict:
             return 0.0
         return mean(float(row[field]) for row in judged_results)
 
+    def summarize_group(group: list[dict]) -> dict:
+        judged_group = [row for row in group if not row["evaluator_failed"]]
+
+        def group_average(field: str, rows: list[dict] = group) -> float:
+            if not rows:
+                return 0.0
+            return mean(float(row[field]) for row in rows)
+
+        def judged_group_average(field: str) -> float:
+            return group_average(field, judged_group)
+
+        return {
+            "questions": len(group),
+            "retriever_evidence_hit_at_10": group_average(
+                "retrieval_evidence_hit_all_candidates"
+            ),
+            "reranker_evidence_hit_at_5": group_average(
+                "reranker_evidence_hit_at_5"
+            ),
+            "average_correctness": judged_group_average("correctness"),
+            "average_faithfulness": judged_group_average("faithfulness"),
+            "average_relevancy": judged_group_average("relevancy"),
+            "average_pipeline_total_tokens": group_average(
+                "pipeline_total_tokens"
+            ),
+        }
+
+    rag_latencies = [float(row["rag_latency_seconds"]) for row in results]
+    domains = sorted({str(row.get("domain") or "unspecified") for row in results})
     summary = {
-        "total_questions": len(results),
-        "answer_evaluated_questions": len(judged_results),
-        "retrieval_mrr": average("retrieval_mrr"),
-        "reranker_mrr": average("reranker_mrr"),
-        "average_retrieval_candidate_count": average(
-            "retrieval_candidate_count"
-        ),
-        "retrieval_recall_all_candidates": average(
-            "retrieval_recall_all_candidates"
-        ),
-        "retrieval_complete_all_candidates": average(
-            "retrieval_complete_all_candidates"
-        ),
-        "retrieval_evidence_hit_all_candidates": average(
-            "retrieval_evidence_hit_all_candidates"
-        ),
-        "average_correctness": judged_average("correctness"),
-        "average_correctness_normalized": judged_average("correctness_normalized"),
-        "average_faithfulness": judged_average("faithfulness"),
-        "average_relevancy": judged_average("relevancy"),
-        "average_hallucination": judged_average("hallucination"),
-        "average_rag_latency_seconds": average("rag_latency_seconds"),
-        "average_evaluation_latency_seconds": average(
-            "evaluation_latency_seconds"
-        ),
-        "average_total_latency_seconds": average("total_latency_seconds"),
-        "average_retriever_query_tokens": average("retriever_query_tokens"),
-        "average_reranker_input_tokens": average("reranker_input_tokens"),
-        "average_context_tokens": average("context_tokens"),
-        "average_prompt_tokens": average("prompt_tokens"),
-        "average_completion_tokens": average("completion_tokens"),
-        "average_llm_total_tokens": average("llm_total_tokens"),
-        "average_pipeline_total_tokens": average("pipeline_total_tokens"),
-        "working_correctly_rate": (
-            sum(row["diagnosis"] == "working_correctly" for row in results)
-            / len(results)
-        ),
-        "diagnosis_counts": dict(Counter(row["diagnosis"] for row in results)),
-    }
-    for prefix in ("retrieval", "reranker"):
-        for cutoff in CUTOFFS:
-            for metric in ("hit", "recall", "complete"):
-                field = f"{prefix}_{metric}_at_{cutoff}"
-                summary[field] = average(field)
-            summary[f"{prefix}_evidence_hit_at_{cutoff}"] = average(
-                f"{prefix}_evidence_hit_at_{cutoff}"
-            )
-            summary[f"{prefix}_average_distractor_count_at_{cutoff}"] = average(
-                f"{prefix}_distractor_count_at_{cutoff}"
-            )
-            summary[f"{prefix}_distractor_rate_at_{cutoff}"] = average(
-                f"{prefix}_distractor_rate_at_{cutoff}"
-            )
-            corpus_counts: Counter = Counter()
-            for row in results:
-                corpus_counts.update(
-                    json.loads(
-                        row[f"{prefix}_distractor_datasets_at_{cutoff}"]
-                    )
+        "hit_rate": {
+            "retriever_evidence_at_10": average(
+                "retrieval_evidence_hit_all_candidates"
+            ),
+            "reranker_evidence_at_5": average(
+                "reranker_evidence_hit_at_5"
+            ),
+        },
+        "average_token_usage": {
+            "embedding_query_tokens": average("retriever_query_tokens"),
+            "reranker_input_tokens": average("reranker_input_tokens"),
+            "context_tokens": average("context_tokens"),
+            "llm_prompt_tokens": average("prompt_tokens"),
+            "llm_completion_tokens": average("completion_tokens"),
+            "llm_total_tokens": average("llm_total_tokens"),
+            "pipeline_total_tokens": average("pipeline_total_tokens"),
+        },
+        "quality_guardrails": {
+            "average_correctness": judged_average("correctness"),
+            "average_faithfulness": judged_average("faithfulness"),
+            "average_relevancy": judged_average("relevancy"),
+        },
+        "latency_seconds": {
+            "rag_p50": percentile(rag_latencies, 0.50),
+            "rag_p95": percentile(rag_latencies, 0.95),
+        },
+        "robustness": {
+            "distractor_rate_at_5": average(
+                "reranker_distractor_rate_at_5"
+            ),
+        },
+        "reliability": {
+            "answer_evaluated_questions": len(judged_results),
+            "evaluator_failure_rate": 1.0 - (
+                len(judged_results) / len(results)
+            ),
+            "working_correctly_rate": (
+                sum(
+                    row["diagnosis"] == "working_correctly"
+                    for row in results
                 )
-            summary[f"{prefix}_distractor_counts_by_dataset_at_{cutoff}"] = dict(
-                sorted(corpus_counts.items())
-            )
-            average_field = (
-                f"{prefix}_average_distractor_count_by_dataset_at_{cutoff}"
-            )
-            summary[average_field] = {
-                dataset: count / len(results)
-                for dataset, count in sorted(corpus_counts.items())
-            }
+                / len(results)
+            ),
+            "diagnosis_counts": dict(
+                Counter(row["diagnosis"] for row in results)
+            ),
+        },
+        "per_domain": {
+            domain: summarize_group([
+                row
+                for row in results
+                if str(row.get("domain") or "unspecified") == domain
+            ])
+            for domain in domains
+        },
+    }
     return summary
 
 
-def log_summary_span(summary: dict) -> None:
+def log_summary_span(summary: dict, diagnostics: dict) -> None:
     with tracer.start_as_current_span("HKPL Noise Evaluation Summary") as span:
         set_span_io(
             span,
             "EVALUATOR",
             input_value={
-                "evaluation_dataset": "hkpl",
-                "distractor_datasets": summary["distractor_datasets"],
-                "vector_table": summary["vector_table"],
+                "evaluation_dataset": diagnostics["metadata"]["dataset"],
+                "distractor_datasets": diagnostics["corpus"][
+                    "distractor_datasets"
+                ],
+                "vector_table": diagnostics["corpus"]["vector_table"],
             },
-            output_value=summary,
+            output_value={"summary": summary, "diagnostics": diagnostics},
         )
-        span.set_attribute("eval.dataset", "hkpl")
+        span.set_attribute("eval.dataset", diagnostics["metadata"]["dataset"])
         set_json_attribute(
             span,
             "eval.distractor_datasets",
-            summary["distractor_datasets"],
+            diagnostics["corpus"]["distractor_datasets"],
         )
         set_json_attribute(
             span,
             "eval.search_corpus_vectors",
-            summary["search_corpus_vectors"],
+            diagnostics["corpus"]["search_vectors"],
+        )
+        set_json_attribute(
+            span,
+            "eval.average_token_usage",
+            summary["average_token_usage"],
+        )
+        set_json_attribute(
+            span,
+            "eval.per_domain",
+            diagnostics["per_domain"],
         )
         span.set_attribute(
-            "eval.total_questions",
-            int(summary["total_questions"]),
+            "eval.evaluated_questions",
+            int(summary["questions"]["evaluated_questions"]),
         )
-        for metric, value in summary.items():
-            if isinstance(value, (int, float)):
-                span.set_attribute(f"eval.{metric}", float(value))
+        for metric, value in summary["hit_rate"].items():
+            span.set_attribute(f"eval.hit_rate.{metric}", float(value))
+        for metric, value in summary["average_token_usage"].items():
+            span.set_attribute(f"eval.tokens.average.{metric}", float(value))
 
 
 async def main() -> None:
@@ -1100,6 +1168,7 @@ async def main() -> None:
     if args.limit is not None and args.limit < 1:
         raise ValueError("--limit must be positive.")
 
+    coverage = load_hkpl_coverage()
     rows = load_hkpl_rows(args.limit)
     if not rows:
         raise RuntimeError("No valid HKPL evaluation rows were loaded.")
@@ -1122,7 +1191,12 @@ async def main() -> None:
             raise RuntimeError(
                 f"No evaluation question exactly matches {args.question_exact!r}."
             )
-    print(f"Loaded {len(rows)} HKPL evaluation rows.")
+    print(
+        f"Evaluation dataset coverage: {coverage['valid_questions']}/"
+        f"{coverage['intended_questions']} "
+        f"({coverage['evaluation_dataset_coverage']:.2%})"
+    )
+    print(f"Loaded {len(rows)} HKPL evaluation rows for this run.")
     print(
         f"Retriever searches combined vector table: data_{VECTOR_TABLE} "
         "(HKPL + all configured distractor corpora)"
@@ -1149,10 +1223,10 @@ async def main() -> None:
         results.append(result)
         print(
             "  "
-            f"retrieval_complete@5={result['retrieval_complete_at_5']:.0f} "
-            f"retrieval_complete@all="
-            f"{result['retrieval_complete_all_candidates']:.0f} "
-            f"reranker_complete@5={result['reranker_complete_at_5']:.0f} "
+            f"retriever_evidence@10="
+            f"{result['retrieval_evidence_hit_all_candidates']:.0f} "
+            f"reranker_evidence@5="
+            f"{result['reranker_evidence_hit_at_5']:.0f} "
             f"reference={result['retrieval_reference_match_mode']}->"
             f"{result['reranker_reference_match_mode']} "
             f"correctness={result['correctness']:.2f} "
@@ -1167,49 +1241,63 @@ async def main() -> None:
         writer.writeheader()
         writer.writerows(results)
 
-    summary = summarize(results)
-    summary.update({
-        "phoenix_project": os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag"),
-        "vector_table": f"data_{VECTOR_TABLE}",
-        "evaluation_dataset": "hkpl",
-        "distractor_datasets": sorted(
-            dataset for dataset in corpus_counts if dataset != "hkpl"
-        ),
-        "search_corpus_vectors": corpus_counts,
-        "metric_definitions": {
-            "hit_at_k": "At least one expected chunk appears in the top K.",
-            "recall_at_k": "Fraction of expected chunks appearing in the top K.",
-            "complete_at_k": "All expected chunks appear in the top K.",
-            "complete_all_candidates": (
-                "All expected chunks appear anywhere in the vector candidates "
-                "provided to the reranker."
-            ),
-            "evidence_hit_at_k": (
-                "At least one top-K chunk contains the labeled supporting "
-                "evidence, even if its chunk ID differs from the gold chunk."
-            ),
-            "reference_match_mode": (
-                "exact_chunk when the labeled chunk is present, "
-                "equivalent_evidence when another chunk contains the gold "
-                "snippet, otherwise missing. Diagnosis uses this mode."
-            ),
-            "mrr": "Reciprocal rank of the first expected chunk.",
-            "hallucination": "One minus the LlamaIndex faithfulness score.",
-            "distractor_rate_at_k": (
-                "Fraction of the top K documents whose dataset metadata is "
-                "marked as a distractor corpus."
+    metrics = summarize(results)
+    summary = {
+        "questions": {
+            "evaluated_questions": len(results),
+        },
+        "hit_rate": metrics["hit_rate"],
+        "average_token_usage": metrics["average_token_usage"],
+        "quality": {
+            "average_correctness": metrics["quality_guardrails"][
+                "average_correctness"
+            ],
+            "average_faithfulness": metrics["quality_guardrails"][
+                "average_faithfulness"
+            ],
+        },
+        "latency_seconds": metrics["latency_seconds"],
+    }
+    diagnostics = {
+        "metadata": {
+            "dataset": "hkpl",
+            "phoenix_project": os.getenv(
+                "PHOENIX_PROJECT_NAME",
+                "hkpl-rag",
             ),
         },
-    })
+        "dataset_validation": coverage,
+        "average_relevancy": metrics["quality_guardrails"][
+            "average_relevancy"
+        ],
+        "robustness": metrics["robustness"],
+        "reliability": metrics["reliability"],
+        "per_domain": metrics["per_domain"],
+        "corpus": {
+            "vector_table": f"data_{VECTOR_TABLE}",
+            "search_vectors": corpus_counts,
+            "distractor_datasets": sorted(
+                dataset for dataset in corpus_counts if dataset != "hkpl"
+            ),
+        },
+    }
+    diagnostics_path = summary_path.with_name(
+        f"{summary_path.stem}.diagnostics{summary_path.suffix}"
+    )
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(
         json.dumps(summary, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    log_summary_span(summary)
+    diagnostics_path.write_text(
+        json.dumps(diagnostics, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    log_summary_span(summary, diagnostics)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     print(f"Saved results to: {results_path}")
     print(f"Saved summary to: {summary_path}")
+    print(f"Saved diagnostics to: {diagnostics_path}")
 
 
 if __name__ == "__main__":

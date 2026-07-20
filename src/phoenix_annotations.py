@@ -174,15 +174,11 @@ def log_rag_answer_annotations(
     correctness_reason: str,
     faithfulness_score: float,
     faithfulness_reason: str,
-    relevancy_score: float,
-    relevancy_reason: str,
     diagnosis: str,
     recommendation: str,
 ) -> None:
     correctness = normalize_score(correctness_score, maximum=5.0)
     faithfulness = normalize_score(faithfulness_score)
-    relevancy = normalize_score(relevancy_score)
-    hallucination = 1.0 - faithfulness
 
     log_span_annotations(
         root_span_id,
@@ -199,20 +195,6 @@ def log_rag_answer_annotations(
                 "annotator_kind": "LLM",
                 "label": "faithful" if faithfulness >= 0.5 else "unfaithful",
                 "score": faithfulness,
-                "explanation": faithfulness_reason,
-            },
-            {
-                "name": "Relevancy",
-                "annotator_kind": "LLM",
-                "label": "relevant" if relevancy >= 0.5 else "irrelevant",
-                "score": relevancy,
-                "explanation": relevancy_reason,
-            },
-            {
-                "name": "Hallucination",
-                "annotator_kind": "CODE",
-                "label": "hallucinated" if hallucination > 0.5 else "grounded",
-                "score": hallucination,
                 "explanation": faithfulness_reason,
             },
             {
