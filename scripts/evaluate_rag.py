@@ -1150,8 +1150,14 @@ async def main() -> None:
         print(
             "  "
             f"retrieval_complete@5={result['retrieval_complete_at_5']:.0f} "
+            f"retrieval_complete@all="
+            f"{result['retrieval_complete_all_candidates']:.0f} "
             f"reranker_complete@5={result['reranker_complete_at_5']:.0f} "
+            f"reference={result['retrieval_reference_match_mode']}->"
+            f"{result['reranker_reference_match_mode']} "
             f"correctness={result['correctness']:.2f} "
+            f"faithfulness={result['faithfulness']:.2f} "
+            f"relevancy={result['relevancy']:.2f} "
             f"diagnosis={result['diagnosis']}"
         )
 
