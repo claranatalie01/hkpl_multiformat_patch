@@ -156,6 +156,42 @@ Repeat `--archive ARCHIVE_NAME.zip` to combine several themes. `--limit` is the
 total article limit across all selected archives; avoid ingesting the entire
 repository unless that scale is part of the experiment.
 
+### Corpus-first benchmark workflow
+
+Use the workflow command to enforce the required order: finalize and audit the
+HKPL corpus, generate a candidate benchmark from HKPL chunks, review it,
+promote it, then evaluate against the combined corpus.
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/rag_benchmark_workflow.py status
+
+docker compose run --rm langgraph-agent \
+  uv run python scripts/rag_benchmark_workflow.py audit-corpus
+
+docker compose run --rm langgraph-agent \
+  uv run python scripts/rag_benchmark_workflow.py prepare-candidate
+```
+
+The candidate is written to `data/evaluation_dataset.candidate.csv` and loaded
+into `evaluation_dataset_candidate`. Review all ambiguous, multi-part, and
+time-sensitive labels before promotion.
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/rag_benchmark_workflow.py promote --yes
+
+docker compose run --rm langgraph-agent \
+  uv run python scripts/rag_benchmark_workflow.py evaluate \
+  --phoenix-project hkpl-rag
+```
+
+`prepare-candidate` uses up to eight chunks per document by default. Add
+`--all-chunks` to create a comprehensive candidate pool from every eligible
+HKPL primary chunk; this can take substantially longer and still requires
+semantic label review. Candidate generation never uses HotpotQA or Webz News
+chunks. Evaluation requires both distractor corpora to be present.
+
 ### HKPL evaluation with combined distractor noise
 
 `scripts/evaluate_rag.py` is the only evaluation entry point. It loads HKPL

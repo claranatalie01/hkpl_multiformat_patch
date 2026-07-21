@@ -58,9 +58,65 @@ SUMMARY_PATH = Path(
 )
 LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
 EVALUATION_MAX_TOKENS = int(os.getenv("EVALUATION_MAX_TOKENS", "1024"))
-CUTOFFS = (1, 3, 5)
+RETRIEVER_HIT_CUTOFF = 10
+RERANKER_HIT_CUTOFF = 5
+CUTOFFS = (1, 3, 5, 10)
 
 tracer = trace.get_tracer("hkpl-rag-noise-evaluation")
+
+STRICT_CORRECTNESS_TEMPLATE = """
+You are evaluating a factual question-answering system.
+
+Compare the generated answer with every accepted reference answer. A generated
+answer is correct if it matches any accepted reference answer in meaning.
+
+Scoring rules:
+- 5: Fully correct. Every required number, date component, name, location, and
+  requested list item is present and correct, with no contradiction.
+- 4: Correct core answer with only harmless wording differences or irrelevant
+  extra detail. No required factual component is missing.
+- 3: Partially correct or ambiguous. Use this when a required component or
+  qualifier is missing, or when the answer selects one interpretation without
+  resolving an ambiguity. For example, giving only a month and year when an
+  exact day is required.
+- 2: Relevant, but the core fact is wrong, or the answer refuses despite the
+  reference supplying the answer.
+- 1: Irrelevant or entirely incorrect.
+
+Do not reward verbosity. Do not treat a partial date, number, identifier, phone
+number, email address, or list as fully correct. Output the numeric score alone
+on the first line. Provide a brief reason on the second line.
+
+Question:
+{query}
+
+Accepted reference answers:
+{reference_answer}
+
+Generated answer:
+{generated_answer}
+"""
+
+STRICT_FAITHFULNESS_TEMPLATE = """
+Determine whether the answer is fully grounded in the retrieved context.
+
+Rules:
+- Answer YES only if every factual claim in the answer is directly supported
+  by one or more passages in the context.
+- Answer NO if any factual claim is unsupported, contradicted, more specific
+  than the context, or supplied from outside knowledge.
+- A correct core answer with unsupported additional claims must be NO.
+- Ignore tone, formatting, and harmless restatement.
+- Return only YES or NO.
+
+Answer to check:
+{query_str}
+
+Retrieved context:
+{context_str}
+
+Verdict:
+"""
 
 
 class QwenEvaluationLLM(CustomLLM):
@@ -108,6 +164,22 @@ def parse_args() -> argparse.Namespace:
         "--phoenix-project",
         default=os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag"),
         help="Phoenix project that receives this evaluation run's traces.",
+    )
+    parser.add_argument(
+        "--allow-incomplete-dataset",
+        action="store_true",
+        help=(
+            "Allow diagnostic runs when some evaluation rows have stale "
+            "evidence links. Full benchmark runs should never use this."
+        ),
+    )
+    parser.add_argument(
+        "--allow-missing-distractors",
+        action="store_true",
+        help=(
+            "Allow diagnostic runs without both HotpotQA and Webz News. "
+            "Full robustness benchmarks should never use this."
+        ),
     )
     question_filter = parser.add_mutually_exclusive_group()
     question_filter.add_argument(
@@ -162,6 +234,23 @@ def safe_table_name(value: str) -> str:
     return value
 
 
+def parse_accepted_answers(value, primary_answer: str) -> list[str]:
+    if isinstance(value, str):
+        try:
+            aliases = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            aliases = []
+    elif isinstance(value, list):
+        aliases = value
+    else:
+        aliases = []
+
+    answers = [primary_answer, *aliases]
+    return list(dict.fromkeys(
+        str(answer).strip() for answer in answers if str(answer).strip()
+    ))
+
+
 def load_hkpl_rows(limit: int | None) -> list[dict]:
     table = safe_table_name(HKPL_EVALUATION_TABLE)
     vector_table = safe_table_name(f"data_{VECTOR_TABLE}")
@@ -176,6 +265,7 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
                     query,
                     expected_answer_text,
                     expected_context_snippet,
+                    accepted_answers_json,
                     source_document_id,
                     source_chunk_id
                 FROM {table}
@@ -197,6 +287,10 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
             "domain": str(row.get("domain") or ""),
             "question": str(row["query"]),
             "expected_answer": str(row["expected_answer_text"]),
+            "accepted_answers": parse_accepted_answers(
+                row.get("accepted_answers_json"),
+                str(row["expected_answer_text"]),
+            ),
             "expected_context_snippet": str(
                 row.get("expected_context_snippet") or ""
             ),
@@ -278,15 +372,28 @@ def ranked_chunk_ids(documents: list[dict]) -> list[str]:
     return [str(document.get("chunk_id") or "") for document in documents]
 
 
-def evidence_match(documents: list[dict], expected_snippet: str, k: int) -> dict:
-    snippet = normalize_evidence_text(expected_snippet)
+def evidence_match(
+    documents: list[dict],
+    expected_snippet: str,
+    k: int,
+    accepted_answers: list[str] | None = None,
+) -> dict:
+    evidence_phrases = [normalize_evidence_text(expected_snippet)]
+    for answer in accepted_answers or []:
+        normalized_answer = normalize_evidence_text(answer)
+        compact_answer = re.sub(r"\W+", "", normalized_answer)
+        if len(compact_answer) >= 4 and normalized_answer not in {"yes", "no"}:
+            evidence_phrases.append(normalized_answer)
+    evidence_phrases = list(dict.fromkeys(
+        phrase for phrase in evidence_phrases if phrase
+    ))
     matched_ids = []
-    if snippet:
+    if evidence_phrases:
         for document in documents[:k]:
             document_text = normalize_evidence_text(
                 document.get("text") or document.get("text_preview") or ""
             )
-            if snippet in document_text:
+            if any(phrase in document_text for phrase in evidence_phrases):
                 matched_ids.append(str(document.get("chunk_id") or ""))
     return {
         "hit": float(bool(matched_ids)),
@@ -472,12 +579,32 @@ def diagnose(
     faithfulness: float,
     relevancy: float,
 ) -> tuple[str, str]:
+    answer_is_correct = (
+        correctness >= 4.0
+        and faithfulness >= 0.5
+        and relevancy >= 0.5
+    )
     if retrieval_match_mode == "missing":
+        if answer_is_correct:
+            return (
+                "correct_answer_evidence_label_miss",
+                "The answer is correct, but neither the labeled chunk nor a "
+                "recognized accepted-answer passage was detected in the "
+                "retrieval pool. Review alternative evidence and benchmark "
+                "labels.",
+            )
         return (
             "retrieval_problem",
-            "PGVector retrieved neither the labeled chunk nor equivalent gold evidence.",
+            "PGVector retrieved neither the labeled chunk nor recognized "
+            "accepted-answer evidence, and the final answer was not fully correct.",
         )
     if reranker_match_mode == "missing":
+        if answer_is_correct:
+            return (
+                "correct_answer_reranker_evidence_miss",
+                "The answer is correct, but recognized benchmark evidence was "
+                "not retained in the final reranked context.",
+            )
         return (
             "reranker_problem",
             "Reranking removed both the labeled chunk and equivalent gold evidence.",
@@ -487,15 +614,23 @@ def diagnose(
             "context_building_problem",
             "Neither the labeled chunk nor equivalent gold evidence reached the LLM context.",
         )
-    if correctness < 3.0:
+    if correctness < 4.0:
         return (
             "llm_generation_problem",
-            "Expected evidence reached the LLM, but answer correctness was low.",
+            "Expected evidence reached the LLM, but the answer was partial, "
+            "ambiguous, or incorrect.",
         )
-    if correctness >= 4.0 and (faithfulness < 0.5 or relevancy < 0.5):
+    if correctness >= 4.0 and relevancy < 0.5:
         return (
-            "evaluator_or_dataset_issue",
-            "Correctness is high while another judge is low; inspect evaluator output and labels.",
+            "irrelevant_answer",
+            "The answer may contain correct facts but does not adequately "
+            "address the question.",
+        )
+    if correctness >= 4.0 and faithfulness < 0.5:
+        return (
+            "ungrounded_answer",
+            "The answer may be factually correct, but at least one claim is "
+            "not supported by the retrieved context.",
         )
     return (
         "working_correctly",
@@ -504,36 +639,65 @@ def diagnose(
     )
 
 
+def answer_outcome(
+    correctness: float,
+    faithfulness: float,
+    relevancy: float,
+    evaluator_failed: bool,
+) -> str:
+    if evaluator_failed:
+        return "not_evaluated"
+    if correctness < 3.0:
+        return "incorrect"
+    if correctness < 4.0:
+        return "partial_or_ambiguous"
+    if relevancy < 0.5:
+        return "irrelevant"
+    if faithfulness < 0.5:
+        return "ungrounded"
+    return "correct"
+
+
+def evidence_outcome(
+    retrieval_match_mode: str,
+    reranker_match_mode: str,
+    context_match_mode: str,
+) -> str:
+    if retrieval_match_mode == "missing":
+        return "missing_from_retrieval_pool"
+    if reranker_match_mode == "missing":
+        return "removed_by_reranker"
+    if context_match_mode == "missing":
+        return "missing_from_llm_context"
+    return "reached_llm_context"
+
+
 def focused_pipeline_annotations(
-    retrieval_evidence_all_candidates: dict,
-    reranker_evidence_at_5: dict,
+    retrieval_match_mode: str,
+    reranker_match_mode: str,
     reranker_distractors_at_5: dict,
 ) -> list[dict]:
+    retrieval_hit = retrieval_match_mode != "missing"
+    reranker_hit = reranker_match_mode != "missing"
     return [
         {
-            "name": "Retriever Evidence Hit@10",
+            "name": "Retriever Hit@10",
             "annotator_kind": "CODE",
-            "label": (
-                "pass"
-                if retrieval_evidence_all_candidates["hit"] >= 1.0
-                else "fail"
-            ),
-            "score": float(retrieval_evidence_all_candidates["hit"]),
+            "label": "pass" if retrieval_hit else "fail",
+            "score": float(retrieval_hit),
             "explanation": (
-                "Whether labeled evidence appeared among the ten vector "
-                "candidates sent to the reranker."
+                "Whether the exact labeled chunk or equivalent labeled "
+                "evidence appeared among the ten vector candidates."
             ),
         },
         {
-            "name": "Reranker Evidence Hit@5",
+            "name": "Reranker Hit@5",
             "annotator_kind": "CODE",
-            "label": (
-                "pass" if reranker_evidence_at_5["hit"] >= 1.0 else "fail"
-            ),
-            "score": float(reranker_evidence_at_5["hit"]),
+            "label": "pass" if reranker_hit else "fail",
+            "score": float(reranker_hit),
             "explanation": (
-                "Whether labeled evidence appeared among the five reranked "
-                "chunks supplied to the answer generator."
+                "Whether the exact labeled chunk or equivalent labeled "
+                "evidence appeared among the five reranked context chunks."
             ),
         },
         {
@@ -556,6 +720,7 @@ def focused_pipeline_annotations(
 async def evaluate_row(row: dict, evaluators: tuple) -> dict:
     question = row["question"]
     expected_answer = row["expected_answer"]
+    accepted_answers = row.get("accepted_answers") or [expected_answer]
     expected_ids = row["expected_chunk_ids"]
     expected_snippet = row.get("expected_context_snippet", "")
     with tracer.start_as_current_span("RAG Evaluation Query") as span:
@@ -565,6 +730,7 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         span.set_attribute("eval.evaluation_id", row["evaluation_id"])
         span.set_attribute("eval.question", question)
         span.set_attribute("eval.expected_answer", expected_answer)
+        set_json_attribute(span, "eval.accepted_answers", accepted_answers)
         span.set_attribute("eval.expected_context_snippet", expected_snippet)
         set_json_attribute(span, "eval.expected_chunk_ids", expected_ids)
 
@@ -590,11 +756,21 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             for cutoff in CUTOFFS
         }
         retrieval_evidence_metrics = {
-            cutoff: evidence_match(vector_documents, expected_snippet, cutoff)
+            cutoff: evidence_match(
+                vector_documents,
+                expected_snippet,
+                cutoff,
+                accepted_answers,
+            )
             for cutoff in CUTOFFS
         }
         reranker_evidence_metrics = {
-            cutoff: evidence_match(reranked_documents, expected_snippet, cutoff)
+            cutoff: evidence_match(
+                reranked_documents,
+                expected_snippet,
+                cutoff,
+                accepted_answers,
+            )
             for cutoff in CUTOFFS
         }
         retrieval_distractors = {
@@ -616,6 +792,7 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             vector_documents,
             expected_snippet,
             len(vector_documents),
+            accepted_answers,
         )
         expected_set = set(expected_ids)
         retrieved_expected_ids = [
@@ -627,26 +804,29 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
 
         context, contexts, sources = build_context(nodes)
         context_ids = [source["chunk_id"] for source in sources]
+        retrieval_at_10_match_mode = reference_match_mode(
+            bool(retrieval_metrics[RETRIEVER_HIT_CUTOFF]["complete"]),
+            bool(
+                retrieval_evidence_metrics[RETRIEVER_HIT_CUTOFF]["hit"]
+            ),
+        )
         retrieval_match_mode = reference_match_mode(
             bool(all_candidate_metrics["complete"]),
             bool(all_candidate_evidence["hit"]),
         )
         reranker_match_mode = reference_match_mode(
-            set(expected_ids).issubset(reranked_ids),
+            bool(reranker_metrics[RERANKER_HIT_CUTOFF]["complete"]),
+            bool(reranker_evidence_metrics[RERANKER_HIT_CUTOFF]["hit"]),
+        )
+        context_match_mode = reference_match_mode(
+            set(expected_ids).issubset(context_ids),
             bool(
                 evidence_match(
                     reranked_documents,
                     expected_snippet,
                     len(reranked_documents),
+                    accepted_answers,
                 )["hit"]
-            ),
-        )
-        context_match_mode = reference_match_mode(
-            set(expected_ids).issubset(context_ids),
-            bool(
-                normalize_evidence_text(expected_snippet)
-                and normalize_evidence_text(expected_snippet)
-                in normalize_evidence_text(context)
             ),
         )
         answer, usage = await generate_answer(question, context)
@@ -664,17 +844,23 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
                 "question": question,
                 "generated_answer": answer,
                 "expected_answer": expected_answer,
+                "accepted_answers": accepted_answers,
             },
             lambda: evaluators[0].aevaluate(
                 query=question,
                 response=answer,
-                reference=expected_answer,
+                reference="\n".join(
+                    f"- {answer}" for answer in accepted_answers
+                ),
             ),
         )
         faithfulness, faithfulness_reason, faithfulness_failed = await run_evaluator(
             "faithfulness_evaluator",
             {"generated_answer": answer, "contexts": contexts},
-            lambda: evaluators[1].aevaluate(response=answer, contexts=contexts),
+            lambda: evaluators[1].aevaluate(
+                response=answer,
+                contexts=[context],
+            ),
         )
         relevancy, relevancy_reason, relevancy_failed = await run_evaluator(
             "relevancy_evaluator",
@@ -722,6 +908,12 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             or bool(usage.get("is_estimated", False))
             or context_estimated
         )
+        final_answer_outcome = answer_outcome(
+            correctness,
+            faithfulness,
+            relevancy,
+            evaluator_failed,
+        )
 
         result = {
             "evaluation_id": row["evaluation_id"],
@@ -730,6 +922,10 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             "difficulty": row.get("difficulty", ""),
             "question": question,
             "expected_answer": expected_answer,
+            "accepted_answers": json.dumps(
+                accepted_answers,
+                ensure_ascii=False,
+            ),
             "expected_context_snippet": expected_snippet,
             "generated_answer": answer,
             "expected_chunk_ids": json.dumps(expected_ids),
@@ -752,10 +948,20 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
                 all_candidate_evidence["matched_chunk_ids"]
             ),
             "retrieval_reference_match_mode": retrieval_match_mode,
+            "retrieval_reference_match_mode_at_10": (
+                retrieval_at_10_match_mode
+            ),
             "reranker_reference_match_mode": reranker_match_mode,
             "context_reference_match_mode": context_match_mode,
             "correctness": correctness,
             "correctness_normalized": max(0.0, min(1.0, correctness / 5.0)),
+            "answer_outcome": final_answer_outcome,
+            "answer_pass": final_answer_outcome == "correct",
+            "evidence_outcome": evidence_outcome(
+                retrieval_match_mode,
+                reranker_match_mode,
+                context_match_mode,
+            ),
             "faithfulness": faithfulness,
             "relevancy": relevancy,
             "hallucination": hallucination,
@@ -897,8 +1103,8 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
         log_span_annotations(
             root_span_id,
             focused_pipeline_annotations(
-                all_candidate_evidence,
-                reranker_evidence_metrics[5],
+                retrieval_at_10_match_mode,
+                reranker_match_mode,
                 reranker_distractors[5],
             ),
         )
@@ -936,6 +1142,10 @@ def failed_result(row: dict, error: Exception) -> dict:
         "difficulty": row.get("difficulty", ""),
         "question": row["question"],
         "expected_answer": row["expected_answer"],
+        "accepted_answers": json.dumps(
+            row.get("accepted_answers") or [row["expected_answer"]],
+            ensure_ascii=False,
+        ),
         "expected_context_snippet": row.get("expected_context_snippet", ""),
         "generated_answer": "",
         "expected_chunk_ids": json.dumps(row["expected_chunk_ids"]),
@@ -952,10 +1162,14 @@ def failed_result(row: dict, error: Exception) -> dict:
         "retrieval_evidence_hit_all_candidates": 0.0,
         "retrieval_evidence_chunk_ids_all_candidates": "[]",
         "retrieval_reference_match_mode": "missing",
+        "retrieval_reference_match_mode_at_10": "missing",
         "reranker_reference_match_mode": "missing",
         "context_reference_match_mode": "missing",
         "correctness": 0.0,
         "correctness_normalized": 0.0,
+        "answer_outcome": "not_evaluated",
+        "answer_pass": False,
+        "evidence_outcome": "not_evaluated",
         "faithfulness": 0.0,
         "relevancy": 0.0,
         "hallucination": 1.0,
@@ -1037,13 +1251,21 @@ def summarize(results: list[dict]) -> dict:
         def judged_group_average(field: str) -> float:
             return group_average(field, judged_group)
 
+        def reference_hit(field: str) -> float:
+            if not group:
+                return 0.0
+            return mean(
+                1.0 if row[field] != "missing" else 0.0
+                for row in group
+            )
+
         return {
             "questions": len(group),
-            "retriever_evidence_hit_at_10": group_average(
-                "retrieval_evidence_hit_all_candidates"
+            "retriever_hit_at_10": reference_hit(
+                "retrieval_reference_match_mode_at_10"
             ),
-            "reranker_evidence_hit_at_5": group_average(
-                "reranker_evidence_hit_at_5"
+            "reranker_hit_at_5": reference_hit(
+                "reranker_reference_match_mode"
             ),
             "average_correctness": judged_group_average("correctness"),
             "average_faithfulness": judged_group_average("faithfulness"),
@@ -1057,11 +1279,17 @@ def summarize(results: list[dict]) -> dict:
     domains = sorted({str(row.get("domain") or "unspecified") for row in results})
     summary = {
         "hit_rate": {
-            "retriever_evidence_at_10": average(
-                "retrieval_evidence_hit_all_candidates"
+            "retriever_at_10": mean(
+                1.0
+                if row["retrieval_reference_match_mode_at_10"] != "missing"
+                else 0.0
+                for row in results
             ),
-            "reranker_evidence_at_5": average(
-                "reranker_evidence_hit_at_5"
+            "reranker_at_5": mean(
+                1.0
+                if row["reranker_reference_match_mode"] != "missing"
+                else 0.0
+                for row in results
             ),
         },
         "average_token_usage": {
@@ -1074,6 +1302,14 @@ def summarize(results: list[dict]) -> dict:
             "pipeline_total_tokens": average("pipeline_total_tokens"),
         },
         "quality_guardrails": {
+            "answer_pass_rate": (
+                mean(
+                    1.0 if row["answer_pass"] else 0.0
+                    for row in judged_results
+                )
+                if judged_results
+                else 0.0
+            ),
             "average_correctness": judged_average("correctness"),
             "average_faithfulness": judged_average("faithfulness"),
             "average_relevancy": judged_average("relevancy"),
@@ -1102,6 +1338,9 @@ def summarize(results: list[dict]) -> dict:
             "diagnosis_counts": dict(
                 Counter(row["diagnosis"] for row in results)
             ),
+            "answer_outcome_counts": dict(
+                Counter(row["answer_outcome"] for row in results)
+            ),
         },
         "per_domain": {
             domain: summarize_group([
@@ -1127,7 +1366,7 @@ def log_summary_span(summary: dict, diagnostics: dict) -> None:
                 ],
                 "vector_table": diagnostics["corpus"]["vector_table"],
             },
-            output_value={"summary": summary, "diagnostics": diagnostics},
+            output_value=summary,
         )
         span.set_attribute("eval.dataset", diagnostics["metadata"]["dataset"])
         set_json_attribute(
@@ -1169,10 +1408,32 @@ async def main() -> None:
         raise ValueError("--limit must be positive.")
 
     coverage = load_hkpl_coverage()
+    if (
+        coverage["valid_questions"] != coverage["intended_questions"]
+        and not args.allow_incomplete_dataset
+    ):
+        raise RuntimeError(
+            "Evaluation dataset is not fully linked to the current HKPL "
+            f"corpus: {coverage['valid_questions']}/"
+            f"{coverage['intended_questions']} valid. Repair or regenerate "
+            "the benchmark before evaluation. Use "
+            "--allow-incomplete-dataset only for targeted diagnostics."
+        )
     rows = load_hkpl_rows(args.limit)
     if not rows:
         raise RuntimeError("No valid HKPL evaluation rows were loaded.")
     corpus_counts = load_corpus_counts()
+    missing_distractors = [
+        dataset
+        for dataset in ("hotpotqa", "webz_news")
+        if corpus_counts.get(dataset, 0) <= 0
+    ]
+    if missing_distractors and not args.allow_missing_distractors:
+        raise RuntimeError(
+            "Full RAG evaluation requires both distractor corpora. Missing: "
+            + ", ".join(missing_distractors)
+            + ". Use --allow-missing-distractors only for diagnostics."
+        )
     if args.question_contains:
         needle = args.question_contains.casefold()
         rows = [row for row in rows if needle in row["question"].casefold()]
@@ -1206,8 +1467,14 @@ async def main() -> None:
 
     judge = QwenEvaluationLLM()
     evaluators = (
-        CorrectnessEvaluator(llm=judge),
-        FaithfulnessEvaluator(llm=judge),
+        CorrectnessEvaluator(
+            llm=judge,
+            eval_template=STRICT_CORRECTNESS_TEMPLATE,
+        ),
+        FaithfulnessEvaluator(
+            llm=judge,
+            eval_template=STRICT_FAITHFULNESS_TEMPLATE,
+        ),
         RelevancyEvaluator(llm=judge),
     )
     results = []
@@ -1223,15 +1490,16 @@ async def main() -> None:
         results.append(result)
         print(
             "  "
-            f"retriever_evidence@10="
-            f"{result['retrieval_evidence_hit_all_candidates']:.0f} "
-            f"reranker_evidence@5="
-            f"{result['reranker_evidence_hit_at_5']:.0f} "
-            f"reference={result['retrieval_reference_match_mode']}->"
+            f"retriever_hit@10="
+            f"{int(result['retrieval_reference_match_mode_at_10'] != 'missing')} "
+            f"reranker_hit@5="
+            f"{int(result['reranker_reference_match_mode'] != 'missing')} "
+            f"pool_reference={result['retrieval_reference_match_mode']}->"
             f"{result['reranker_reference_match_mode']} "
             f"correctness={result['correctness']:.2f} "
             f"faithfulness={result['faithfulness']:.2f} "
             f"relevancy={result['relevancy']:.2f} "
+            f"answer={result['answer_outcome']} "
             f"diagnosis={result['diagnosis']}"
         )
 
@@ -1249,6 +1517,9 @@ async def main() -> None:
         "hit_rate": metrics["hit_rate"],
         "average_token_usage": metrics["average_token_usage"],
         "quality": {
+            "answer_pass_rate": metrics["quality_guardrails"][
+                "answer_pass_rate"
+            ],
             "average_correctness": metrics["quality_guardrails"][
                 "average_correctness"
             ],

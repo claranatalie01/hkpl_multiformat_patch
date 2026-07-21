@@ -53,11 +53,6 @@ def parse_args() -> argparse.Namespace:
         description="Validate evaluation rows against the searchable knowledge chunks.",
     )
     parser.add_argument(
-        "--delete-missing-chunks",
-        action="store_true",
-        help="Delete evaluation rows whose source_chunk_id is missing from the knowledge table.",
-    )
-    parser.add_argument(
         "--repair-missing-chunks",
         action="store_true",
         help=(
@@ -71,11 +66,6 @@ def parse_args() -> argparse.Namespace:
         help="Confirm destructive cleanup actions.",
     )
     args = parser.parse_args()
-    if args.delete_missing_chunks and args.repair_missing_chunks:
-        parser.error(
-            "--delete-missing-chunks and --repair-missing-chunks are mutually "
-            "exclusive."
-        )
     return args
 
 
@@ -199,44 +189,11 @@ def synchronize_csv(repaired_rows: list[dict]) -> int:
 
     temporary_path = EVALUATION_DATASET_PATH.with_suffix(".csv.tmp")
     with temporary_path.open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     temporary_path.replace(EVALUATION_DATASET_PATH)
     return updated
-
-
-def delete_rows_from_csv(deleted_rows: list[dict]) -> int:
-    if not EVALUATION_DATASET_PATH.is_file() or not deleted_rows:
-        return 0
-
-    deleted_keys = {
-        (str(item.get("query") or ""), str(item.get("source_chunk_id") or ""))
-        for item in deleted_rows
-    }
-    with EVALUATION_DATASET_PATH.open(
-        newline="",
-        encoding="utf-8-sig",
-    ) as source:
-        reader = csv.DictReader(source)
-        fieldnames = list(reader.fieldnames or [])
-        original_rows = list(reader)
-
-    retained_rows = [
-        row
-        for row in original_rows
-        if (
-            str(row.get("query") or ""),
-            str(row.get("source_chunk_id") or ""),
-        ) not in deleted_keys
-    ]
-    temporary_path = EVALUATION_DATASET_PATH.with_suffix(".csv.tmp")
-    with temporary_path.open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(retained_rows)
-    temporary_path.replace(EVALUATION_DATASET_PATH)
-    return len(original_rows) - len(retained_rows)
 
 
 def backup_evaluation_csv() -> Path | None:
@@ -330,7 +287,12 @@ def main() -> None:
     print(f"Evaluation rows       : {total}")
     print(f"Expected chunk found  : {chunk_found}/{total} ({chunk_found / total:.2%})" if total else "Expected chunk found  : 0/0")
     print(f"Snippet text found    : {snippet_found}/{total} ({snippet_found / total:.2%})" if total else "Snippet text found    : 0/0")
-    print(f"Answer text found     : {answer_found}/{total} ({answer_found / total:.2%})" if total else "Answer text found     : 0/0")
+    print(
+        f"Answer verbatim found : {answer_found}/{total} "
+        f"({answer_found / total:.2%}) [informational]"
+        if total
+        else "Answer verbatim found : 0/0 [informational]"
+    )
 
     if missing_chunks:
         print()
@@ -355,9 +317,25 @@ def main() -> None:
 
     if missing_answers:
         print()
-        print("Expected answer not found verbatim in linked chunk:")
+        print(
+            "Expected answer not found as one contiguous string "
+            "(informational; paraphrases and combined facts are allowed):"
+        )
         for item in missing_answers[:10]:
             print(f"- id={item['id']} answer={item['expected_answer_text']} query={item['query']}")
+
+    ready = chunk_found == total and snippet_found == total
+    print()
+    print(
+        "Evaluation evidence status: "
+        + ("READY" if ready else "REVIEW REQUIRED")
+    )
+    if not ready:
+        print(
+            "Readiness requires every row to reference an existing chunk and "
+            "contain its expected evidence snippet. Verbatim answer coverage "
+            "does not determine readiness."
+        )
 
     if args.repair_missing_chunks:
         if not args.yes:
@@ -412,40 +390,8 @@ def main() -> None:
                 "unchanged for manual review."
             )
 
-    if args.delete_missing_chunks:
-        if not args.yes:
-            raise SystemExit(
-                "Refusing to delete rows without --yes. "
-                "Re-run with --delete-missing-chunks --yes after reviewing the list."
-            )
-
-        missing_ids = [item["id"] for item in missing_chunks]
-        if not missing_ids:
-            print()
-            print("No rows with missing expected chunks to delete.")
-            return
-
-        backup_path = backup_evaluation_csv()
-        if backup_path:
-            print(f"Backed up evaluation CSV to {backup_path}.")
-
-        with engine.begin() as connection:
-            deleted = connection.execute(
-                text(f"""
-                    DELETE FROM {EVALUATION_DATASET_TABLE}
-                    WHERE id = ANY(:missing_ids)
-                """),
-                {"missing_ids": missing_ids},
-            ).rowcount
-
-        print()
-        print(f"Deleted {deleted} rows with missing expected chunks.")
-        csv_deletions = delete_rows_from_csv(missing_chunks)
-        if EVALUATION_DATASET_PATH.is_file():
-            print(
-                f"Deleted {csv_deletions} matching rows from "
-                f"{EVALUATION_DATASET_PATH}."
-            )
+    if not ready and not args.repair_missing_chunks:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

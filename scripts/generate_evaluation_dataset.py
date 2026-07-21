@@ -65,6 +65,7 @@ def load_chunks(
     *,
     excluded_chunk_ids: set[str] | None = None,
     limit: int | None = None,
+    max_chunks_per_document: int | None = MAX_CHUNKS_PER_DOCUMENT,
 ) -> list[dict]:
     with engine.connect() as connection:
         rows = connection.execute(
@@ -90,7 +91,10 @@ def load_chunks(
                 )
                 SELECT *
                 FROM ranked_chunks
-                WHERE rn <= :max_chunks_per_document
+                WHERE (
+                    :max_chunks_per_document IS NULL
+                    OR rn <= :max_chunks_per_document
+                )
                 ORDER BY document_id, chunk_id
             """),
             {
@@ -125,11 +129,14 @@ def load_chunks(
     return chunks[:limit] if limit is not None else chunks
 
 
-def load_existing_rows() -> list[dict]:
-    if not OUTPUT_FILE.exists():
+def load_existing_rows(output_file: Path) -> list[dict]:
+    if not output_file.exists():
         return []
-    with OUTPUT_FILE.open("r", newline="", encoding="utf-8") as file:
-        return [dict(row) for row in csv.DictReader(file) if row.get("query")]
+    with output_file.open("r", newline="", encoding="utf-8") as file:
+        rows = [dict(row) for row in csv.DictReader(file) if row.get("query")]
+    for row in rows:
+        row.setdefault("accepted_answers_json", "[]")
+    return rows
 
 
 def parse_args() -> argparse.Namespace:
@@ -145,10 +152,27 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--output",
+        type=Path,
+        default=OUTPUT_FILE,
+        help=(
+            "Candidate CSV path. Use a candidate filename during review; "
+            f"default: {OUTPUT_FILE}"
+        ),
+    )
+    parser.add_argument(
         "--limit-chunks",
         type=int,
         default=None,
         help="Generate from at most this many new HKPL chunks.",
+    )
+    parser.add_argument(
+        "--all-chunks",
+        action="store_true",
+        help=(
+            "Generate candidates from every eligible primary HKPL chunk. "
+            "This is slower and still requires human label review."
+        ),
     )
     args = parser.parse_args()
     if args.limit_chunks is not None and args.limit_chunks < 1:
@@ -179,7 +203,7 @@ VERY IMPORTANT RULES:
 - Avoid vague questions.
 - Prefer useful public-service questions.
 - The expected_answer_text must be concise but complete.
-- The expected_context_snippet must be an exact or near-exact phrase from the chunk.
+- The expected_context_snippet must be an exact contiguous phrase from the chunk.
 - Return ONLY valid JSON array.
 - Do not include markdown.
 
@@ -192,7 +216,6 @@ JSON format:
     "expected_context_snippet": "...",
     "source_title": "{chunk['source_title']}",
     "source_url": "{chunk['source_url']}",
-    "source_type": "generated_from_kb",
     "source_document_id": "{chunk['document_id']}",
     "source_chunk_id": "{chunk['chunk_id']}"
   }}
@@ -225,6 +248,15 @@ Section: {chunk["section_heading"]}
 
         if not query or not answer or not snippet:
             continue
+        if not query.endswith("?") or len(query) < 15:
+            print(f"  Rejected malformed question: {query!r}")
+            continue
+        if normalize_text(snippet) not in normalize_text(chunk["text"]):
+            print(
+                "  Rejected candidate because expected_context_snippet is "
+                "not present in the source chunk."
+            )
+            continue
 
         output.append(
             {
@@ -232,9 +264,9 @@ Section: {chunk["section_heading"]}
                 "query": query,
                 "expected_answer_text": answer,
                 "expected_context_snippet": snippet,
+                "accepted_answers_json": "[]",
                 "source_title": item.get("source_title") or chunk["source_title"],
                 "source_url": item.get("source_url") or chunk["source_url"],
-                "source_type": "generated_from_kb",
                 "source_document_id": chunk["document_id"],
                 "source_chunk_id": chunk["chunk_id"],
             }
@@ -273,7 +305,8 @@ def remove_ambiguous_duplicates(rows: list[dict]) -> list[dict]:
 
 async def main() -> None:
     args = parse_args()
-    existing_rows = load_existing_rows() if args.append else []
+    output_file = args.output.resolve()
+    existing_rows = load_existing_rows(output_file) if args.append else []
     represented_chunk_ids = {
         row.get("source_chunk_id", "")
         for row in existing_rows
@@ -282,6 +315,7 @@ async def main() -> None:
     chunks = load_chunks(
         excluded_chunk_ids=represented_chunk_ids,
         limit=args.limit_chunks,
+        max_chunks_per_document=(None if args.all_chunks else MAX_CHUNKS_PER_DOCUMENT),
     )
     print(
         f"Loaded {len(chunks)} new HKPL chunks from data_hkpl_knowledge; "
@@ -313,28 +347,28 @@ async def main() -> None:
     print(f"Rows after deduplication : {after}")
     print(f"Dropped rows             : {before - after}")
 
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
 
     fieldnames = [
         "domain",
         "query",
         "expected_answer_text",
         "expected_context_snippet",
+        "accepted_answers_json",
         "source_title",
         "source_url",
-        "source_type",
         "source_document_id",
         "source_chunk_id",
     ]
 
-    with OUTPUT_FILE.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
+    with output_file.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(all_rows)
 
     print()
     print(f"Saved {len(all_rows)} evaluation rows to:")
-    print(OUTPUT_FILE)
+    print(output_file)
 
 
 if __name__ == "__main__":

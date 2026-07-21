@@ -1,116 +1,26 @@
 {
-  "total_questions": 119,
-  "answer_evaluated_questions": 119,
-  "retrieval_mrr": 0.6380085367480326,
-  "reranker_mrr": 0.6726890756302522,
-  "average_retrieval_candidate_count": 10.0,
-  "retrieval_recall_all_candidates": 0.8739495798319328,
-  "retrieval_complete_all_candidates": 0.8739495798319328,
-  "retrieval_evidence_hit_all_candidates": 0.8823529411764706,
-  "average_correctness": 4.609243697478991,
-  "average_correctness_normalized": 0.9218487394957984,
-  "average_faithfulness": 0.9159663865546218,
-  "average_relevancy": 0.9663865546218487,
-  "average_hallucination": 0.08403361344537816,
-  "average_rag_latency_seconds": 2.4822252100840334,
-  "average_evaluation_latency_seconds": 3.356870588235294,
-  "average_total_latency_seconds": 5.839185714285715,
-  "average_retriever_query_tokens": 22.218487394957982,
-  "average_reranker_input_tokens": 1627.9243697478992,
-  "average_context_tokens": 867.2100840336135,
-  "average_prompt_tokens": 974.3949579831933,
-  "average_completion_tokens": 70.81512605042016,
-  "average_llm_total_tokens": 1045.2100840336134,
-  "average_pipeline_total_tokens": 2695.3529411764707,
-  "working_correctly_rate": 0.8235294117647058,
-  "diagnosis_counts": {
-    "working_correctly": 98,
-    "retrieval_problem": 10,
-    "llm_generation_problem": 2,
-    "evaluator_or_dataset_issue": 8,
-    "reranker_problem": 1
+  "questions": {
+    "evaluated_questions": 119
   },
-  "retrieval_hit_at_1": 0.5126050420168067,
-  "retrieval_recall_at_1": 0.5126050420168067,
-  "retrieval_complete_at_1": 0.5126050420168067,
-  "retrieval_evidence_hit_at_1": 0.6386554621848739,
-  "retrieval_average_distractor_count_at_1": 0.0,
-  "retrieval_distractor_rate_at_1": 0.0,
-  "retrieval_distractor_counts_by_dataset_at_1": {},
-  "retrieval_average_distractor_count_by_dataset_at_1": {},
-  "retrieval_hit_at_3": 0.7394957983193278,
-  "retrieval_recall_at_3": 0.7394957983193278,
-  "retrieval_complete_at_3": 0.7394957983193278,
-  "retrieval_evidence_hit_at_3": 0.7899159663865546,
-  "retrieval_average_distractor_count_at_3": 0.0,
-  "retrieval_distractor_rate_at_3": 0.0,
-  "retrieval_distractor_counts_by_dataset_at_3": {},
-  "retrieval_average_distractor_count_by_dataset_at_3": {},
-  "retrieval_hit_at_5": 0.8067226890756303,
-  "retrieval_recall_at_5": 0.8067226890756303,
-  "retrieval_complete_at_5": 0.8067226890756303,
-  "retrieval_evidence_hit_at_5": 0.8235294117647058,
-  "retrieval_average_distractor_count_at_5": 0.01680672268907563,
-  "retrieval_distractor_rate_at_5": 0.0033613445378151263,
-  "retrieval_distractor_counts_by_dataset_at_5": {
-    "hotpotqa": 2
+  "hit_rate": {
+    "retriever_evidence_at_10": 0.8823529411764706,
+    "reranker_evidence_at_5": 0.8739495798319328
   },
-  "retrieval_average_distractor_count_by_dataset_at_5": {
-    "hotpotqa": 0.01680672268907563
+  "average_token_usage": {
+    "embedding_query_tokens": 22.218487394957982,
+    "reranker_input_tokens": 1627.9243697478992,
+    "context_tokens": 867.2100840336135,
+    "llm_prompt_tokens": 974.3949579831933,
+    "llm_completion_tokens": 70.81512605042016,
+    "llm_total_tokens": 1045.2100840336134,
+    "pipeline_total_tokens": 2695.3529411764707
   },
-  "reranker_hit_at_1": 0.5630252100840336,
-  "reranker_recall_at_1": 0.5630252100840336,
-  "reranker_complete_at_1": 0.5630252100840336,
-  "reranker_evidence_hit_at_1": 0.7142857142857143,
-  "reranker_average_distractor_count_at_1": 0.0,
-  "reranker_distractor_rate_at_1": 0.0,
-  "reranker_distractor_counts_by_dataset_at_1": {},
-  "reranker_average_distractor_count_by_dataset_at_1": {},
-  "reranker_hit_at_3": 0.7563025210084033,
-  "reranker_recall_at_3": 0.7563025210084033,
-  "reranker_complete_at_3": 0.7563025210084033,
-  "reranker_evidence_hit_at_3": 0.8151260504201681,
-  "reranker_average_distractor_count_at_3": 0.008403361344537815,
-  "reranker_distractor_rate_at_3": 0.0028011204481792717,
-  "reranker_distractor_counts_by_dataset_at_3": {
-    "hotpotqa": 1
+  "quality": {
+    "average_correctness": 4.609243697478991,
+    "average_faithfulness": 0.9159663865546218
   },
-  "reranker_average_distractor_count_by_dataset_at_3": {
-    "hotpotqa": 0.008403361344537815
-  },
-  "reranker_hit_at_5": 0.8487394957983193,
-  "reranker_recall_at_5": 0.8487394957983193,
-  "reranker_complete_at_5": 0.8487394957983193,
-  "reranker_evidence_hit_at_5": 0.8739495798319328,
-  "reranker_average_distractor_count_at_5": 0.01680672268907563,
-  "reranker_distractor_rate_at_5": 0.0033613445378151263,
-  "reranker_distractor_counts_by_dataset_at_5": {
-    "hotpotqa": 2
-  },
-  "reranker_average_distractor_count_by_dataset_at_5": {
-    "hotpotqa": 0.01680672268907563
-  },
-  "phoenix_project": "hkpl-rag-expanded-151",
-  "vector_table": "data_hkpl_knowledge",
-  "evaluation_dataset": "hkpl",
-  "distractor_datasets": [
-    "hotpotqa",
-    "webz_news"
-  ],
-  "search_corpus_vectors": {
-    "hkpl": 2141,
-    "hotpotqa": 9769,
-    "webz_news": 3783
-  },
-  "metric_definitions": {
-    "hit_at_k": "At least one expected chunk appears in the top K.",
-    "recall_at_k": "Fraction of expected chunks appearing in the top K.",
-    "complete_at_k": "All expected chunks appear in the top K.",
-    "complete_all_candidates": "All expected chunks appear anywhere in the vector candidates provided to the reranker.",
-    "evidence_hit_at_k": "At least one top-K chunk contains the labeled supporting evidence, even if its chunk ID differs from the gold chunk.",
-    "reference_match_mode": "exact_chunk when the labeled chunk is present, equivalent_evidence when another chunk contains the gold snippet, otherwise missing. Diagnosis uses this mode.",
-    "mrr": "Reciprocal rank of the first expected chunk.",
-    "hallucination": "One minus the LlamaIndex faithfulness score.",
-    "distractor_rate_at_k": "Fraction of the top K documents whose dataset metadata is marked as a distractor corpus."
+  "latency_seconds": {
+    "rag_p50": 2.088,
+    "rag_p95": 4.4541699999999995
   }
 }

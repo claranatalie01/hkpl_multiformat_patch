@@ -57,9 +57,9 @@ EVALUATION_DATASET_COLUMNS = [
     "query",
     "expected_answer_text",
     "expected_context_snippet",
+    "accepted_answers_json",
     "source_title",
     "source_url",
-    "source_type",
     "source_document_id",
     "source_chunk_id",
 ]
@@ -75,13 +75,26 @@ def create_evaluation_dataset_table() -> None:
                     query TEXT NOT NULL,
                     expected_answer_text TEXT NOT NULL DEFAULT '',
                     expected_context_snippet TEXT NOT NULL DEFAULT '',
+                    accepted_answers_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                     source_title TEXT NOT NULL DEFAULT '',
                     source_url TEXT NOT NULL DEFAULT '',
-                    source_type TEXT NOT NULL DEFAULT '',
                     source_document_id TEXT NOT NULL DEFAULT '',
                     source_chunk_id TEXT NOT NULL DEFAULT '',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+            """)
+        )
+        connection.execute(
+            text(f"""
+                ALTER TABLE {EVALUATION_DATASET_TABLE}
+                ADD COLUMN IF NOT EXISTS accepted_answers_json JSONB
+                NOT NULL DEFAULT '[]'::jsonb
+            """)
+        )
+        connection.execute(
+            text(f"""
+                ALTER TABLE {EVALUATION_DATASET_TABLE}
+                DROP COLUMN IF EXISTS source_type
             """)
         )
         connection.execute(
@@ -123,15 +136,82 @@ def ingest_evaluation_dataset(csv_path: str) -> int:
 
     create_evaluation_dataset_table()
 
-    with path.open("r", newline="", encoding="utf-8") as file:
-        rows = [
-            {
-                column: (row.get(column) or "")
+    with path.open("r", newline="", encoding="utf-8-sig") as file:
+        reader = csv.DictReader(file)
+        actual_columns = list(reader.fieldnames or [])
+        if actual_columns != EVALUATION_DATASET_COLUMNS:
+            raise ValueError(
+                "Evaluation CSV columns must exactly match, in order: "
+                f"{EVALUATION_DATASET_COLUMNS}. Found: {actual_columns}"
+            )
+
+        rows = []
+        seen_queries: set[str] = set()
+        for line_number, row in enumerate(reader, start=2):
+            if None in row:
+                raise ValueError(
+                    f"Malformed evaluation CSV row {line_number}: too many fields"
+                )
+            missing_values = [
+                column
+                for column in EVALUATION_DATASET_COLUMNS
+                if column not in {"accepted_answers_json", "source_url"}
+                and not str(row.get(column) or "").strip()
+            ]
+            if missing_values:
+                raise ValueError(
+                    f"Evaluation CSV row {line_number} has empty required fields: "
+                    + ", ".join(missing_values)
+                )
+
+            item = {
+                column: str(row.get(column) or "").strip()
                 for column in EVALUATION_DATASET_COLUMNS
             }
-            for row in csv.DictReader(file)
-            if row.get("query")
-        ]
+            query_key = re.sub(r"\s+", " ", item["query"]).casefold()
+            if query_key in seen_queries:
+                raise ValueError(
+                    f"Duplicate evaluation question at row {line_number}: "
+                    f"{item['query']!r}"
+                )
+            seen_queries.add(query_key)
+
+            document_id = item["source_document_id"]
+            chunk_id = item["source_chunk_id"]
+            if not re.fullmatch(
+                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+                document_id,
+            ):
+                raise ValueError(
+                    f"Invalid source_document_id at row {line_number}: "
+                    f"{document_id!r}"
+                )
+            if not chunk_id.startswith(f"{document_id}:"):
+                raise ValueError(
+                    f"source_chunk_id does not belong to source_document_id "
+                    f"at row {line_number}: {chunk_id!r}"
+                )
+            raw_aliases = item.get("accepted_answers_json") or "[]"
+            try:
+                aliases = json.loads(raw_aliases)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Invalid accepted_answers_json for {item['query']!r}: "
+                    f"{error}"
+                ) from error
+            if not isinstance(aliases, list) or not all(
+                isinstance(alias, str) and alias.strip() for alias in aliases
+            ):
+                raise ValueError(
+                    "accepted_answers_json must be a JSON array of non-empty "
+                    f"strings for {item['query']!r}."
+                )
+            item["accepted_answers_json"] = json.dumps(
+                list(dict.fromkeys(alias.strip() for alias in aliases)),
+                ensure_ascii=False,
+            )
+            rows.append(item)
 
     with engine.begin() as connection:
         if rows:
@@ -142,9 +222,9 @@ def ingest_evaluation_dataset(csv_path: str) -> int:
                         query,
                         expected_answer_text,
                         expected_context_snippet,
+                        accepted_answers_json,
                         source_title,
                         source_url,
-                        source_type,
                         source_document_id,
                         source_chunk_id
                     )
@@ -153,9 +233,9 @@ def ingest_evaluation_dataset(csv_path: str) -> int:
                         :query,
                         :expected_answer_text,
                         :expected_context_snippet,
+                        CAST(:accepted_answers_json AS jsonb),
                         :source_title,
                         :source_url,
-                        :source_type,
                         :source_document_id,
                         :source_chunk_id
                     )
@@ -163,32 +243,41 @@ def ingest_evaluation_dataset(csv_path: str) -> int:
                         domain = EXCLUDED.domain,
                         expected_answer_text = EXCLUDED.expected_answer_text,
                         expected_context_snippet = EXCLUDED.expected_context_snippet,
+                        accepted_answers_json = EXCLUDED.accepted_answers_json,
                         source_title = EXCLUDED.source_title,
                         source_url = EXCLUDED.source_url,
-                        source_type = EXCLUDED.source_type,
                         source_document_id = EXCLUDED.source_document_id,
                         source_chunk_id = EXCLUDED.source_chunk_id
                     WHERE (
                         {EVALUATION_DATASET_TABLE}.domain,
                         {EVALUATION_DATASET_TABLE}.expected_answer_text,
                         {EVALUATION_DATASET_TABLE}.expected_context_snippet,
+                        {EVALUATION_DATASET_TABLE}.accepted_answers_json,
                         {EVALUATION_DATASET_TABLE}.source_title,
                         {EVALUATION_DATASET_TABLE}.source_url,
-                        {EVALUATION_DATASET_TABLE}.source_type,
                         {EVALUATION_DATASET_TABLE}.source_document_id,
                         {EVALUATION_DATASET_TABLE}.source_chunk_id
                     ) IS DISTINCT FROM (
                         EXCLUDED.domain,
                         EXCLUDED.expected_answer_text,
                         EXCLUDED.expected_context_snippet,
+                        EXCLUDED.accepted_answers_json,
                         EXCLUDED.source_title,
                         EXCLUDED.source_url,
-                        EXCLUDED.source_type,
                         EXCLUDED.source_document_id,
                         EXCLUDED.source_chunk_id
                     )
                 """),
                 rows,
+            )
+            connection.execute(
+                text(f"""
+                    DELETE FROM {EVALUATION_DATASET_TABLE}
+                    WHERE NOT (
+                        query = ANY(CAST(:queries AS text[]))
+                    )
+                """),
+                {"queries": [row["query"] for row in rows]},
             )
             return int(result.rowcount or 0)
 

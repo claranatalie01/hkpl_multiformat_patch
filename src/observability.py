@@ -26,7 +26,7 @@ def setup_phoenix_tracing(project_name: Optional[str] = None) -> None:
         )
         selected_project = (
             project_name
-            or os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag-focused")
+            or os.getenv("PHOENIX_PROJECT_NAME", "hkpl-rag")
         )
 
         tracer_provider = register(
