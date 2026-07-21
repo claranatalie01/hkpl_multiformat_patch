@@ -25,12 +25,16 @@ CANDIDATE_TABLE = "evaluation_dataset_candidate"
 
 def run_script(name: str, *arguments: str, env: dict[str, str] | None = None) -> None:
     command = [sys.executable, str(SCRIPTS / name), *arguments]
-    completed = subprocess.run(
-        command,
-        cwd=PROJECT_ROOT,
-        env=env or os.environ.copy(),
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=PROJECT_ROOT,
+            env=env or os.environ.copy(),
+            check=False,
+        )
+    except KeyboardInterrupt:
+        print("Workflow interrupted. Candidate checkpoints were preserved.")
+        raise SystemExit(130) from None
     if completed.returncode:
         raise SystemExit(completed.returncode)
 
@@ -83,22 +87,16 @@ def audit_corpus() -> None:
     run_script("ingest_pgvector_llamaindex.py", "--audit-chunks")
 
 
-def prepare_candidate(args: argparse.Namespace) -> None:
-    audit_corpus()
-    candidate = args.output.resolve()
-    generation_arguments = ["--output", str(candidate)]
-    if args.all_chunks:
-        generation_arguments.append("--all-chunks")
-    if args.limit_chunks is not None:
-        generation_arguments.extend(["--limit-chunks", str(args.limit_chunks)])
-    run_script("generate_evaluation_dataset.py", *generation_arguments)
+def validate_candidate(candidate: Path) -> None:
+    candidate = candidate.resolve()
+    if not candidate.is_file():
+        raise FileNotFoundError(candidate)
     run_script(
         "normalize_evaluation_schema.py",
         "--path",
         str(candidate),
         "--check",
     )
-
     environment = candidate_environment(candidate)
     run_script(
         "ingest_pgvector_llamaindex.py",
@@ -106,6 +104,20 @@ def prepare_candidate(args: argparse.Namespace) -> None:
         env=environment,
     )
     run_script("validate_evaluation_dataset.py", env=environment)
+
+
+def prepare_candidate(args: argparse.Namespace) -> None:
+    audit_corpus()
+    candidate = args.output.resolve()
+    generation_arguments = ["--output", str(candidate)]
+    if args.resume:
+        generation_arguments.append("--resume")
+    if args.all_chunks:
+        generation_arguments.append("--all-chunks")
+    if args.limit_chunks is not None:
+        generation_arguments.extend(["--limit-chunks", str(args.limit_chunks)])
+    run_script("generate_evaluation_dataset.py", *generation_arguments)
+    validate_candidate(candidate)
     print()
     print(f"Candidate ready for semantic label review: {candidate}")
     print("Do not promote it until every ambiguous/time-sensitive label is reviewed.")
@@ -119,19 +131,7 @@ def promote_candidate(args: argparse.Namespace) -> None:
     if not candidate.is_file():
         raise FileNotFoundError(candidate)
 
-    run_script(
-        "normalize_evaluation_schema.py",
-        "--path",
-        str(candidate),
-        "--check",
-    )
-    environment = candidate_environment(candidate)
-    run_script(
-        "ingest_pgvector_llamaindex.py",
-        "--evaluation-only",
-        env=environment,
-    )
-    run_script("validate_evaluation_dataset.py", env=environment)
+    validate_candidate(candidate)
 
     active.parent.mkdir(parents=True, exist_ok=True)
     if active.is_file():
@@ -175,11 +175,18 @@ def parse_args() -> argparse.Namespace:
     commands.add_parser("status", help="Show HKPL and distractor vector counts.")
     commands.add_parser("audit-corpus", help="Audit the finalized vector corpus.")
 
+    validate = commands.add_parser(
+        "validate-candidate",
+        help="Validate an already generated candidate without regenerating it.",
+    )
+    validate.add_argument("--candidate", type=Path, default=DEFAULT_CANDIDATE)
+
     prepare = commands.add_parser(
         "prepare-candidate",
         help="Audit HKPL vectors, then generate and evidence-validate a candidate.",
     )
     prepare.add_argument("--output", type=Path, default=DEFAULT_CANDIDATE)
+    prepare.add_argument("--resume", action="store_true")
     prepare.add_argument("--all-chunks", action="store_true")
     prepare.add_argument("--limit-chunks", type=int, default=None)
 
@@ -206,6 +213,8 @@ def main() -> None:
         print_status()
     elif args.command == "audit-corpus":
         audit_corpus()
+    elif args.command == "validate-candidate":
+        validate_candidate(args.candidate)
     elif args.command == "prepare-candidate":
         prepare_candidate(args)
     elif args.command == "promote":

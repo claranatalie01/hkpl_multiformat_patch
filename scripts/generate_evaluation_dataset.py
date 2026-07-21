@@ -23,6 +23,17 @@ MIN_CHUNK_CHARS = 120
 MAX_CHUNK_CHARS = 1800
 QUESTIONS_PER_CHUNK = 1
 MAX_CHUNKS_PER_DOCUMENT = 8
+FIELDNAMES = [
+    "domain",
+    "query",
+    "expected_answer_text",
+    "expected_context_snippet",
+    "accepted_answers_json",
+    "source_title",
+    "source_url",
+    "source_document_id",
+    "source_chunk_id",
+]
 
 
 def normalize_text(value: str) -> str:
@@ -99,7 +110,7 @@ def load_chunks(
             """),
             {
                 "min_chars": MIN_CHUNK_CHARS,
-                "max_chunks_per_document": MAX_CHUNKS_PER_DOCUMENT,
+                "max_chunks_per_document": max_chunks_per_document,
             },
         ).fetchall()
 
@@ -130,13 +141,91 @@ def load_chunks(
 
 
 def load_existing_rows(output_file: Path) -> list[dict]:
-    if not output_file.exists():
-        return []
-    with output_file.open("r", newline="", encoding="utf-8") as file:
-        rows = [dict(row) for row in csv.DictReader(file) if row.get("query")]
+    if not output_file.is_file():
+        raise FileNotFoundError(
+            f"Cannot resume because the candidate does not exist: {output_file}"
+        )
+    with output_file.open("r", newline="", encoding="utf-8-sig") as file:
+        reader = csv.DictReader(file)
+        actual_columns = list(reader.fieldnames or [])
+        if actual_columns != FIELDNAMES:
+            raise ValueError(
+                f"Cannot resume candidate with columns {actual_columns}; "
+                f"expected {FIELDNAMES}."
+            )
+        rows = [dict(row) for row in reader if row.get("query")]
     for row in rows:
         row.setdefault("accepted_answers_json", "[]")
     return rows
+
+
+def save_rows(output_file: Path, rows: list[dict]) -> None:
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_file.with_suffix(output_file.suffix + ".tmp")
+    with temporary.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=FIELDNAMES, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    temporary.replace(output_file)
+
+
+def progress_file(output_file: Path) -> Path:
+    return output_file.with_suffix(output_file.suffix + ".progress.json")
+
+
+def save_progress(
+    output_file: Path,
+    processed_chunk_ids: set[str],
+    *,
+    all_chunks: bool,
+    limit_chunks: int | None,
+) -> None:
+    path = progress_file(output_file)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "all_chunks": all_chunks,
+                "limit_chunks": limit_chunks,
+                "processed_chunk_ids": sorted(processed_chunk_ids),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def load_progress(
+    output_file: Path,
+    existing_rows: list[dict],
+    *,
+    all_chunks: bool,
+    limit_chunks: int | None,
+) -> set[str]:
+    path = progress_file(output_file)
+    if not path.is_file():
+        return {
+            str(row.get("source_chunk_id") or "")
+            for row in existing_rows
+            if row.get("source_chunk_id")
+        }
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("all_chunks") != all_chunks:
+        raise ValueError(
+            "Resume options differ from the original run: --all-chunks mismatch."
+        )
+    if payload.get("limit_chunks") != limit_chunks:
+        raise ValueError(
+            "Resume options differ from the original run: --limit-chunks mismatch."
+        )
+    chunk_ids = payload.get("processed_chunk_ids")
+    if not isinstance(chunk_ids, list) or not all(
+        isinstance(chunk_id, str) and chunk_id for chunk_id in chunk_ids
+    ):
+        raise ValueError(f"Invalid progress checkpoint: {path}")
+    return set(chunk_ids)
 
 
 def parse_args() -> argparse.Namespace:
@@ -144,12 +233,9 @@ def parse_args() -> argparse.Namespace:
         description="Generate evaluation candidates from HKPL vector chunks."
     )
     parser.add_argument(
-        "--append",
+        "--resume",
         action="store_true",
-        help=(
-            "Keep existing rows and generate only from source chunks that are "
-            "not already represented."
-        ),
+        help="Resume an interrupted candidate using saved chunk checkpoints.",
     )
     parser.add_argument(
         "--output",
@@ -239,6 +325,10 @@ Section: {chunk["section_heading"]}
         print(raw[:500])
         return []
 
+    if not isinstance(items, list) or not items:
+        print("  Skipped: the model returned no evaluation candidate.")
+        return []
+
     output = []
 
     for item in items:
@@ -247,6 +337,10 @@ Section: {chunk["section_heading"]}
         snippet = str(item.get("expected_context_snippet", "")).strip()
 
         if not query or not answer or not snippet:
+            print(
+                "  Skipped candidate: question, answer, or evidence snippet "
+                "was empty."
+            )
             continue
         if not query.endswith("?") or len(query) < 15:
             print(f"  Rejected malformed question: {query!r}")
@@ -276,29 +370,28 @@ Section: {chunk["section_heading"]}
 
 
 def remove_ambiguous_duplicates(rows: list[dict]) -> list[dict]:
-    seen: dict[str, dict] = {}
-    cleaned: list[dict] = []
-
+    grouped: dict[str, list[dict]] = {}
     for row in rows:
-        query_key = normalize_text(row["query"])
-        answer_key = normalize_text(row["expected_answer_text"])
+        grouped.setdefault(normalize_text(row["query"]), []).append(row)
 
-        if query_key not in seen:
-            seen[query_key] = row
-            cleaned.append(row)
+    cleaned: list[dict] = []
+    for group in grouped.values():
+        if len(group) == 1:
+            cleaned.append(group[0])
             continue
-
-        previous = seen[query_key]
-        previous_answer_key = normalize_text(previous["expected_answer_text"])
-
-        if previous_answer_key == answer_key:
+        answer_keys = {
+            normalize_text(row["expected_answer_text"])
+            for row in group
+        }
+        if len(answer_keys) == 1:
+            cleaned.append(group[0])
             continue
 
         print()
-        print("Dropped ambiguous duplicate question:")
-        print("Question:", row["query"])
-        print("Answer A:", previous["expected_answer_text"])
-        print("Answer B:", row["expected_answer_text"])
+        print("Removed all conflicting versions of ambiguous question:")
+        print("Question:", group[0]["query"])
+        for index, row in enumerate(group, start=1):
+            print(f"Answer {index}:", row["expected_answer_text"])
 
     return cleaned
 
@@ -306,36 +399,84 @@ def remove_ambiguous_duplicates(rows: list[dict]) -> list[dict]:
 async def main() -> None:
     args = parse_args()
     output_file = args.output.resolve()
-    existing_rows = load_existing_rows(output_file) if args.append else []
-    represented_chunk_ids = {
-        row.get("source_chunk_id", "")
-        for row in existing_rows
-        if row.get("source_chunk_id")
-    }
+    existing_rows = load_existing_rows(output_file) if args.resume else []
+    processed_chunk_ids = (
+        load_progress(
+            output_file,
+            existing_rows,
+            all_chunks=args.all_chunks,
+            limit_chunks=args.limit_chunks,
+        )
+        if args.resume
+        else set()
+    )
+    remaining_limit = (
+        max(args.limit_chunks - len(processed_chunk_ids), 0)
+        if args.limit_chunks is not None
+        else None
+    )
     chunks = load_chunks(
-        excluded_chunk_ids=represented_chunk_ids,
-        limit=args.limit_chunks,
+        excluded_chunk_ids=processed_chunk_ids,
+        limit=remaining_limit,
         max_chunks_per_document=(None if args.all_chunks else MAX_CHUNKS_PER_DOCUMENT),
     )
     print(
         f"Loaded {len(chunks)} new HKPL chunks from data_hkpl_knowledge; "
         "distractor corpora were excluded."
     )
-    if args.append:
-        print(f"Keeping {len(existing_rows)} existing evaluation rows.")
+    print(
+        "Selection: primary HKPL chunks with at least "
+        f"{MIN_CHUNK_CHARS} characters; "
+        + (
+            "all eligible chunks per document."
+            if args.all_chunks
+            else f"at most {MAX_CHUNKS_PER_DOCUMENT} chunks per document."
+        )
+    )
+    if args.resume:
+        print(f"Resuming with {len(existing_rows)} checkpointed evaluation rows.")
+    else:
+        save_rows(output_file, [])
+        save_progress(
+            output_file,
+            set(),
+            all_chunks=args.all_chunks,
+            limit_chunks=args.limit_chunks,
+        )
+        print(f"Initialized candidate checkpoint: {output_file}")
 
     generated_rows = []
+    try:
+        for index, chunk in enumerate(chunks, start=1):
+            print(
+                f"[{index}/{len(chunks)}] "
+                f"{chunk['source_title']} | {chunk['section_heading']} | "
+                f"{chunk['chunk_id']}"
+            )
 
-    for index, chunk in enumerate(chunks, start=1):
-        print(
-            f"[{index}/{len(chunks)}] "
-            f"{chunk['source_title']} | {chunk['section_heading']} | {chunk['chunk_id']}"
+            rows = await generate_questions_for_chunk(chunk)
+            generated_rows.extend(rows)
+            processed_chunk_ids.add(chunk["chunk_id"])
+            save_rows(output_file, [*existing_rows, *generated_rows])
+            save_progress(
+                output_file,
+                processed_chunk_ids,
+                all_chunks=args.all_chunks,
+                limit_chunks=args.limit_chunks,
+            )
+            print(
+                f"  Generated {len(rows)} question(s); checkpoint rows="
+                f"{len(existing_rows) + len(generated_rows)}, processed chunks="
+                f"{len(processed_chunk_ids)}."
+            )
+    finally:
+        save_rows(output_file, [*existing_rows, *generated_rows])
+        save_progress(
+            output_file,
+            processed_chunk_ids,
+            all_chunks=args.all_chunks,
+            limit_chunks=args.limit_chunks,
         )
-
-        rows = await generate_questions_for_chunk(chunk)
-        generated_rows.extend(rows)
-
-        print(f"  Generated {len(rows)} question(s).")
 
     all_rows = [*existing_rows, *generated_rows]
     before = len(all_rows)
@@ -347,24 +488,7 @@ async def main() -> None:
     print(f"Rows after deduplication : {after}")
     print(f"Dropped rows             : {before - after}")
 
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
-    fieldnames = [
-        "domain",
-        "query",
-        "expected_answer_text",
-        "expected_context_snippet",
-        "accepted_answers_json",
-        "source_title",
-        "source_url",
-        "source_document_id",
-        "source_chunk_id",
-    ]
-
-    with output_file.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(all_rows)
+    save_rows(output_file, all_rows)
 
     print()
     print(f"Saved {len(all_rows)} evaluation rows to:")
@@ -372,4 +496,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Generation interrupted. Completed chunks were checkpointed.")
+        raise SystemExit(130) from None

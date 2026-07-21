@@ -177,6 +177,14 @@ The candidate is written to `data/evaluation_dataset.candidate.csv` and loaded
 into `evaluation_dataset_candidate`. Review all ambiguous, multi-part, and
 time-sensitive labels before promotion.
 
+If generation completed but candidate import or evidence validation failed,
+continue from the saved CSV without regenerating questions:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/rag_benchmark_workflow.py validate-candidate
+```
+
 ```bash
 docker compose run --rm langgraph-agent \
   uv run python scripts/rag_benchmark_workflow.py promote --yes
@@ -191,6 +199,14 @@ docker compose run --rm langgraph-agent \
 HKPL primary chunk; this can take substantially longer and still requires
 semantic label review. Candidate generation never uses HotpotQA or Webz News
 chunks. Evaluation requires both distractor corpora to be present.
+
+Generation checkpoints the candidate after every completed chunk. Resume an
+interrupted run with the same generation options plus `--resume`:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/rag_benchmark_workflow.py prepare-candidate --resume
+```
 
 ### HKPL evaluation with combined distractor noise
 
