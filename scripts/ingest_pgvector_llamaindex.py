@@ -129,11 +129,11 @@ def create_evaluation_dataset_table() -> None:
         )
 
 
-def ingest_evaluation_dataset(csv_path: str) -> int:
+def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
     path = Path(csv_path)
     if not path.exists():
         print(f"Evaluation dataset not found, skipping: {path}")
-        return 0
+        return 0, 0, 0
 
     create_evaluation_dataset_table()
 
@@ -271,7 +271,7 @@ def ingest_evaluation_dataset(csv_path: str) -> int:
                 """),
                 rows,
             )
-            connection.execute(
+            delete_result = connection.execute(
                 text(f"""
                     DELETE FROM {EVALUATION_DATASET_TABLE}
                     WHERE NOT (
@@ -280,9 +280,13 @@ def ingest_evaluation_dataset(csv_path: str) -> int:
                 """),
                 {"queries": [row["query"] for row in rows]},
             )
-            return int(result.rowcount or 0)
+            return (
+                int(result.rowcount or 0),
+                int(delete_result.rowcount or 0),
+                len(rows),
+            )
 
-    return 0
+    return 0, 0, 0
 
 
 def load_faq_documents(
@@ -941,12 +945,13 @@ def main() -> None:
         )
 
     if not args.faq_only and not rebuild_all:
-        evaluation_rows = ingest_evaluation_dataset(
+        changed_rows, deleted_rows, csv_rows = ingest_evaluation_dataset(
             evaluation_dataset_path
         )
         print(
-            f"Inserted or updated {evaluation_rows} evaluation rows in "
-            f"{EVALUATION_DATASET_TABLE}; unchanged rows were skipped"
+            f"Synchronized {csv_rows} CSV rows to {EVALUATION_DATASET_TABLE}: "
+            f"inserted or updated {changed_rows}, deleted {deleted_rows}; "
+            "unchanged rows were skipped"
         )
 
 

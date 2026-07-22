@@ -61,11 +61,26 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--exclude-unresolved",
+        action="store_true",
+        help=(
+            "Remove only unresolved stale rows from the evaluation CSV after "
+            "manual review. A timestamped backup and exclusions report are "
+            "created. Run the evaluation-only ingestion afterward to sync "
+            "the database table."
+        ),
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="Confirm destructive cleanup actions.",
     )
     args = parser.parse_args()
+    if args.repair_missing_chunks and args.exclude_unresolved:
+        parser.error(
+            "--repair-missing-chunks and --exclude-unresolved must be run "
+            "separately"
+        )
     return args
 
 
@@ -205,6 +220,101 @@ def backup_evaluation_csv() -> Path | None:
     )
     shutil.copy2(EVALUATION_DATASET_PATH, backup_path)
     return backup_path
+
+
+def exclude_unresolved_from_csv(
+    unresolved_rows: list[dict],
+) -> tuple[int, Path, Path]:
+    if not EVALUATION_DATASET_PATH.is_file():
+        raise FileNotFoundError(
+            f"Evaluation CSV not found: {EVALUATION_DATASET_PATH}"
+        )
+
+    unresolved_keys = {
+        (
+            str(item.get("query") or ""),
+            str(item.get("source_chunk_id") or ""),
+        )
+        for item in unresolved_rows
+    }
+    with EVALUATION_DATASET_PATH.open(
+        newline="",
+        encoding="utf-8-sig",
+    ) as source:
+        reader = csv.DictReader(source)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+
+    excluded = [
+        row
+        for row in rows
+        if (
+            str(row.get("query") or ""),
+            str(row.get("source_chunk_id") or ""),
+        ) in unresolved_keys
+    ]
+    if len(excluded) != len(unresolved_keys):
+        matched_keys = {
+            (
+                str(row.get("query") or ""),
+                str(row.get("source_chunk_id") or ""),
+            )
+            for row in excluded
+        }
+        missing_keys = sorted(unresolved_keys - matched_keys)
+        raise RuntimeError(
+            "Refusing partial cleanup because the database and CSV do not "
+            f"match. Missing CSV rows: {missing_keys}"
+        )
+
+    kept = [row for row in rows if row not in excluded]
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = EVALUATION_DATASET_PATH.with_name(
+        f"{EVALUATION_DATASET_PATH.stem}.before-exclusion-{timestamp}.csv"
+    )
+    report_path = EVALUATION_DATASET_PATH.with_name(
+        f"{EVALUATION_DATASET_PATH.stem}.excluded-unresolved-{timestamp}.csv"
+    )
+    shutil.copy2(EVALUATION_DATASET_PATH, backup_path)
+
+    report_fields = fieldnames + ["exclusion_reason", "excluded_at_utc"]
+    with report_path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(
+            output,
+            fieldnames=report_fields,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for row in excluded:
+            key = (
+                str(row.get("query") or ""),
+                str(row.get("source_chunk_id") or ""),
+            )
+            reason = next(
+                str(item.get("repair_reason") or "evidence_not_found")
+                for item in unresolved_rows
+                if (
+                    str(item.get("query") or ""),
+                    str(item.get("source_chunk_id") or ""),
+                ) == key
+            )
+            writer.writerow({
+                **row,
+                "exclusion_reason": reason,
+                "excluded_at_utc": timestamp,
+            })
+
+    temporary_path = EVALUATION_DATASET_PATH.with_suffix(".csv.tmp")
+    with temporary_path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(
+            output,
+            fieldnames=fieldnames,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(kept)
+    temporary_path.replace(EVALUATION_DATASET_PATH)
+    return len(excluded), backup_path, report_path
 
 
 def main() -> None:
@@ -390,7 +500,39 @@ def main() -> None:
                 "unchanged for manual review."
             )
 
-    if not ready and not args.repair_missing_chunks:
+    if args.exclude_unresolved:
+        if not args.yes:
+            raise SystemExit(
+                "Refusing to exclude unresolved benchmark rows without --yes. "
+                "Confirm that these questions no longer have authoritative "
+                "evidence in the frozen corpus first."
+            )
+        if repairable_chunks:
+            raise SystemExit(
+                "Refusing to exclude rows while safely repairable references "
+                "remain. Run --repair-missing-chunks --yes first."
+            )
+        if not unresolved_repairs:
+            print("No unresolved stale rows to exclude.")
+        else:
+            excluded, backup_path, report_path = exclude_unresolved_from_csv(
+                unresolved_repairs
+            )
+            print()
+            print(f"Excluded {excluded} unresolved rows from the CSV.")
+            print(f"Backup: {backup_path}")
+            print(f"Exclusions report: {report_path}")
+            print(
+                "The database table has not been changed. Synchronize it with "
+                "ingest_pgvector_llamaindex.py --evaluation-only, then validate "
+                "again."
+            )
+
+    if (
+        not ready
+        and not args.repair_missing_chunks
+        and not args.exclude_unresolved
+    ):
         raise SystemExit(1)
 
 
