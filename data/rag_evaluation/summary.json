@@ -1,27 +1,27 @@
 {
   "questions": {
-    "evaluated_questions": 539
+    "evaluated_questions": 532
   },
   "hit_rate": {
-    "retriever_at_10": 0.948051948051948,
-    "reranker_at_5": 0.9257884972170687
+    "retriever_at_10": 0.9473684210526315,
+    "reranker_at_5": 0.9229323308270677
   },
   "average_token_usage": {
-    "embedding_query_tokens": 21.0,
-    "reranker_input_tokens": 1610.17439703154,
-    "context_tokens": 849.5992578849722,
-    "llm_prompt_tokens": 955.5287569573284,
-    "llm_completion_tokens": 75.7569573283859,
-    "llm_total_tokens": 1031.2857142857142,
-    "pipeline_total_tokens": 2662.4601113172544
+    "embedding_query_tokens": 20.966165413533833,
+    "reranker_input_tokens": 1613.7142857142858,
+    "context_tokens": 852.4022556390977,
+    "llm_prompt_tokens": 958.3007518796992,
+    "llm_completion_tokens": 75.86278195488721,
+    "llm_total_tokens": 1034.1635338345864,
+    "pipeline_total_tokens": 2668.843984962406
   },
   "quality": {
-    "answer_pass_rate": 0.8515769944341373,
-    "average_correctness": 4.656771799628943,
-    "average_faithfulness": 0.9647495361781077
+    "answer_pass_rate": 0.8458646616541353,
+    "average_correctness": 4.635338345864661,
+    "average_faithfulness": 0.9624060150375939
   },
   "latency_seconds": {
-    "rag_p50": 2.1659,
-    "rag_p95": 4.388059999999995
+    "rag_p50": 2.1535,
+    "rag_p95": 4.572374999999999
   }
 }
