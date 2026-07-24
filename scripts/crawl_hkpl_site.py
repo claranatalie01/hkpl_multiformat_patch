@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 
 from src.ingestion.registry import find_active_web_document_by_source_url
 from src.ingestion.service import UPLOAD_DIR, ingest_path_sync
+from src.ingestion.write_guard import ensure_corpus_writable
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hkpl_crawler")
@@ -284,6 +285,7 @@ def crawl(
     include_query_urls: bool,
     include_pdfs: bool,
 ) -> dict:
+    ensure_corpus_writable("crawl and update HKPL webpages")
     visited = set()
     queue = deque(
         (

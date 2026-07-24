@@ -46,6 +46,10 @@ from src.ingestion.service import (
     register_upload,
     reindex_registered_document,
 )
+from src.ingestion.write_guard import (
+    CorpusReadOnlyError,
+    ensure_corpus_writable,
+)
 from src.memory import load_conversation_history
 
 
@@ -167,6 +171,16 @@ def require_admin(
             status_code=401,
             detail="Invalid admin API key.",
         )
+
+
+def require_corpus_write_access() -> None:
+    try:
+        ensure_corpus_writable("modify the knowledge corpus")
+    except CorpusReadOnlyError as error:
+        raise HTTPException(
+            status_code=423,
+            detail=str(error),
+        ) from error
 @app.get(
     "/admin/compliance/keywords",
     dependencies=[Depends(require_admin)],
@@ -246,7 +260,11 @@ async def admin_test_query(
     }
 
 
-@app.post("/admin/documents/index-url", status_code=202)
+@app.post(
+    "/admin/documents/index-url",
+    status_code=202,
+    dependencies=[Depends(require_corpus_write_access)],
+)
 async def index_url(
     payload: UrlIndexRequest,
     x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
@@ -515,7 +533,10 @@ async def chat_stream(
 @app.post(
     "/admin/documents/upload",
     status_code=202,
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_corpus_write_access),
+    ],
 )
 async def upload_document(
     background_tasks: BackgroundTasks,
@@ -593,7 +614,10 @@ async def upload_document(
 @app.post(
     "/admin/documents/{document_id}/replace",
     status_code=202,
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_corpus_write_access),
+    ],
 )
 async def replace_document(
     document_id: str,
@@ -701,7 +725,10 @@ async def get_document_status(
 
 @app.delete(
     "/admin/documents/{document_id}",
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_corpus_write_access),
+    ],
 )
 async def delete_document(
     document_id: str,
@@ -720,7 +747,10 @@ async def delete_document(
 @app.post(
     "/admin/documents/{document_id}/reindex",
     status_code=202,
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_corpus_write_access),
+    ],
 )
 async def reindex_document(
     document_id: str,

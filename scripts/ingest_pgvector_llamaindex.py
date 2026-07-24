@@ -47,6 +47,7 @@ from src.ingestion.service import (
     UPLOAD_DIR,
     reindex_registered_document,
 )
+from src.ingestion.write_guard import ensure_corpus_writable
 
 
 EVALUATION_DATASET_TABLE = os.getenv(
@@ -848,6 +849,9 @@ def main() -> None:
             print(f"- {source_kind}: {count}")
         print("Preflight passed. No vectors or registry rows were changed.")
         return
+
+    if not args.evaluation_only:
+        ensure_corpus_writable("ingest or rebuild knowledge chunks")
 
     rebuild_all_from_env = (
         os.getenv(

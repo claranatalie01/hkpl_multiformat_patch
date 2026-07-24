@@ -9,6 +9,7 @@ from sqlalchemy import text
 from .infrastructure.db import engine
 from .infrastructure.embedding import embed_model
 from .infrastructure.vector_store import VECTOR_TABLE, vector_store
+from .ingestion.write_guard import ensure_corpus_writable
 
 
 PRIMARY_DATASET = "hkpl"
@@ -30,6 +31,7 @@ def is_distractor_metadata(metadata: dict | None) -> bool:
 
 def normalize_corpus_roles() -> None:
     """Backfill corpus labels without changing text or embeddings."""
+    ensure_corpus_writable("normalize corpus metadata")
     with engine.begin() as connection:
         connection.execute(
             text(f"""
@@ -86,6 +88,7 @@ def normalize_corpus_roles() -> None:
 
 
 def replace_dataset_vectors(dataset: str, nodes: Iterable[BaseNode]) -> int:
+    ensure_corpus_writable("replace distractor dataset vectors")
     dataset = dataset.strip().lower()
     if not dataset or dataset == PRIMARY_DATASET:
         raise ValueError("A non-primary dataset name is required.")

@@ -16,7 +16,6 @@ from llama_index.core.vector_stores import MetadataFilter, MetadataFilters
 from .corpus import (
     PRIMARY_CORPUS_ROLE,
     is_distractor_metadata,
-    normalize_corpus_roles,
 )
 from .infrastructure.embedding import embed_model
 from .infrastructure.vector_store import VECTOR_TABLE, vector_store
@@ -51,7 +50,6 @@ index = VectorStoreIndex.from_vector_store(
     embed_model=embed_model,
 )
 
-normalize_corpus_roles()
 vector_retriever = index.as_retriever(similarity_top_k=SIMILARITY_TOP_K)
 live_vector_retriever = index.as_retriever(
     similarity_top_k=SIMILARITY_TOP_K,

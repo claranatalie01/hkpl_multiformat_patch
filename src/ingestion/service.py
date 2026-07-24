@@ -26,6 +26,7 @@ from .registry import (
     prepare_reindex,
     update_status,
 )
+from .write_guard import ensure_corpus_writable
 
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ def register_upload(
     document_type: str = "auto",
     replace_document_id: str | None = None,
 ) -> dict:
+    ensure_corpus_writable("register or replace a document")
     ensure_registry_schema()
 
     extension = stored_path.suffix.lower()
@@ -185,6 +187,7 @@ def register_upload(
 def process_registered_document(
     document_id: str,
 ) -> dict:
+    ensure_corpus_writable("extract, chunk, or embed a document")
     ensure_registry_schema()
 
     record = get_document(document_id)
@@ -390,6 +393,7 @@ def delete_registered_document(
     *,
     delete_file: bool = True,
 ) -> dict:
+    ensure_corpus_writable("delete a document")
     record = get_document(document_id)
     if not record:
         raise ValueError(
@@ -423,6 +427,7 @@ def reindex_registered_document(
     *,
     document_type: str | None = None,
 ) -> dict:
+    ensure_corpus_writable("reindex a document")
     selected_type = (
         validate_document_type(document_type)
         if document_type is not None

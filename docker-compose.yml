@@ -100,8 +100,7 @@ services:
       --n-gpu-layers 99
       --ctx-size 32768
       --parallel 1
-      --reasoning on
-      --reasoning-budget 8000
+      --reasoning off
     healthcheck:
       test:
         [
@@ -146,6 +145,7 @@ services:
       LLM_MAX_TOKENS: "16000"
 
       VECTOR_TABLE: hkpl_knowledge
+      KNOWLEDGE_CORPUS_READ_ONLY: "true"
       EVALUATION_DATASET_TABLE: evaluation_dataset
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
       EMBED_DIM: "1024"
@@ -172,7 +172,7 @@ services:
       PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"
       RAG_EVALUATION_RESULTS_PATH: /app/data/rag_evaluation/results.csv
       RAG_EVALUATION_SUMMARY_PATH: /app/data/rag_evaluation/summary.json
-      EVALUATION_MAX_TOKENS: "1024"
+      EVALUATION_MAX_TOKENS: "2048"
       LLM_TOKENIZER_URL: http://llm:8080/tokenize
       EMBEDDING_TOKENIZER_URL: http://embedding:8080/tokenize
       RERANKER_TOKENIZER_URL: http://reranker:8080/tokenize
@@ -212,3 +212,4 @@ volumes:
   postgres_data:
   llama_cache:
   phoenix_data:
+ 
