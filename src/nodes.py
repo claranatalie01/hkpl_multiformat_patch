@@ -615,7 +615,7 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
         response = await http_llm(
             full_prompt,
             temperature=0.7,
-            enable_thinking=False,
+            enable_thinking=True,
         )
         return {
             "messages": [AIMessage(content=response)],
@@ -706,7 +706,7 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
     response = await http_llm(
         system_prompt,
         temperature=0.0,
-        enable_thinking=False,
+        enable_thinking=True,
     )
 
     # Store the generated answer separately so later nodes can inspect it.

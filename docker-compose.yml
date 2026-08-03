@@ -100,7 +100,8 @@ services:
       --n-gpu-layers 99
       --ctx-size 32768
       --parallel 1
-      --reasoning off
+      --reasoning on
+      --reasoning-budget 1000
     healthcheck:
       test:
         [
@@ -212,4 +213,3 @@ volumes:
   postgres_data:
   llama_cache:
   phoenix_data:
- 

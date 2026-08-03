@@ -138,7 +138,7 @@ class QwenEvaluationLLM(CustomLLM):
             prompt,
             temperature=0.0,
             max_tokens=EVALUATION_MAX_TOKENS,
-            enable_thinking=False,
+            enable_thinking=True,
         )
         return CompletionResponse(text=response)
 
@@ -483,7 +483,7 @@ Answer:
             prompt,
             temperature=0.0,
             max_tokens=EVALUATION_MAX_TOKENS,
-            enable_thinking=False,
+            enable_thinking=True,
         )
         answer = llm_response.text
         usage = llm_response.usage
