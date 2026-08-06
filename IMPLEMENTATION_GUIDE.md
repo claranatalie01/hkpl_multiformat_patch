@@ -1,5 +1,9 @@
 # HKPL Multi-Format Ingestion Change Pack
 
+For the current corpus inventory, evaluation-dataset data dictionary, metric
+definitions, benchmark results, and reproducibility controls, see
+[`DATA_DOCUMENTATION.md`](DATA_DOCUMENTATION.md).
+
 This directory contains replacement and new files for the current
 `/home/cnatalie/agentic-RAG` project.
 

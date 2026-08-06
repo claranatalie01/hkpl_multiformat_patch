@@ -161,6 +161,18 @@ def evaluate(args: argparse.Namespace) -> None:
         arguments.extend(["--limit", str(args.limit)])
     if args.phoenix_project:
         arguments.extend(["--phoenix-project", args.phoenix_project])
+    if args.rerun_answer_failures_from is not None:
+        arguments.extend(
+            [
+                "--rerun-answer-failures-from",
+                str(args.rerun_answer_failures_from),
+            ]
+        )
+    if args.answer_reasoning:
+        arguments.append("--answer-reasoning")
+    if args.evaluator_reasoning:
+        arguments.append("--evaluator-reasoning")
+    arguments.extend(["--reasoning-budget", str(args.reasoning_budget)])
     run_script("evaluate_rag.py", *arguments)
 
 
@@ -204,6 +216,10 @@ def parse_args() -> argparse.Namespace:
     )
     evaluation.add_argument("--limit", type=int, default=None)
     evaluation.add_argument("--phoenix-project", default="")
+    evaluation.add_argument("--rerun-answer-failures-from", type=Path)
+    evaluation.add_argument("--answer-reasoning", action="store_true")
+    evaluation.add_argument("--evaluator-reasoning", action="store_true")
+    evaluation.add_argument("--reasoning-budget", type=int, default=1000)
     return parser.parse_args()
 
 

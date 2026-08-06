@@ -19,6 +19,7 @@ LLM_TOKENIZER_NAME = os.getenv("LLM_TOKENIZER_NAME", "llama.cpp:qwen3.5-9b")
 class LLMResponse:
     text: str
     usage: dict
+    reasoning_text: str = ""
 
 
 async def http_llm_with_usage(
@@ -26,6 +27,7 @@ async def http_llm_with_usage(
     temperature: float = 0.0,
     max_tokens: int | None = None,
     enable_thinking: bool = False,
+    thinking_budget_tokens: int = 1000,
 ) -> LLMResponse:
     max_tokens = max_tokens or LLM_MAX_TOKENS
     payload = {
@@ -35,6 +37,12 @@ async def http_llm_with_usage(
         "max_tokens": max_tokens,
         "stream": False,
         "chat_template_kwargs": {"enable_thinking": enable_thinking},
+        # llama.cpp supports a per-request thinking budget. Sending zero keeps
+        # ordinary requests in no-thinking mode while allowing selected
+        # benchmark retries to opt into a bounded reasoning pass.
+        "thinking_budget_tokens": (
+            thinking_budget_tokens if enable_thinking else 0
+        ),
     }
     timeout = aiohttp.ClientTimeout(total=LLM_TIMEOUT_SECONDS)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -51,22 +59,31 @@ async def http_llm_with_usage(
             data = await response.json()
 
     logger.debug("LLM raw response: %s", data)
-    content = data["choices"][0]["message"]["content"]
+    message = data["choices"][0]["message"]
+    content = message["content"]
+    reasoning_content = str(message.get("reasoning_content") or "")
     if not content or not content.strip():
         content = "I'm sorry, I couldn't generate a proper answer. Please try again."
     raw_usage = data.get("usage") or {}
     prompt_tokens = int(raw_usage.get("prompt_tokens") or 0)
     completion_tokens = int(raw_usage.get("completion_tokens") or 0)
+    completion_details = raw_usage.get("completion_tokens_details") or {}
+    reasoning_tokens = int(completion_details.get("reasoning_tokens") or 0)
     usage = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": int(
             raw_usage.get("total_tokens") or prompt_tokens + completion_tokens
         ),
+        "reasoning_tokens": reasoning_tokens,
         "is_estimated": False,
         "tokenizer": LLM_TOKENIZER_NAME,
     }
-    return LLMResponse(text=content, usage=usage)
+    return LLMResponse(
+        text=content,
+        usage=usage,
+        reasoning_text=reasoning_content,
+    )
 
 
 async def http_llm(
@@ -74,11 +91,13 @@ async def http_llm(
     temperature: float = 0.0,
     max_tokens: int | None = None,
     enable_thinking: bool = False,
+    thinking_budget_tokens: int = 1000,
 ) -> str:
     response = await http_llm_with_usage(
         prompt,
         temperature=temperature,
         max_tokens=max_tokens,
         enable_thinking=enable_thinking,
+        thinking_budget_tokens=thinking_budget_tokens,
     )
     return response.text

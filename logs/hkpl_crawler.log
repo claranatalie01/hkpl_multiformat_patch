@@ -22139,3 +22139,428 @@ Traceback (most recent call last):
     raise CorpusReadOnlyError(
 src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-bb169bff7316 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-bb169bff7316 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_llm Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-0ebcf7bb7f05 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-0ebcf7bb7f05 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_embedding Running 
+ Container hkpl_postgres Running 
+ Container hkpl_llm Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-56ad74a9019f Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-56ad74a9019f Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_phoenix Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-690fe27ec087 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-690fe27ec087 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-a6deacb1d72e Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-a6deacb1d72e Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_llm Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-30a4f3df1c67 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-30a4f3df1c67 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_embedding Running 
+ Container hkpl_llm Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-08322cd4b209 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-08322cd4b209 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_llm Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-9cb72b7c1d03 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-9cb72b7c1d03 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_postgres Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-6c9c0f3c6094 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-6c9c0f3c6094 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_embedding Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-461246b048bc Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-461246b048bc Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_llm Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-a25e5a3c65db Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-a25e5a3c65db Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_llm Running 
+ Container hkpl_embedding Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_llm Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-ca9367501229 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-ca9367501229 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_embedding Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-816460d2c311 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-816460d2c311 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_llm Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_embedding Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-55b8d6ddd889 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-55b8d6ddd889 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_phoenix Running 
+ Container hkpl_llm Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_postgres Running 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-5ae67d43aff6 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-5ae67d43aff6 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_llm Running 
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_embedding Running 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_llm Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-156e9852392b Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-156e9852392b Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+
+ Container hkpl_postgres Running 
+ Container hkpl_reranker_cpp Running 
+ Container hkpl_embedding Running 
+ Container hkpl_llm Running 
+ Container hkpl_phoenix Running 
+ Container hkpl_postgres Waiting 
+ Container hkpl_embedding Waiting 
+ Container hkpl_reranker_cpp Waiting 
+ Container hkpl_llm Waiting 
+ Container hkpl_llm Healthy 
+ Container hkpl_postgres Healthy 
+ Container hkpl_reranker_cpp Healthy 
+ Container hkpl_embedding Healthy 
+ Container hkpl_multiformat_patch-langgraph-agent-run-ea7ec924ab55 Creating 
+ Container hkpl_multiformat_patch-langgraph-agent-run-ea7ec924ab55 Created 
+Traceback (most recent call last):
+  File "/app/scripts/crawl_hkpl_site.py", line 429, in <module>
+    result = crawl(
+             ^^^^^^
+  File "/app/scripts/crawl_hkpl_site.py", line 288, in crawl
+    ensure_corpus_writable("crawl and update HKPL webpages")
+  File "/app/src/ingestion/write_guard.py", line 18, in ensure_corpus_writable
+    raise CorpusReadOnlyError(
+src.ingestion.write_guard.CorpusReadOnlyError: Cannot crawl and update HKPL webpages: KNOWLEDGE_CORPUS_READ_ONLY=true. The benchmark corpus is frozen to keep evaluation evidence stable.
+

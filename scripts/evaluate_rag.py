@@ -58,6 +58,7 @@ SUMMARY_PATH = Path(
 )
 LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
 EVALUATION_MAX_TOKENS = int(os.getenv("EVALUATION_MAX_TOKENS", "2048"))
+DEFAULT_REASONING_BUDGET = 1000
 RETRIEVER_HIT_CUTOFF = 10
 RERANKER_HIT_CUTOFF = 5
 CUTOFFS = (1, 3, 5, 10)
@@ -120,6 +121,9 @@ Verdict:
 
 
 class QwenEvaluationLLM(CustomLLM):
+    enable_thinking: bool = False
+    thinking_budget_tokens: int = DEFAULT_REASONING_BUDGET
+
     @property
     def metadata(self) -> LLMMetadata:
         return LLMMetadata(
@@ -138,7 +142,8 @@ class QwenEvaluationLLM(CustomLLM):
             prompt,
             temperature=0.0,
             max_tokens=EVALUATION_MAX_TOKENS,
-            enable_thinking=False,
+            enable_thinking=self.enable_thinking,
+            thinking_budget_tokens=self.thinking_budget_tokens,
         )
         return CompletionResponse(text=response)
 
@@ -192,6 +197,34 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Evaluate one question using a case-insensitive exact match.",
     )
+    parser.add_argument(
+        "--rerun-answer-failures-from",
+        type=Path,
+        default=None,
+        help=(
+            "Evaluate only rows whose answer_pass value is false in a prior "
+            "results CSV. The prior results file is never modified."
+        ),
+    )
+    parser.add_argument(
+        "--answer-reasoning",
+        action="store_true",
+        help="Enable bounded reasoning for answer generation in this run.",
+    )
+    parser.add_argument(
+        "--evaluator-reasoning",
+        action="store_true",
+        help=(
+            "Enable bounded reasoning for the evaluator. Leave this off when "
+            "comparing with a no-reasoning baseline."
+        ),
+    )
+    parser.add_argument(
+        "--reasoning-budget",
+        type=int,
+        default=DEFAULT_REASONING_BUDGET,
+        help="Maximum thinking tokens per reasoning-enabled LLM call (default: 1000).",
+    )
     return parser.parse_args()
 
 
@@ -200,6 +233,9 @@ def report_paths(args: argparse.Namespace) -> tuple[Path, Path]:
         args.limit is None
         and not args.question_contains
         and not args.question_exact
+        and args.rerun_answer_failures_from is None
+        and not args.answer_reasoning
+        and not args.evaluator_reasoning
     )
     if is_full_evaluation:
         return RESULTS_PATH, SUMMARY_PATH
@@ -207,6 +243,12 @@ def report_paths(args: argparse.Namespace) -> tuple[Path, Path]:
     tags = ["hkpl"]
     if args.limit is not None:
         tags.append(f"limit-{args.limit}")
+    if args.rerun_answer_failures_from is not None:
+        tags.append("answer-failures")
+    if args.answer_reasoning:
+        tags.append(f"answer-reasoning-{args.reasoning_budget}")
+    if args.evaluator_reasoning:
+        tags.append(f"evaluator-reasoning-{args.reasoning_budget}")
 
     question_filter = args.question_exact or args.question_contains
     if question_filter:
@@ -226,6 +268,46 @@ def report_paths(args: argparse.Namespace) -> tuple[Path, Path]:
         f"{SUMMARY_PATH.stem}.{tag}{SUMMARY_PATH.suffix}"
     )
     return results_path, summary_path
+
+
+def prior_failure_selection(results_path: Path) -> dict:
+    """Load failed answer IDs and baseline counts without changing the CSV."""
+    if not results_path.is_file():
+        raise FileNotFoundError(
+            f"Prior evaluation results file does not exist: {results_path}"
+        )
+
+    failed_ids: set[str] = set()
+    evaluated_questions = 0
+    passed_questions = 0
+    with results_path.open(newline="", encoding="utf-8") as source:
+        reader = csv.DictReader(source)
+        required = {"evaluation_id", "answer_pass"}
+        missing = required.difference(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                "Prior results CSV is missing required columns: "
+                + ", ".join(sorted(missing))
+            )
+        for row in reader:
+            evaluated_questions += 1
+            answer_pass = str(row.get("answer_pass") or "").strip().casefold()
+            if answer_pass in {"true", "1", "yes"}:
+                passed_questions += 1
+            else:
+                failed_ids.add(str(row["evaluation_id"]).strip())
+
+    if not failed_ids:
+        raise RuntimeError(
+            f"No failed answers were found in prior results: {results_path}"
+        )
+    return {
+        "source": str(results_path),
+        "evaluated_questions": evaluated_questions,
+        "passed_questions": passed_questions,
+        "failed_questions": len(failed_ids),
+        "failed_ids": failed_ids,
+    }
 
 
 def safe_table_name(value: str) -> str:
@@ -461,7 +543,13 @@ def build_context(nodes) -> tuple[str, list[str], list[dict]]:
         return context, contexts, sources
 
 
-async def generate_answer(question: str, context: str) -> tuple[str, dict]:
+async def generate_answer(
+    question: str,
+    context: str,
+    *,
+    enable_thinking: bool = False,
+    thinking_budget_tokens: int = DEFAULT_REASONING_BUDGET,
+) -> tuple[str, dict]:
     prompt = f"""You are a retrieval-grounded question answering assistant.
 
 Answer the question using only the retrieved context. Combine evidence from
@@ -483,10 +571,18 @@ Answer:
             prompt,
             temperature=0.0,
             max_tokens=EVALUATION_MAX_TOKENS,
-            enable_thinking=False,
+            enable_thinking=enable_thinking,
+            thinking_budget_tokens=thinking_budget_tokens,
         )
         answer = llm_response.text
         usage = llm_response.usage
+        if llm_response.reasoning_text and not usage["reasoning_tokens"]:
+            reasoning_tokens, _, _ = await count_tokens(
+                llm_response.reasoning_text,
+                LLM_TOKENIZER_URL,
+                LLM_TOKENIZER_NAME,
+            )
+            usage["reasoning_tokens"] = reasoning_tokens
         if not usage["total_tokens"]:
             prompt_tokens, prompt_estimated, tokenizer = await count_tokens(
                 prompt,
@@ -502,6 +598,7 @@ Answer:
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
+                "reasoning_tokens": 0,
                 "is_estimated": prompt_estimated or completion_estimated,
                 "tokenizer": tokenizer,
             }
@@ -717,7 +814,13 @@ def focused_pipeline_annotations(
     ]
 
 
-async def evaluate_row(row: dict, evaluators: tuple) -> dict:
+async def evaluate_row(
+    row: dict,
+    evaluators: tuple,
+    *,
+    answer_reasoning: bool = False,
+    reasoning_budget: int = DEFAULT_REASONING_BUDGET,
+) -> dict:
     question = row["question"]
     expected_answer = row["expected_answer"]
     accepted_answers = row.get("accepted_answers") or [expected_answer]
@@ -829,7 +932,12 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
                 )["hit"]
             ),
         )
-        answer, usage = await generate_answer(question, context)
+        answer, usage = await generate_answer(
+            question,
+            context,
+            enable_thinking=answer_reasoning,
+            thinking_budget_tokens=reasoning_budget,
+        )
         context_tokens, context_estimated, tokenizer = await count_tokens(
             context,
             LLM_TOKENIZER_URL,
@@ -957,6 +1065,10 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             "correctness_normalized": max(0.0, min(1.0, correctness / 5.0)),
             "answer_outcome": final_answer_outcome,
             "answer_pass": final_answer_outcome == "correct",
+            "answer_reasoning_enabled": answer_reasoning,
+            "reasoning_budget_tokens": (
+                reasoning_budget if answer_reasoning else 0
+            ),
             "evidence_outcome": evidence_outcome(
                 retrieval_match_mode,
                 reranker_match_mode,
@@ -976,6 +1088,7 @@ async def evaluate_row(row: dict, evaluators: tuple) -> dict:
             "context_tokens": context_tokens,
             "prompt_tokens": usage["prompt_tokens"],
             "completion_tokens": usage["completion_tokens"],
+            "reasoning_tokens": usage["reasoning_tokens"],
             "llm_total_tokens": usage["total_tokens"],
             "pipeline_total_tokens": pipeline_tokens,
             "tokens_are_estimated": tokens_estimated,
@@ -1169,6 +1282,8 @@ def failed_result(row: dict, error: Exception) -> dict:
         "correctness_normalized": 0.0,
         "answer_outcome": "not_evaluated",
         "answer_pass": False,
+        "answer_reasoning_enabled": False,
+        "reasoning_budget_tokens": 0,
         "evidence_outcome": "not_evaluated",
         "faithfulness": 0.0,
         "relevancy": 0.0,
@@ -1184,6 +1299,7 @@ def failed_result(row: dict, error: Exception) -> dict:
         "context_tokens": 0,
         "prompt_tokens": 0,
         "completion_tokens": 0,
+        "reasoning_tokens": 0,
         "llm_total_tokens": 0,
         "pipeline_total_tokens": 0,
         "tokens_are_estimated": True,
@@ -1298,6 +1414,7 @@ def summarize(results: list[dict]) -> dict:
             "context_tokens": average("context_tokens"),
             "llm_prompt_tokens": average("prompt_tokens"),
             "llm_completion_tokens": average("completion_tokens"),
+            "llm_reasoning_tokens": average("reasoning_tokens"),
             "llm_total_tokens": average("llm_total_tokens"),
             "pipeline_total_tokens": average("pipeline_total_tokens"),
         },
@@ -1406,6 +1523,8 @@ async def main() -> None:
     results_path, summary_path = report_paths(args)
     if args.limit is not None and args.limit < 1:
         raise ValueError("--limit must be positive.")
+    if args.reasoning_budget < 1:
+        raise ValueError("--reasoning-budget must be positive.")
 
     coverage = load_hkpl_coverage()
     if (
@@ -1419,7 +1538,11 @@ async def main() -> None:
             "the benchmark before evaluation. Use "
             "--allow-incomplete-dataset only for targeted diagnostics."
         )
-    rows = load_hkpl_rows(args.limit)
+    # When retrying failures, apply --limit after selecting failed IDs so that
+    # it means "first N failures", not "failures among the first N rows".
+    rows = load_hkpl_rows(
+        None if args.rerun_answer_failures_from is not None else args.limit
+    )
     if not rows:
         raise RuntimeError("No valid HKPL evaluation rows were loaded.")
     corpus_counts = load_corpus_counts()
@@ -1452,6 +1575,29 @@ async def main() -> None:
             raise RuntimeError(
                 f"No evaluation question exactly matches {args.question_exact!r}."
             )
+    prior_selection = None
+    if args.rerun_answer_failures_from is not None:
+        prior_selection = prior_failure_selection(
+            args.rerun_answer_failures_from
+        )
+        failed_ids = prior_selection["failed_ids"]
+        rows = [row for row in rows if row["evaluation_id"] in failed_ids]
+        if not rows:
+            raise RuntimeError(
+                "None of the failed evaluation IDs from the prior results "
+                "exist in the current valid benchmark."
+            )
+        missing_ids = failed_ids.difference(
+            row["evaluation_id"] for row in rows
+        )
+        if missing_ids:
+            print(
+                "Warning: "
+                f"{len(missing_ids)} prior failed row(s) are not present in "
+                "the current valid benchmark and will not be rerun."
+            )
+        if args.limit is not None:
+            rows = rows[:args.limit]
     print(
         f"Evaluation dataset coverage: {coverage['valid_questions']}/"
         f"{coverage['intended_questions']} "
@@ -1464,8 +1610,18 @@ async def main() -> None:
     )
     print(f"Search corpus vectors: {corpus_counts}")
     print(f"Phoenix project: {os.getenv('PHOENIX_PROJECT_NAME', 'hkpl-rag')}")
+    print(
+        "Reasoning: "
+        f"answer={'on' if args.answer_reasoning else 'off'}, "
+        f"evaluator={'on' if args.evaluator_reasoning else 'off'}, "
+        "budget="
+        f"{args.reasoning_budget if (args.answer_reasoning or args.evaluator_reasoning) else 0}"
+    )
 
-    judge = QwenEvaluationLLM()
+    judge = QwenEvaluationLLM(
+        enable_thinking=args.evaluator_reasoning,
+        thinking_budget_tokens=args.reasoning_budget,
+    )
     evaluators = (
         CorrectnessEvaluator(
             llm=judge,
@@ -1483,7 +1639,12 @@ async def main() -> None:
             f"[{position}/{len(rows)}] [{row['dataset']}] {row['question']}"
         )
         try:
-            result = await evaluate_row(row, evaluators)
+            result = await evaluate_row(
+                row,
+                evaluators,
+                answer_reasoning=args.answer_reasoning,
+                reasoning_budget=args.reasoning_budget,
+            )
         except Exception as error:
             print(f"FAILED: {error}")
             result = failed_result(row, error)
@@ -1529,12 +1690,45 @@ async def main() -> None:
         },
         "latency_seconds": metrics["latency_seconds"],
     }
+    if prior_selection is not None:
+        recovered_answers = sum(
+            1 for result in results if result["answer_pass"]
+        )
+        projected_passes = (
+            prior_selection["passed_questions"] + recovered_answers
+        )
+        summary["failure_retry"] = {
+            "baseline_evaluated_questions": prior_selection[
+                "evaluated_questions"
+            ],
+            "baseline_passed_questions": prior_selection["passed_questions"],
+            "baseline_failed_questions": prior_selection["failed_questions"],
+            "retried_questions": len(results),
+            "recovered_answers": recovered_answers,
+            "retry_pass_rate": recovered_answers / len(results),
+            "projected_combined_passed_questions": projected_passes,
+            "projected_combined_answer_pass_rate": (
+                projected_passes / prior_selection["evaluated_questions"]
+            ),
+        }
     diagnostics = {
         "metadata": {
             "dataset": "hkpl",
             "phoenix_project": os.getenv(
                 "PHOENIX_PROJECT_NAME",
                 "hkpl-rag",
+            ),
+            "answer_reasoning_enabled": args.answer_reasoning,
+            "evaluator_reasoning_enabled": args.evaluator_reasoning,
+            "reasoning_budget_tokens": (
+                args.reasoning_budget
+                if args.answer_reasoning or args.evaluator_reasoning
+                else 0
+            ),
+            "rerun_answer_failures_from": (
+                str(args.rerun_answer_failures_from)
+                if args.rerun_answer_failures_from is not None
+                else ""
             ),
         },
         "dataset_validation": coverage,
