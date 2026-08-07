@@ -1,8 +1,6 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any
-
 from llama_index.core import StorageContext, VectorStoreIndex
 from sqlalchemy import text
 

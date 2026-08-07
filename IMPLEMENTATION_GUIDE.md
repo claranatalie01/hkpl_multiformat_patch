@@ -1,13 +1,13 @@
-# HKPL Multi-Format Ingestion Change Pack
+# HKPL Agentic RAG Implementation Guide
 
 For the current corpus inventory, evaluation-dataset data dictionary, metric
 definitions, benchmark results, and reproducibility controls, see
 [`DATA_DOCUMENTATION.md`](DATA_DOCUMENTATION.md).
 
-This directory contains replacement and new files for the current
-`/home/cnatalie/agentic-RAG` project.
+This guide describes the current repository. Run commands from the actual
+project directory on the remote server; do not assume a fixed checkout path.
 
-## What this changes
+## Implemented capabilities
 
 1. Renames the general vector collection from `hkpl_faq` to
    `hkpl_knowledge`.
@@ -33,43 +33,47 @@ This directory contains replacement and new files for the current
 11. Makes reranking explicit and maps scores using the returned document index.
 12. Preserves complete chunks instead of cutting context in the middle.
 
-## New project structure
+## Project structure
 
 ```text
 src/
-├── infrastructure/
-│   ├── __init__.py
-│   ├── db.py
-│   ├── embedding.py
-│   └── vector_store.py
-├── ingestion/
-│   ├── __init__.py
-│   ├── readers.py
-│   ├── chunking.py
-│   ├── registry.py
-│   └── service.py
+├── infrastructure/       # database, embedding client, PGVectorStore
+├── ingestion/            # readers, chunking, registry, service, write guard
+├── compliance.py
+├── corpus.py
 ├── graph.py
+├── llm_client.py
 ├── memory.py
 ├── nodes.py
+├── observability.py
+├── phoenix_annotations.py
 ├── retrieval.py
-└── state.py
+├── state.py
+├── token_counting.py
+└── tracing_helpers.py
+
+scripts/
+├── evaluate_rag.py
+├── rag_benchmark_workflow.py
+├── manage_corpus_lock.py
+├── ingest_pgvector_llamaindex.py
+├── validate_evaluation_dataset.py
+└── other ingestion, migration, and benchmark utilities
 ```
 
 ## Installation
 
-Back up the current project first:
+Back up the current remote checkout and data before a major migration:
 
 ```bash
-cd /home/cnatalie
-cp -a agentic-RAG agentic-RAG-backup-before-multiformat
+cd /path/to/parent
+cp -a hkpl_multiformat_patch hkpl_multiformat_patch-backup
 ```
-
-Copy the files in this patch over the project, preserving their paths.
 
 Create persistent directories:
 
 ```bash
-cd /home/cnatalie/agentic-RAG
+cd /path/to/hkpl_multiformat_patch
 mkdir -p uploads storage
 ```
 
@@ -80,6 +84,9 @@ cp .env.example .env
 ```
 
 Set a non-empty admin key in `.env` before exposing the service.
+Only `DB_PASSWORD`, `ADMIN_API_KEY`, `PHOENIX_PROJECT_NAME`, `HF_TOKEN`, and
+`DOCUMENT_TYPE_RULES_JSON` are interpolated from `.env` by the current Compose
+file. Other runtime defaults are literal entries in `docker-compose.yml`.
 
 Rebuild the agent because system and Python dependencies changed:
 
@@ -90,8 +97,50 @@ docker compose up -d
 docker compose logs -f langgraph-agent
 ```
 
-The registry table is created automatically when FastAPI starts. The updated
-`postgres-init/init.sql` is also included for clean installations.
+The registry table is created automatically when FastAPI starts.
+`postgres-init/init.sql` is used for clean database installations.
+
+## Corpus freeze and controlled writes
+
+The checked-in deployment is intentionally read-only:
+
+```text
+KNOWLEDGE_CORPUS_READ_ONLY=true
+```
+
+The application guard blocks corpus-writing scripts, and document mutation
+endpoints return HTTP 423. A separate PostgreSQL trigger lock may also protect
+`knowledge_documents` and `data_hkpl_knowledge`.
+
+Check the database lock:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/manage_corpus_lock.py --status
+```
+
+For an approved CLI maintenance window, disable the database lock, explicitly
+override the application guard for each write command, and immediately
+re-enable the database lock afterward:
+
+```bash
+docker compose run --rm langgraph-agent \
+  uv run python scripts/manage_corpus_lock.py --disable --yes
+
+docker compose run --rm \
+  -e KNOWLEDGE_CORPUS_READ_ONLY=false \
+  langgraph-agent \
+  uv run python THE_WRITE_SCRIPT.py
+
+docker compose run --rm langgraph-agent \
+  uv run python scripts/manage_corpus_lock.py --enable
+```
+
+Do not leave the database unlocked. To use the upload, replace, reindex,
+delete, index-URL, or crawler paths, an operator must also run the agent with
+`KNOWLEDGE_CORPUS_READ_ONLY=false`; the checked-in long-running service does
+not permit those mutations. All corpus-write commands below assume the
+database lock has first been disabled and must be followed by `--enable`.
 
 ## Re-ingest the existing FAQ data
 
@@ -99,8 +148,10 @@ The retriever now uses `data_hkpl_knowledge`, so ingest the FAQ data into that
 new collection:
 
 ```bash
-docker compose run --rm langgraph-agent \
-  python scripts/ingest_pgvector_llamaindex.py
+docker compose run --rm \
+  -e KNOWLEDGE_CORPUS_READ_ONLY=false \
+  langgraph-agent \
+  uv run python scripts/ingest_pgvector_llamaindex.py
 ```
 
 `--rebuild-all` rebuilds registered HKPL sources while preserving rows tagged
@@ -121,7 +172,9 @@ The dataset is public and does not require authentication. Optionally set
 `HF_TOKEN` in `.env` to use authenticated Hugging Face rate limits.
 
 ```bash
-docker compose run --rm langgraph-agent \
+docker compose run --rm \
+  -e KNOWLEDGE_CORPUS_READ_ONLY=false \
+  langgraph-agent \
   uv run python scripts/hotpotqa_benchmark.py prepare --limit 1000
 ```
 
@@ -146,7 +199,9 @@ docker compose run --rm langgraph-agent \
 Ingest the latest archive, up to 1,000 articles:
 
 ```bash
-docker compose run --rm langgraph-agent \
+docker compose run --rm \
+  -e KNOWLEDGE_CORPUS_READ_ONLY=false \
+  langgraph-agent \
   uv run python scripts/webz_news_benchmark.py prepare \
   --archive latest --limit 1000 --accept-terms
 ```
@@ -214,7 +269,9 @@ docker compose run --rm langgraph-agent \
 
 ### HKPL evaluation with combined distractor noise
 
-`scripts/evaluate_rag.py` is the only evaluation entry point. It loads HKPL
+`scripts/evaluate_rag.py` is the low-level evaluation runner;
+`scripts/rag_benchmark_workflow.py evaluate` is the guarded workflow wrapper.
+The evaluator loads HKPL
 questions, expected answers, and expected chunks from `evaluation_dataset`,
 then searches the combined vector table containing HKPL, HotpotQA paragraphs,
 and Webz.io news chunks. The external corpora contribute retrieval noise only;
@@ -226,6 +283,11 @@ Run a short smoke test with five HKPL questions:
 docker compose run --rm langgraph-agent \
   uv run python scripts/evaluate_rag.py --limit 5
 ```
+
+Even a limited or single-question run validates the full active benchmark and
+requires both configured distractor corpora. The
+`--allow-incomplete-dataset` and `--allow-missing-distractors` flags exist only
+for targeted diagnostics, not benchmark reporting.
 
 Run the complete evaluation:
 
@@ -242,18 +304,21 @@ docker compose run --rm langgraph-agent \
   --question-contains "Library Catalogue"
 ```
 
-Every question reports retrieval and reranker Hit, Recall, and Complete at
-1/3/5, MRR, LlamaIndex correctness, faithfulness, relevancy, hallucination
-derived from faithfulness, a stage-specific RAG diagnosis, and generic
-distractor rates before and after reranking. The per-query CSV also identifies
-which distractor datasets occupied the measured cutoffs.
+Every question reports retrieval and reranker Hit, Recall, Complete,
+evidence-hit, and distractor metrics at 1/3/5/10, plus MRR, LlamaIndex
+correctness, faithfulness, relevancy, hallucination derived from faithfulness,
+token usage, latency, answer/evidence outcomes, and a stage-specific RAG
+diagnosis. The primary robustness gates are equivalent-evidence-aware
+Retriever Hit@10 and Reranker Hit@5.
 
 Phoenix displays all runs in the `hkpl-rag` project as `RAG Evaluation Query`
 traces with `eval.dataset=hkpl`. The aggregate is exported as the HKPL RAG
 evaluation summary.
 
 Results are written to `data/rag_evaluation/results.csv` and
-`data/rag_evaluation/summary.json`.
+`data/rag_evaluation/summary.json`. Detailed aggregate diagnostics are written
+to `data/rag_evaluation/summary.diagnostics.json`. Filtered or reasoning runs
+use tagged filenames so they do not overwrite the normal full-run outputs.
 
 Verify all corpora are in the same physical vector table:
 
@@ -278,6 +343,10 @@ curl -N -X POST http://localhost:8001/chat/stream \
 ```
 
 ## Upload a document
+
+The checked-in service is read-only, so this endpoint returns HTTP 423 unless
+an operator deliberately opens the application and database maintenance locks
+described above.
 
 ```bash
 curl -X POST http://localhost:8001/admin/documents/upload \
@@ -333,15 +402,19 @@ curl -X DELETE \
 Files passed through the CLI are copied into `/app/uploads` and registered:
 
 ```bash
-docker compose run --rm langgraph-agent \
-  python scripts/ingest_documents.py /app/data/sample.pdf
+docker compose run --rm \
+  -e KNOWLEDGE_CORPUS_READ_ONLY=false \
+  langgraph-agent \
+  uv run python scripts/ingest_documents.py /app/data/sample.pdf
 ```
 
 To ingest a mounted directory:
 
 ```bash
-docker compose run --rm langgraph-agent \
-  python scripts/ingest_documents.py /app/data/documents
+docker compose run --rm \
+  -e KNOWLEDGE_CORPUS_READ_ONLY=false \
+  langgraph-agent \
+  uv run python scripts/ingest_documents.py /app/data/documents
 ```
 
 ## Chunking behaviour
@@ -355,7 +428,8 @@ docker compose run --rm langgraph-agent \
 - Default overlap: 64 tokens.
 - Large atomic records can still split at 2048 tokens.
 
-Tune through `.env`, not source code.
+These defaults are currently set in `docker-compose.yml`. Only variables
+written as `${NAME:-default}` are overridden through `.env` by Compose.
 
 ## Supported and unsupported formats
 
@@ -381,6 +455,8 @@ standard Office formats.
   deployment should use a durable worker queue.
 - The upload signature checks are a baseline, not malware scanning.
 - If `ADMIN_API_KEY` is empty, admin endpoints are open for local development.
+- Corpus mutation endpoints are disabled by the checked-in read-only guard and
+  may also be blocked by the PostgreSQL corpus lock.
 - Access level is stored, but retrieval-time authorization filtering is a
   later phase.
 - Coordinate-based nearest-library resolution remains a placeholder because

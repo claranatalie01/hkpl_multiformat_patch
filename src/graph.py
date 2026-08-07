@@ -27,12 +27,6 @@ def route_by_input_type(
     return "direct_to_safety"
 
 
-def after_voice(
-    state: LibraryBotState,
-) -> Literal["safety"]:
-    return "safety"
-
-
 def after_safety(
     state: LibraryBotState,
 ) -> Literal["end", "continue"]:
@@ -80,11 +74,7 @@ builder.add_conditional_edges(
     },
 )
 
-builder.add_conditional_edges(
-    "voice_to_text",
-    after_voice,
-    {"safety": "safety"},
-)
+builder.add_edge("voice_to_text", "safety")
 
 builder.add_conditional_edges(
     "safety",

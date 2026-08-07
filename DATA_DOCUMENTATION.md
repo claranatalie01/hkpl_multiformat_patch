@@ -1,7 +1,7 @@
 # HKPL RAG Data and Evaluation Documentation
 
 **Document status:** Current working reference  
-**Last updated:** 4 August 2026  
+**Last code/documentation audit:** 7 August 2026  
 **Scope:** HKPL knowledge corpus, distractor corpora, evaluation dataset,
 evaluation outputs, metrics, and data-governance controls.
 
@@ -387,11 +387,17 @@ a runtime routing rule based on signals available at inference time.
 | `summary.diagnostics.json` | Diagnosis counts, answer outcomes, per-domain results, robustness, reliability, and corpus snapshot |
 | Phoenix project | Trace hierarchy, retrieved documents, reranked context, LLM calls, and annotations |
 
-The protected no-reasoning baseline should be retained as:
+The protected no-reasoning baseline should be retained on the remote benchmark
+host or approved artifact storage as:
 
 ```text
 data/rag_evaluation/results.no-reasoning.528.csv
 ```
+
+Generated evaluation reports are ignored by Git and are not bundled with a
+clean clone. The benchmark tables below record a completed run; reproduce or
+retrieve its artifacts from the remote benchmark host when row-level evidence
+is required.
 
 The selective reasoning retry is written separately using a tagged filename,
 for example:
@@ -429,6 +435,13 @@ The database lock protects both `knowledge_documents` and
 `data_hkpl_knowledge` against insert, update, delete, and truncate operations.
 The evaluation CSV and evaluation table are separate and can still be changed
 by benchmark-management commands.
+
+To intentionally mutate the knowledge corpus, both locks must be addressed:
+disable the database lock with `scripts/manage_corpus_lock.py --disable --yes`
+and run the specific write command with
+`KNOWLEDGE_CORPUS_READ_ONLY=false`. Re-enable the database lock immediately
+afterward. The full maintenance sequence is documented in
+`IMPLEMENTATION_GUIDE.md`.
 
 ### Run the normal full benchmark
 

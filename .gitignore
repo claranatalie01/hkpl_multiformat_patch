@@ -6,8 +6,11 @@ __pycache__/
 .venv/
 
 data/rag_evaluation/
+data/hotpotqa/
+data/webz_news/
 data/generation_results.csv
 data/generation_summary.json
 data/retrieval_results.csv
 data/retrieval_summary.json
 safety_intent_log.jsonl
+storage/crawler_state/

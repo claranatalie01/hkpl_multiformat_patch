@@ -5,8 +5,6 @@ import json
 import re
 import unicodedata
 from pathlib import Path
-from typing import Iterable
-
 import fitz
 import openpyxl
 import pytesseract
