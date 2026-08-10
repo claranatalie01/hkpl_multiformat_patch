@@ -1,3 +1,10 @@
+"""Extract supported source files into structured LlamaIndex Documents.
+
+Readers preserve provenance such as URL, page, slide, sheet, row, section,
+version, and extraction method. They produce normalized text and metadata only;
+chunk creation and embedding happen later in ``chunking`` and ``service``.
+"""
+
 import csv
 import hashlib
 import io
@@ -744,6 +751,12 @@ def load_file(
     source_kind: str = "upload",
     document_type: str = "auto",
 ) -> list[Document]:
+    """Dispatch a saved source to its format-specific structural reader.
+
+    Returns one or more pre-chunking ``Document`` sections with common source
+    metadata. PDFs use native layout-aware extraction with OCR fallback, while
+    HTML is divided around headings, paragraphs, list items, and tables.
+    """
     
     extension = path.suffix.lower()
 

@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Migrate legacy evaluation labels to the current document and chunk IDs.
+
+The script validates source references against the current vector corpus,
+rewrites compatible rows, and synchronizes the migrated evaluation table. It is
+a maintenance utility rather than a normal ingestion entry point.
+"""
 
 import argparse
 import csv

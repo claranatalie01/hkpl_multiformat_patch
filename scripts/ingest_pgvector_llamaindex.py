@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Rebuild, synchronize, or audit HKPL knowledge and evaluation data.
+
+Modes can rebuild FAQ chunks, rebuild all registered sources, synchronize the
+evaluation CSV, preflight source availability, or audit stored chunks. Corpus
+writes use the shared readers, chunking, embedding, registry, and vector store.
+"""
 
 import argparse
 import csv

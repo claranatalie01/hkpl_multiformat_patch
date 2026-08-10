@@ -1,3 +1,5 @@
+"""Application-level safety guard for all knowledge-corpus mutations."""
+
 import os
 
 
@@ -10,10 +12,12 @@ class CorpusReadOnlyError(RuntimeError):
 
 
 def corpus_is_read_only() -> bool:
+    """Return whether the environment currently freezes corpus writes."""
     return os.getenv(READ_ONLY_ENV, "false").strip().lower() in TRUE_VALUES
 
 
 def ensure_corpus_writable(operation: str = "modify the knowledge corpus") -> None:
+    """Raise before a mutation when ``KNOWLEDGE_CORPUS_READ_ONLY`` is enabled."""
     if corpus_is_read_only():
         raise CorpusReadOnlyError(
             f"Cannot {operation}: {READ_ONLY_ENV}=true. "

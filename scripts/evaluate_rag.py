@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Evaluate retrieval, reranking, evidence coverage, and generated answers.
+
+Rows from the approved evaluation table are run through the live RAG pipeline.
+The script exports per-question results and aggregate diagnostics, records
+Phoenix traces, and attributes failures to retrieval, reranking, context, or
+answer generation. It reads the vector corpus but does not ingest documents.
+"""
 
 import argparse
 import asyncio

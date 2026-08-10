@@ -1,3 +1,11 @@
+"""Convert extracted document sections into stable searchable vector nodes.
+
+Document-type rules choose atomic, record, or overlapping prose splitting.
+Each retained node receives deterministic provenance metadata and a chunk ID;
+the nodes still contain text only until ``service.py`` asks LlamaIndex to embed
+and store them.
+"""
+
 import hashlib
 import os
 import re
@@ -161,6 +169,7 @@ def split_marked_sections(document: Document) -> List[Document]:
 
 
 def prepare_documents_for_chunking(documents: List[Document]) -> List[Document]:
+    """Expand structured documents into units appropriate for their type."""
     prepared = []
 
     for document in documents:
@@ -195,6 +204,12 @@ def prepare_documents_for_chunking(documents: List[Document]) -> List[Document]:
 
 
 def chunk_documents(documents: List[Document]) -> List[BaseNode]:
+    """Split documents into deduplicated nodes with stable IDs and metadata.
+
+    Prose uses the configured size and overlap; atomic/record content avoids
+    overlap and uses larger ceilings. Chunks shorter than 50 characters and
+    duplicate text within the same knowledge document are excluded.
+    """
     prepared_documents = prepare_documents_for_chunking(documents)
     nodes: list[BaseNode] = []
     seen_document_content: set[tuple[str, str]] = set()

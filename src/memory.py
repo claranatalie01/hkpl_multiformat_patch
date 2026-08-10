@@ -1,3 +1,10 @@
+"""Persist and retrieve bounded conversation history in PostgreSQL.
+
+The graph loads recent turns to support follow-up questions and saves completed
+user/assistant exchanges. Conversation memory is separate from vector-corpus
+documents and does not participate in pgvector retrieval.
+"""
+
 from typing import Dict, List
 
 from sqlalchemy import text

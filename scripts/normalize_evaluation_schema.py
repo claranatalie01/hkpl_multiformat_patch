@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Normalize evaluation CSV columns and values to the canonical schema.
+
+This maintenance script repairs dataset shape before validation or database
+synchronization. It changes evaluation metadata only, never vector chunks.
+"""
 
 import argparse
 import csv

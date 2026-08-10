@@ -1,3 +1,5 @@
+# Runtime image for the FastAPI, ingestion, crawler, and evaluation code.
+# OCR system packages are installed here; model servers run in other services.
 FROM python:3.11-slim
 
 WORKDIR /app

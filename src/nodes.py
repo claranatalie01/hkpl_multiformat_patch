@@ -1,3 +1,10 @@
+"""Implement the processing nodes used by the LangGraph RAG workflow.
+
+Nodes classify intent and safety, rewrite contextual questions, invoke vector
+retrieval/reranking, build source-aware context, call the answer model, attach
+citations, filter output, and save conversation turns.
+"""
+
 import os
 import logging
 import json

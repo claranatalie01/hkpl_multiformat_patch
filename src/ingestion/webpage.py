@@ -1,3 +1,11 @@
+"""Fetch and clean one administrator-selected webpage for ingestion.
+
+Unlike the bulk crawler, this helper does no link discovery or change-state
+management. It validates one HTTP(S) URL, removes repeated site chrome, saves
+the selected main HTML in uploads, and returns it to the admin API for normal
+shared ingestion.
+"""
+
 import hashlib
 import re
 from pathlib import Path

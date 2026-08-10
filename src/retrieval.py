@@ -1,3 +1,10 @@
+"""Retrieve candidate vectors and rerank them for the RAG answer context.
+
+The incoming question is embedded with the same model used at ingestion,
+PGVectorStore returns the nearest chunks, and the local reranker reorders and
+filters candidates. Live retrieval restricts results to primary-corpus rows.
+"""
+
 import logging
 import os
 import time

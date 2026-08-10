@@ -1,3 +1,10 @@
+"""Count tokens through local model endpoints with conservative fallbacks.
+
+Token counts support context limits, evaluation metrics, and cost reporting.
+Endpoint failures fall back to a character-based estimate; this module neither
+chunks source documents nor creates embedding vectors.
+"""
+
 from __future__ import annotations
 
 import asyncio

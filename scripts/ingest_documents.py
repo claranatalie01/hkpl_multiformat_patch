@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""CLI entry point for ingesting a local file or directory.
+
+Supported files are copied into the durable uploads directory and passed to
+``ingest_path_sync``. The shared ingestion service performs registration,
+extraction, chunking, embedding, and pgvector insertion.
+"""
 
 import argparse
 import shutil

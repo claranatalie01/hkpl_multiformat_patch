@@ -1,3 +1,10 @@
+"""Classify source content and map each type to a chunking strategy.
+
+Rules keep structured units such as FAQs and records atomic while allowing
+narrative documents to use overlapping prose chunks. Deployments may override
+the checked-in rule set through ``DOCUMENT_TYPE_RULES_JSON``.
+"""
+
 from __future__ import annotations
 
 import json
@@ -131,6 +138,7 @@ def validate_document_type(document_type: str | None) -> str:
 
 
 def detect_document_type(text: str, metadata: dict | None = None) -> str:
+    """Infer the configured document type from explicit metadata and content."""
     metadata = metadata or {}
     explicit = validate_document_type(metadata.get("document_type"))
     if explicit != "auto":
@@ -174,4 +182,5 @@ def detect_document_type(text: str, metadata: dict | None = None) -> str:
 
 
 def chunk_strategy_for(document_type: str) -> str:
+    """Return the configured chunking strategy for a normalized document type."""
     return get_document_type_rules().get(document_type, {}).get("chunk_strategy", "prose")

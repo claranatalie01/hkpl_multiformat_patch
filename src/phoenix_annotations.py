@@ -1,3 +1,10 @@
+"""Write answer and document-quality annotations to Phoenix spans.
+
+Helpers match retrieved evidence to evaluation labels, calculate normalized
+scores/reasons, and send span annotations when configured. Annotation failures
+do not change the underlying vector data.
+"""
+
 from __future__ import annotations
 
 import logging

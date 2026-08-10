@@ -1,3 +1,10 @@
+"""Define corpus roles and perform dataset-scoped vector maintenance.
+
+Metadata helpers distinguish primary HKPL evidence from optional distractor
+datasets. Replacement utilities delete and rebuild only the requested dataset,
+preventing one benchmark importer from clearing unrelated vector rows.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

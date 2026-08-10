@@ -1,3 +1,10 @@
+"""Embedding client used for both document ingestion and query retrieval.
+
+The local llama.cpp endpoint converts text into 1,024-dimensional vectors; it
+does not generate natural-language answers. Using the same embedding model for
+stored chunks and incoming questions makes pgvector similarity search possible.
+"""
+
 import os
 from typing import List, Sequence
 
@@ -13,7 +20,12 @@ load_dotenv()
 
 
 class LlamaCppEmbedding(BaseEmbedding):
-    """OpenAI-compatible embedding client for the local llama.cpp server."""
+    """Expose a local OpenAI-compatible embedding endpoint to LlamaIndex.
+
+    LlamaIndex calls the text methods while constructing ``VectorStoreIndex``
+    and the query methods during retrieval. Batch methods preserve response
+    ordering by sorting the endpoint's indexed results.
+    """
 
     embedding_url: str = Field(description="llama.cpp embedding endpoint")
     request_timeout: float = Field(default=120.0)

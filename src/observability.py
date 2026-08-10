@@ -1,3 +1,10 @@
+"""Configure optional Phoenix/OpenTelemetry tracing for the RAG application.
+
+When enabled, instrumentation exports model, retrieval, reranking, and
+evaluation spans to Phoenix. Tracing observes execution and does not alter the
+knowledge corpus or answer logic.
+"""
+
 import logging
 import os
 from typing import Optional

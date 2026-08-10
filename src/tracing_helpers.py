@@ -1,3 +1,10 @@
+"""Attach consistent inputs, outputs, documents, and token data to trace spans.
+
+These serialization helpers are shared by ingestion-adjacent retrieval,
+generation, and evaluation tracing. They intentionally keep observability
+formatting separate from core RAG behavior.
+"""
+
 import json
 import os
 from typing import Any

@@ -1,3 +1,10 @@
+"""Maintain the PostgreSQL registry for knowledge-base source documents.
+
+The registry records source identity, file location, hash, version, ingestion
+status, and expected chunk count. The actual chunk text and embeddings live in
+the separate LlamaIndex-managed ``data_hkpl_knowledge`` vector table.
+"""
+
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -7,6 +14,7 @@ from ..infrastructure.db import engine
 
 
 def ensure_registry_schema() -> None:
+    """Create or evolve registry and compliance tables for existing databases."""
     with engine.begin() as connection:
         connection.execute(
             text(
@@ -146,6 +154,7 @@ def find_completed_duplicate(
 
 
 def find_active_web_document_by_source_url(source_url: str) -> Optional[dict]:
+    """Return the current non-deleted crawler/webpage record for a source URL."""
     if not source_url:
         return None
 
@@ -185,6 +194,7 @@ def create_document(
     source_kind: str = "upload",
     document_type: str = "auto",
 ) -> dict:
+    """Insert a version-1 registry record with initial status ``uploaded``."""
     document_id = str(uuid4())
 
     with engine.begin() as connection:
@@ -273,6 +283,7 @@ def prepare_replacement(
     source_kind: str = "upload",
     document_type: str = "auto",
 ) -> Optional[dict]:
+    """Update a registry record for new source content and increment version."""
     with engine.begin() as connection:
         row = connection.execute(
             text(
@@ -359,6 +370,7 @@ def update_status(
     chunk_count: int | None = None,
     error_message: str | None = None,
 ) -> None:
+    """Record ingestion progress, final chunk count, or a failure message."""
     with engine.begin() as connection:
         connection.execute(
             text(

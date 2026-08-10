@@ -1,3 +1,4 @@
+# Python runtime dependencies for API, ingestion, RAG, evaluation, and tracing.
 [project]
 name = "hkpl-agent"
 version = "0.1.0"

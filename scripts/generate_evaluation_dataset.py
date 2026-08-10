@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Generate reviewable evaluation questions from existing HKPL vector chunks.
+
+Eligible primary-corpus chunks are read from ``data_hkpl_knowledge`` and sent
+to the answer model to propose questions, accepted answers, exact evidence, and
+source IDs. Progress is checkpointed; output remains a candidate until reviewed
+and promoted. This script does not create document embeddings.
+"""
 
 import argparse
 import asyncio

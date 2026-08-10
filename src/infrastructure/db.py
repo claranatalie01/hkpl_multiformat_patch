@@ -1,3 +1,11 @@
+"""Shared SQLAlchemy connection for non-vector PostgreSQL operations.
+
+The ingestion registry, corpus maintenance, compliance, and conversation
+history code use this engine for ordinary SQL. Vector insertion and similarity
+search use the separate LlamaIndex PGVectorStore configured in
+``infrastructure.vector_store``.
+"""
+
 import os
 
 from dotenv import load_dotenv

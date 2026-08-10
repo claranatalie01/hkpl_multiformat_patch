@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Manage PostgreSQL trigger locks protecting the benchmark corpus.
+
+The lock blocks direct INSERT, UPDATE, and DELETE operations against registry
+and vector tables, including writes that bypass the Python ``write_guard``.
+Operators disable it only for an approved maintenance window and re-enable it
+after ingestion or migration finishes.
+"""
 
 import argparse
 import re

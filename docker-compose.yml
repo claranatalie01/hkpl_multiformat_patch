@@ -1,3 +1,6 @@
+# Local/deployment runtime for PostgreSQL/pgvector, embedding, reranking,
+# generation, FastAPI, and Phoenix. This file starts services; it does not
+# schedule crawl_hkpl_site.py or perform recurring ingestion.
 services:
   postgres:
     image: pgvector/pgvector:pg16

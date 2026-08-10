@@ -1,3 +1,12 @@
+"""FastAPI entry point for HKPL chat and knowledge-base administration.
+
+The public chat endpoint executes the LangGraph RAG workflow. Protected admin
+endpoints manage compliance rules and delegate upload, URL-indexing, replace,
+reindex, and delete operations to ``src.ingestion.service``. This module does
+not implement extraction or vector creation itself; it exposes those shared
+services over HTTP.
+"""
+
 import hmac
 import logging
 import os

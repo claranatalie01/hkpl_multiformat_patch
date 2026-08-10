@@ -1,3 +1,10 @@
+"""Assemble and route the LangGraph conversation workflow.
+
+The graph connects safety/intent analysis, query rewriting, retrieval, answer
+generation, citation construction, output filtering, and conversation saving.
+Routing functions choose branches from the shared ``LibraryBotState``.
+"""
+
 from typing import Literal
 
 from langgraph.graph import END, START, StateGraph

@@ -1,3 +1,10 @@
+"""Store, audit, and apply prohibited-keyword compliance rules.
+
+Administrative helpers manage active rules in PostgreSQL and record changes in
+an audit table. The RAG workflow calls the checker before answer generation so
+matched requests can receive a configured safe fallback.
+"""
+
 import json
 from typing import Optional
 from sqlalchemy import text

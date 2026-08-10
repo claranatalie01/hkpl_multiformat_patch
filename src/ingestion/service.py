@@ -1,3 +1,11 @@
+"""Orchestrate the complete file-to-pgvector ingestion lifecycle.
+
+Every ingestion entry point (crawler, admin API, or CLI file import) converges
+here. A source is registered, extracted by ``readers``, converted to nodes by
+``chunking``, embedded through the local model, and inserted through the shared
+PGVectorStore. Registry statuses expose progress and failures to operators.
+"""
+
 import logging
 import os
 from pathlib import Path
@@ -89,6 +97,12 @@ def register_upload(
     document_type: str = "auto",
     replace_document_id: str | None = None,
 ) -> dict:
+    """Register a new source or prepare an existing document for replacement.
+
+    The saved file is hashed for duplicate detection. New sources receive a
+    UUID and version 1; replacements retain their UUID and increment version.
+    This function updates only the registry—it does not extract or embed text.
+    """
     ensure_corpus_writable("register or replace a document")
     ensure_registry_schema()
 
@@ -185,6 +199,13 @@ def register_upload(
 def process_registered_document(
     document_id: str,
 ) -> dict:
+    """Extract, chunk, embed, and persist one registered document.
+
+    Status progresses through ``extracting``, ``chunking``, ``embedding``, and
+    ``completed``. New vectors are stored before older document versions are
+    removed, preserving existing searchable evidence if replacement fails.
+    Any exception marks the registry record as ``failed`` and is re-raised.
+    """
     ensure_corpus_writable("extract, chunk, or embed a document")
     ensure_registry_schema()
 
@@ -262,12 +283,18 @@ def process_registered_document(
             "embedding",
         )
 
+        # Bind LlamaIndex to the shared PGVectorStore rather than its default
+        # in-memory storage. The configured collection is physically stored as
+        # ``data_<VECTOR_TABLE>`` in PostgreSQL.
         storage_context = (
             StorageContext.from_defaults(
                 vector_store=vector_store
             )
         )
 
+        # VectorStoreIndex asks ``embed_model`` to create one vector for each
+        # node, then delegates persistence of text, metadata, IDs, and vectors
+        # to PGVectorStore. No separate embedding step is required afterward.
         VectorStoreIndex(
             nodes,
             storage_context=storage_context,
@@ -342,6 +369,12 @@ def ingest_path_sync(
     document_type: str = "auto",
     replace_document_id: str | None = None,
 ) -> dict:
+    """Synchronously register and fully ingest a saved source path.
+
+    A successful return with ``status='completed'`` means chunk embeddings are
+    already present in ``data_<VECTOR_TABLE>``. A duplicate return means an
+    equivalent completed source already exists and no new vectors were added.
+    """
     registration = register_upload(
         stored_path=path,
         original_file_name=(

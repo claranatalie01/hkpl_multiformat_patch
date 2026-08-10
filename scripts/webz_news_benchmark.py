@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Download Webz.io news archives and load optional retrieval distractors.
+
+Articles are cleaned, kept separate, chunked, embedded, and tagged as an
+external benchmark dataset in the shared vector table. They are deliberately
+excluded from the primary HKPL knowledge corpus during live retrieval.
+"""
 
 import argparse
 import hashlib

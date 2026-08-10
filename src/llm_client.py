@@ -1,3 +1,10 @@
+"""Call the local OpenAI-compatible answer model and normalize its usage data.
+
+This client is used for query rewriting, answer generation, and evaluation
+candidate/judge calls. It generates language; document and query embeddings are
+handled separately by ``infrastructure.embedding``.
+"""
+
 import logging
 import os
 from dataclasses import dataclass

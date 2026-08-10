@@ -1,3 +1,10 @@
+"""Typed state contracts passed between LangGraph workflow nodes.
+
+The state records request context, routing decisions, retrieved chunks and
+sources, safety flags, generated output, library selection, and user memory.
+It contains transient workflow data rather than database behavior.
+"""
+
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage

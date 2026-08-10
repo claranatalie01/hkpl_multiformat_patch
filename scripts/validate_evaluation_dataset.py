@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Validate and optionally repair evaluation rows against stored evidence.
+
+Checks include schema, exact or formatting-tolerant evidence containment,
+source/chunk existence, duplicates, and ambiguity. Repair modes can relink or
+exclude unresolved labels; the knowledge-vector table remains read-only.
+"""
 
 import argparse
 import csv

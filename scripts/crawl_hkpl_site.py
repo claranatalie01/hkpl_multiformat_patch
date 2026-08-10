@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""Crawl approved HKPL pages and synchronously ingest them into pgvector.
+
+This script is the bulk website-ingestion entry point. It discovers URLs from
+configured seed pages, applies local URL filters and the site's ``robots.txt``
+policy, extracts useful HTML (or downloads PDFs), and skips unchanged content.
+
+New or changed sources are passed to
+``src.ingestion.service.ingest_path_sync``. That shared service performs the
+remaining registry, extraction, chunking, embedding, and PostgreSQL insertion
+steps before this crawler continues to the next URL.
+"""
 
 import argparse
 import os
@@ -57,6 +68,7 @@ def env_flag(name: str, default: bool) -> bool:
 
 
 def normalize_url(url: str, *, include_query_urls: bool = False) -> str:
+    """Return a crawl-stable URL without fragments or optional query strings."""
     url, _fragment = urldefrag(url)
     parsed = urlsplit(url.strip())
     query = parsed.query if include_query_urls else ""
@@ -72,6 +84,7 @@ def normalize_url(url: str, *, include_query_urls: bool = False) -> str:
 
 
 def is_allowed_url(url: str, *, include_query_urls: bool = False) -> bool:
+    """Apply this project's domain, path, query, and file-type crawl limits."""
     parsed = urlparse(url)
     host = parsed.hostname.lower() if parsed.hostname else ""
     path = parsed.path.lower()
@@ -125,6 +138,12 @@ def extract_title(soup: BeautifulSoup, url: str) -> str:
 
 
 def extract_main_html(html: str) -> tuple[str, str]:
+    """Return the page title and largest useful content region from raw HTML.
+
+    Navigation and other repeated website chrome are removed before candidate
+    content containers are compared. Pages with too little indexable text are
+    rejected so they do not create low-quality vectors.
+    """
     soup = BeautifulSoup(html, "html.parser")
 
     for tag in soup.select(
@@ -220,6 +239,7 @@ def discover_links(
     *,
     include_query_urls: bool,
 ) -> list[str]:
+    """Return unique in-scope links discovered in a downloaded HTML page."""
     soup = BeautifulSoup(html, "html.parser")
     links = []
 
@@ -235,6 +255,7 @@ def discover_links(
 
 
 def robots_policy() -> RobotFileParser:
+    """Load HKPL's crawler policy, refusing all crawling if it cannot be read."""
     policy = RobotFileParser()
     policy.set_url("https://www.hkpl.gov.hk/robots.txt")
     try:
@@ -285,6 +306,12 @@ def crawl(
     include_query_urls: bool,
     include_pdfs: bool,
 ) -> dict:
+    """Crawl seed URLs breadth-first and ingest every new or changed source.
+
+    The returned counters distinguish indexed, unchanged, rejected, and failed
+    pages. An ``indexed`` page has completed the full synchronous ingestion
+    pipeline, including creation and storage of its embedding vectors.
+    """
     ensure_corpus_writable("crawl and update HKPL webpages")
     visited = set()
     queue = deque(
@@ -364,6 +391,10 @@ def crawl(
                     else None
                 )
 
+                # This is the crawler-to-vector-pipeline handoff. The call is
+                # synchronous: when it returns ``completed``, the saved source
+                # has already been extracted, chunked, embedded, and inserted
+                # into PostgreSQL/pgvector.
                 result = ingest_path_sync(
                     path,
                     original_file_name=path.name,

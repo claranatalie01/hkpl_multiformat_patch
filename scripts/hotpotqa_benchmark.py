@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Load deterministic HotpotQA paragraphs as optional retrieval distractors.
+
+The script builds paragraph nodes, embeds them through the shared embedding
+model, and replaces only rows tagged as the HotpotQA dataset. These rows make
+evaluation retrieval harder and are not part of the primary HKPL corpus.
+"""
 
 import argparse
 import hashlib

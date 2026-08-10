@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Coordinate the reproducible RAG benchmark preparation workflow.
+
+Subcommands audit the frozen corpus, prepare and validate candidate evaluation
+data, promote an approved candidate, run evaluation, and report corpus state.
+It delegates each stage to the specialized scripts in this directory.
+"""
 
 import argparse
 import os
