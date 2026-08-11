@@ -8,6 +8,7 @@ exclude unresolved labels; the knowledge-vector table remains read-only.
 
 import argparse
 import csv
+import json
 import os
 import re
 import shutil
@@ -52,6 +53,24 @@ def formatting_tolerant_contains(expected: str, actual: str) -> bool:
     compact_expected = compact_normalize(expected)
     compact_actual = compact_normalize(actual)
     return len(compact_expected) >= 40 and compact_expected in compact_actual
+
+
+def parse_json_string_list(value, fallback: list[str]) -> list[str]:
+    """Parse JSON/JSONB string arrays while accepting legacy singular fields."""
+    if isinstance(value, str):
+        try:
+            values = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            values = []
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    cleaned = [
+        str(item).strip() for item in values
+        if isinstance(item, str) and item.strip()
+    ]
+    return list(dict.fromkeys(cleaned or fallback))
 
 
 def parse_args() -> argparse.Namespace:
@@ -334,15 +353,13 @@ def main() -> None:
                     e.query,
                     e.expected_answer_text,
                     e.expected_context_snippet,
+                    e.expected_context_snippets_json,
                     e.source_title AS expected_source_title,
                     e.source_url,
                     e.source_document_id,
                     e.source_chunk_id,
-                    k.text AS source_chunk_text,
-                    k.metadata_->>'source_title' AS source_title
+                    e.source_chunk_ids_json
                 FROM {EVALUATION_DATASET_TABLE} e
-                LEFT JOIN {KNOWLEDGE_TABLE} k
-                  ON k.metadata_->>'chunk_id' = e.source_chunk_id
                 ORDER BY e.id
             """)
         ).fetchall()
@@ -363,12 +380,41 @@ def main() -> None:
             chunk_text = item.get("source_chunk_text") or ""
             expected_answer = item.get("expected_answer_text") or ""
             expected_snippet = item.get("expected_context_snippet") or ""
+            expected_chunk_ids = parse_json_string_list(
+                item.get("source_chunk_ids_json"),
+                [str(item.get("source_chunk_id") or "")],
+            )
+            expected_snippets = parse_json_string_list(
+                item.get("expected_context_snippets_json"),
+                [expected_snippet],
+            )
+            chunk_rows = connection.execute(
+                text(f"""
+                    SELECT metadata_->>'chunk_id' AS chunk_id, text
+                    FROM {KNOWLEDGE_TABLE}
+                    WHERE metadata_->>'chunk_id' = ANY(CAST(:chunk_ids AS text[]))
+                """),
+                {"chunk_ids": expected_chunk_ids},
+            ).mappings().all()
+            chunks_by_id = {
+                str(chunk_row["chunk_id"]): str(chunk_row["text"] or "")
+                for chunk_row in chunk_rows
+            }
+            chunk_text = chunks_by_id.get(item["source_chunk_id"], "")
+            item["source_chunk_text"] = chunk_text
+            item["source_title"] = item.get("expected_source_title") or ""
 
-            if chunk_text:
+            all_chunks_found = all(
+                chunk_id in chunks_by_id for chunk_id in expected_chunk_ids
+            )
+            if all_chunks_found:
                 chunk_found += 1
             else:
                 missing_chunks.append(item)
-                replacement, reason = find_replacement(connection, item)
+                if len(expected_chunk_ids) > 1:
+                    replacement, reason = None, "multi_chunk_label_requires_regeneration"
+                else:
+                    replacement, reason = find_replacement(connection, item)
                 if replacement:
                     repairable_chunks.append({
                         **item,
@@ -382,10 +428,25 @@ def main() -> None:
                     })
                 continue
 
-            normalized_chunk = normalize(chunk_text)
+            combined_chunk_text = "\n".join(chunks_by_id.values())
+            normalized_chunk = normalize(combined_chunk_text)
             normalized_answer = normalize(expected_answer)
 
-            if formatting_tolerant_contains(expected_snippet, chunk_text):
+            snippets_valid = (
+                len(expected_snippets) == len(expected_chunk_ids)
+                and all(
+                    formatting_tolerant_contains(
+                        snippet,
+                        chunks_by_id.get(chunk_id, ""),
+                    )
+                    for snippet, chunk_id in zip(
+                        expected_snippets,
+                        expected_chunk_ids,
+                        strict=True,
+                    )
+                )
+            )
+            if snippets_valid:
                 snippet_found += 1
             else:
                 missing_snippets.append(item)

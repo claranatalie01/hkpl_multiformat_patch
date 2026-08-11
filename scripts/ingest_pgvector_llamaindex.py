@@ -65,11 +65,17 @@ EVALUATION_DATASET_COLUMNS = [
     "query",
     "expected_answer_text",
     "expected_context_snippet",
+    "expected_context_snippets_json",
     "accepted_answers_json",
     "source_title",
     "source_url",
     "source_document_id",
     "source_chunk_id",
+    "source_chunk_ids_json",
+]
+LEGACY_EVALUATION_DATASET_COLUMNS = [
+    column for column in EVALUATION_DATASET_COLUMNS
+    if column not in {"expected_context_snippets_json", "source_chunk_ids_json"}
 ]
 
 
@@ -83,11 +89,13 @@ def create_evaluation_dataset_table() -> None:
                     query TEXT NOT NULL,
                     expected_answer_text TEXT NOT NULL DEFAULT '',
                     expected_context_snippet TEXT NOT NULL DEFAULT '',
+                    expected_context_snippets_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                     accepted_answers_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                     source_title TEXT NOT NULL DEFAULT '',
                     source_url TEXT NOT NULL DEFAULT '',
                     source_document_id TEXT NOT NULL DEFAULT '',
                     source_chunk_id TEXT NOT NULL DEFAULT '',
+                    source_chunk_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
@@ -96,6 +104,20 @@ def create_evaluation_dataset_table() -> None:
             text(f"""
                 ALTER TABLE {EVALUATION_DATASET_TABLE}
                 ADD COLUMN IF NOT EXISTS accepted_answers_json JSONB
+                NOT NULL DEFAULT '[]'::jsonb
+            """)
+        )
+        connection.execute(
+            text(f"""
+                ALTER TABLE {EVALUATION_DATASET_TABLE}
+                ADD COLUMN IF NOT EXISTS expected_context_snippets_json JSONB
+                NOT NULL DEFAULT '[]'::jsonb
+            """)
+        )
+        connection.execute(
+            text(f"""
+                ALTER TABLE {EVALUATION_DATASET_TABLE}
+                ADD COLUMN IF NOT EXISTS source_chunk_ids_json JSONB
                 NOT NULL DEFAULT '[]'::jsonb
             """)
         )
@@ -147,7 +169,10 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
     with path.open("r", newline="", encoding="utf-8-sig") as file:
         reader = csv.DictReader(file)
         actual_columns = list(reader.fieldnames or [])
-        if actual_columns != EVALUATION_DATASET_COLUMNS:
+        if actual_columns not in (
+            EVALUATION_DATASET_COLUMNS,
+            LEGACY_EVALUATION_DATASET_COLUMNS,
+        ):
             raise ValueError(
                 "Evaluation CSV columns must exactly match, in order: "
                 f"{EVALUATION_DATASET_COLUMNS}. Found: {actual_columns}"
@@ -163,7 +188,12 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
             missing_values = [
                 column
                 for column in EVALUATION_DATASET_COLUMNS
-                if column not in {"accepted_answers_json", "source_url"}
+                if column not in {
+                    "accepted_answers_json",
+                    "expected_context_snippets_json",
+                    "source_chunk_ids_json",
+                    "source_url",
+                }
                 and not str(row.get(column) or "").strip()
             ]
             if missing_values:
@@ -200,6 +230,48 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
                     f"source_chunk_id does not belong to source_document_id "
                     f"at row {line_number}: {chunk_id!r}"
                 )
+            for field, fallback in (
+                ("expected_context_snippets_json", [item["expected_context_snippet"]]),
+                ("source_chunk_ids_json", [item["source_chunk_id"]]),
+            ):
+                raw_values = item.get(field) or json.dumps(fallback)
+                try:
+                    values = json.loads(raw_values)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"Invalid {field} for {item['query']!r}: {error}"
+                    ) from error
+                if not isinstance(values, list) or not all(
+                    isinstance(value, str) and value.strip() for value in values
+                ):
+                    raise ValueError(
+                        f"{field} must be a JSON array of non-empty strings "
+                        f"for {item['query']!r}."
+                    )
+                values = list(dict.fromkeys(value.strip() for value in values))
+                if field == "source_chunk_ids_json" and any(
+                    not value.startswith(f"{document_id}:") for value in values
+                ):
+                    raise ValueError(
+                        "Every source_chunk_ids_json value must belong to "
+                        f"source_document_id at row {line_number}."
+                    )
+                item[field] = json.dumps(values, ensure_ascii=False)
+            evidence_snippets = json.loads(item["expected_context_snippets_json"])
+            evidence_chunk_ids = json.loads(item["source_chunk_ids_json"])
+            if len(evidence_snippets) != len(evidence_chunk_ids):
+                raise ValueError(
+                    "expected_context_snippets_json and source_chunk_ids_json "
+                    f"must be parallel arrays for {item['query']!r}."
+                )
+            if (
+                evidence_snippets[0] != item["expected_context_snippet"]
+                or evidence_chunk_ids[0] != item["source_chunk_id"]
+            ):
+                raise ValueError(
+                    "Legacy singular evidence fields must equal the first "
+                    f"items in their JSON arrays for {item['query']!r}."
+                )
             raw_aliases = item.get("accepted_answers_json") or "[]"
             try:
                 aliases = json.loads(raw_aliases)
@@ -230,50 +302,60 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
                         query,
                         expected_answer_text,
                         expected_context_snippet,
+                        expected_context_snippets_json,
                         accepted_answers_json,
                         source_title,
                         source_url,
                         source_document_id,
-                        source_chunk_id
+                        source_chunk_id,
+                        source_chunk_ids_json
                     )
                     VALUES (
                         :domain,
                         :query,
                         :expected_answer_text,
                         :expected_context_snippet,
+                        CAST(:expected_context_snippets_json AS jsonb),
                         CAST(:accepted_answers_json AS jsonb),
                         :source_title,
                         :source_url,
                         :source_document_id,
-                        :source_chunk_id
+                        :source_chunk_id,
+                        CAST(:source_chunk_ids_json AS jsonb)
                     )
                     ON CONFLICT (query) DO UPDATE SET
                         domain = EXCLUDED.domain,
                         expected_answer_text = EXCLUDED.expected_answer_text,
                         expected_context_snippet = EXCLUDED.expected_context_snippet,
+                        expected_context_snippets_json = EXCLUDED.expected_context_snippets_json,
                         accepted_answers_json = EXCLUDED.accepted_answers_json,
                         source_title = EXCLUDED.source_title,
                         source_url = EXCLUDED.source_url,
                         source_document_id = EXCLUDED.source_document_id,
-                        source_chunk_id = EXCLUDED.source_chunk_id
+                        source_chunk_id = EXCLUDED.source_chunk_id,
+                        source_chunk_ids_json = EXCLUDED.source_chunk_ids_json
                     WHERE (
                         {EVALUATION_DATASET_TABLE}.domain,
                         {EVALUATION_DATASET_TABLE}.expected_answer_text,
                         {EVALUATION_DATASET_TABLE}.expected_context_snippet,
+                        {EVALUATION_DATASET_TABLE}.expected_context_snippets_json,
                         {EVALUATION_DATASET_TABLE}.accepted_answers_json,
                         {EVALUATION_DATASET_TABLE}.source_title,
                         {EVALUATION_DATASET_TABLE}.source_url,
                         {EVALUATION_DATASET_TABLE}.source_document_id,
-                        {EVALUATION_DATASET_TABLE}.source_chunk_id
+                        {EVALUATION_DATASET_TABLE}.source_chunk_id,
+                        {EVALUATION_DATASET_TABLE}.source_chunk_ids_json
                     ) IS DISTINCT FROM (
                         EXCLUDED.domain,
                         EXCLUDED.expected_answer_text,
                         EXCLUDED.expected_context_snippet,
+                        EXCLUDED.expected_context_snippets_json,
                         EXCLUDED.accepted_answers_json,
                         EXCLUDED.source_title,
                         EXCLUDED.source_url,
                         EXCLUDED.source_document_id,
-                        EXCLUDED.source_chunk_id
+                        EXCLUDED.source_chunk_id,
+                        EXCLUDED.source_chunk_ids_json
                     )
                 """),
                 rows,

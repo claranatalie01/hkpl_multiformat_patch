@@ -340,6 +340,24 @@ def parse_accepted_answers(value, primary_answer: str) -> list[str]:
     ))
 
 
+def parse_json_string_list(value, fallback: list[str]) -> list[str]:
+    """Read a JSON/JSONB string list, using legacy singular labels if empty."""
+    if isinstance(value, str):
+        try:
+            values = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            values = []
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    cleaned = [
+        str(item).strip() for item in values
+        if isinstance(item, str) and item.strip()
+    ]
+    return list(dict.fromkeys(cleaned or fallback))
+
+
 def load_hkpl_rows(limit: int | None) -> list[dict]:
     table = safe_table_name(HKPL_EVALUATION_TABLE)
     vector_table = safe_table_name(f"data_{VECTOR_TABLE}")
@@ -354,14 +372,26 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
                     query,
                     expected_answer_text,
                     expected_context_snippet,
+                    expected_context_snippets_json,
                     accepted_answers_json,
                     source_document_id,
-                    source_chunk_id
+                    source_chunk_id,
+                    source_chunk_ids_json
                 FROM {table}
-                WHERE EXISTS (
+                WHERE NOT EXISTS (
                     SELECT 1
-                    FROM {vector_table} knowledge
-                    WHERE knowledge.metadata_->>'chunk_id' = {table}.source_chunk_id
+                    FROM jsonb_array_elements_text(
+                        CASE
+                            WHEN jsonb_array_length({table}.source_chunk_ids_json) > 0
+                            THEN {table}.source_chunk_ids_json
+                            ELSE jsonb_build_array({table}.source_chunk_id)
+                        END
+                    ) AS expected_chunks(chunk_id)
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM {vector_table} knowledge
+                        WHERE knowledge.metadata_->>'chunk_id' = expected_chunks.chunk_id
+                    )
                 )
                 ORDER BY id
                 {limit_clause}
@@ -383,8 +413,15 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
             "expected_context_snippet": str(
                 row.get("expected_context_snippet") or ""
             ),
+            "expected_context_snippets": parse_json_string_list(
+                row.get("expected_context_snippets_json"),
+                [str(row.get("expected_context_snippet") or "")],
+            ),
             "expected_document_ids": [str(row["source_document_id"])],
-            "expected_chunk_ids": [str(row["source_chunk_id"])],
+            "expected_chunk_ids": parse_json_string_list(
+                row.get("source_chunk_ids_json"),
+                [str(row["source_chunk_id"])],
+            ),
         }
         for row in rows
     ]
@@ -400,11 +437,20 @@ def load_hkpl_coverage() -> dict[str, int | float]:
                 SELECT
                     COUNT(*) AS intended_questions,
                     COUNT(*) FILTER (
-                        WHERE EXISTS (
+                        WHERE NOT EXISTS (
                             SELECT 1
-                            FROM {vector_table} knowledge
-                            WHERE knowledge.metadata_->>'chunk_id' =
-                                  {table}.source_chunk_id
+                            FROM jsonb_array_elements_text(
+                                CASE
+                                    WHEN jsonb_array_length({table}.source_chunk_ids_json) > 0
+                                    THEN {table}.source_chunk_ids_json
+                                    ELSE jsonb_build_array({table}.source_chunk_id)
+                                END
+                            ) AS expected_chunks(chunk_id)
+                            WHERE NOT EXISTS (
+                                SELECT 1
+                                FROM {vector_table} knowledge
+                                WHERE knowledge.metadata_->>'chunk_id' = expected_chunks.chunk_id
+                            )
                         )
                     ) AS valid_questions
                 FROM {table}
@@ -463,29 +509,39 @@ def ranked_chunk_ids(documents: list[dict]) -> list[str]:
 
 def evidence_match(
     documents: list[dict],
-    expected_snippet: str,
+    expected_snippets: list[str],
     k: int,
     accepted_answers: list[str] | None = None,
 ) -> dict:
-    evidence_phrases = [normalize_evidence_text(expected_snippet)]
-    for answer in accepted_answers or []:
-        normalized_answer = normalize_evidence_text(answer)
-        compact_answer = re.sub(r"\W+", "", normalized_answer)
-        if len(compact_answer) >= 4 and normalized_answer not in {"yes", "no"}:
-            evidence_phrases.append(normalized_answer)
-    evidence_phrases = list(dict.fromkeys(
-        phrase for phrase in evidence_phrases if phrase
+    required_phrases = list(dict.fromkeys(
+        normalize_evidence_text(snippet)
+        for snippet in expected_snippets
+        if normalize_evidence_text(snippet)
     ))
-    matched_ids = []
-    if evidence_phrases:
-        for document in documents[:k]:
-            document_text = normalize_evidence_text(
-                document.get("text") or document.get("text_preview") or ""
-            )
-            if any(phrase in document_text for phrase in evidence_phrases):
-                matched_ids.append(str(document.get("chunk_id") or ""))
+    if not required_phrases:
+        required_phrases = [
+            normalize_evidence_text(answer)
+            for answer in accepted_answers or []
+            if len(re.sub(r"\W+", "", normalize_evidence_text(answer))) >= 4
+        ]
+    matched_ids: list[str] = []
+    matched_phrases: set[str] = set()
+    for document in documents[:k]:
+        document_text = normalize_evidence_text(
+            document.get("text") or document.get("text_preview") or ""
+        )
+        document_matches = {
+            phrase for phrase in required_phrases if phrase in document_text
+        }
+        if document_matches:
+            matched_ids.append(str(document.get("chunk_id") or ""))
+            matched_phrases.update(document_matches)
     return {
         "hit": float(bool(matched_ids)),
+        "complete": float(
+            bool(required_phrases)
+            and set(required_phrases).issubset(matched_phrases)
+        ),
         "matched_chunk_ids": matched_ids,
     }
 
@@ -833,6 +889,7 @@ async def evaluate_row(
     accepted_answers = row.get("accepted_answers") or [expected_answer]
     expected_ids = row["expected_chunk_ids"]
     expected_snippet = row.get("expected_context_snippet", "")
+    expected_snippets = row.get("expected_context_snippets") or [expected_snippet]
     with tracer.start_as_current_span("RAG Evaluation Query") as span:
         root_span_id = format_span_id(span.get_span_context().span_id)
         set_span_io(span, "CHAIN", input_value=question)
@@ -842,6 +899,7 @@ async def evaluate_row(
         span.set_attribute("eval.expected_answer", expected_answer)
         set_json_attribute(span, "eval.accepted_answers", accepted_answers)
         span.set_attribute("eval.expected_context_snippet", expected_snippet)
+        set_json_attribute(span, "eval.expected_context_snippets", expected_snippets)
         set_json_attribute(span, "eval.expected_chunk_ids", expected_ids)
 
         started = time.perf_counter()
@@ -868,7 +926,7 @@ async def evaluate_row(
         retrieval_evidence_metrics = {
             cutoff: evidence_match(
                 vector_documents,
-                expected_snippet,
+                expected_snippets,
                 cutoff,
                 accepted_answers,
             )
@@ -877,7 +935,7 @@ async def evaluate_row(
         reranker_evidence_metrics = {
             cutoff: evidence_match(
                 reranked_documents,
-                expected_snippet,
+                expected_snippets,
                 cutoff,
                 accepted_answers,
             )
@@ -900,7 +958,7 @@ async def evaluate_row(
         )
         all_candidate_evidence = evidence_match(
             vector_documents,
-            expected_snippet,
+            expected_snippets,
             len(vector_documents),
             accepted_answers,
         )
@@ -917,26 +975,26 @@ async def evaluate_row(
         retrieval_at_10_match_mode = reference_match_mode(
             bool(retrieval_metrics[RETRIEVER_HIT_CUTOFF]["complete"]),
             bool(
-                retrieval_evidence_metrics[RETRIEVER_HIT_CUTOFF]["hit"]
+                retrieval_evidence_metrics[RETRIEVER_HIT_CUTOFF]["complete"]
             ),
         )
         retrieval_match_mode = reference_match_mode(
             bool(all_candidate_metrics["complete"]),
-            bool(all_candidate_evidence["hit"]),
+            bool(all_candidate_evidence["complete"]),
         )
         reranker_match_mode = reference_match_mode(
             bool(reranker_metrics[RERANKER_HIT_CUTOFF]["complete"]),
-            bool(reranker_evidence_metrics[RERANKER_HIT_CUTOFF]["hit"]),
+            bool(reranker_evidence_metrics[RERANKER_HIT_CUTOFF]["complete"]),
         )
         context_match_mode = reference_match_mode(
             set(expected_ids).issubset(context_ids),
             bool(
                 evidence_match(
                     reranked_documents,
-                    expected_snippet,
+                    expected_snippets,
                     len(reranked_documents),
                     accepted_answers,
-                )["hit"]
+                )["complete"]
             ),
         )
         answer, usage = await generate_answer(
@@ -1042,6 +1100,9 @@ async def evaluate_row(
                 ensure_ascii=False,
             ),
             "expected_context_snippet": expected_snippet,
+            "expected_context_snippets": json.dumps(
+                expected_snippets, ensure_ascii=False
+            ),
             "generated_answer": answer,
             "expected_chunk_ids": json.dumps(expected_ids),
             "expected_chunk_count": len(expected_ids),
@@ -1267,6 +1328,11 @@ def failed_result(row: dict, error: Exception) -> dict:
             ensure_ascii=False,
         ),
         "expected_context_snippet": row.get("expected_context_snippet", ""),
+        "expected_context_snippets": json.dumps(
+            row.get("expected_context_snippets")
+            or [row.get("expected_context_snippet", "")],
+            ensure_ascii=False,
+        ),
         "generated_answer": "",
         "expected_chunk_ids": json.dumps(row["expected_chunk_ids"]),
         "expected_chunk_count": len(row["expected_chunk_ids"]),

@@ -35,11 +35,17 @@ FIELDNAMES = [
     "query",
     "expected_answer_text",
     "expected_context_snippet",
+    "expected_context_snippets_json",
     "accepted_answers_json",
     "source_title",
     "source_url",
     "source_document_id",
     "source_chunk_id",
+    "source_chunk_ids_json",
+]
+LEGACY_FIELDNAMES = [
+    column for column in FIELDNAMES
+    if column not in {"expected_context_snippets_json", "source_chunk_ids_json"}
 ]
 
 
@@ -155,7 +161,7 @@ def load_existing_rows(output_file: Path) -> list[dict]:
     with output_file.open("r", newline="", encoding="utf-8-sig") as file:
         reader = csv.DictReader(file)
         actual_columns = list(reader.fieldnames or [])
-        if actual_columns != FIELDNAMES:
+        if actual_columns not in (FIELDNAMES, LEGACY_FIELDNAMES):
             raise ValueError(
                 f"Cannot resume candidate with columns {actual_columns}; "
                 f"expected {FIELDNAMES}."
@@ -163,6 +169,14 @@ def load_existing_rows(output_file: Path) -> list[dict]:
         rows = [dict(row) for row in reader if row.get("query")]
     for row in rows:
         row.setdefault("accepted_answers_json", "[]")
+        row.setdefault(
+            "expected_context_snippets_json",
+            json.dumps([row["expected_context_snippet"]], ensure_ascii=False),
+        )
+        row.setdefault(
+            "source_chunk_ids_json",
+            json.dumps([row["source_chunk_id"]], ensure_ascii=False),
+        )
     return rows
 
 
@@ -186,6 +200,7 @@ def save_progress(
     *,
     all_chunks: bool,
     limit_chunks: int | None,
+    target_questions: int | None,
 ) -> None:
     path = progress_file(output_file)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -194,6 +209,7 @@ def save_progress(
             {
                 "all_chunks": all_chunks,
                 "limit_chunks": limit_chunks,
+                "target_questions": target_questions,
                 "processed_chunk_ids": sorted(processed_chunk_ids),
             },
             indent=2,
@@ -210,6 +226,7 @@ def load_progress(
     *,
     all_chunks: bool,
     limit_chunks: int | None,
+    target_questions: int | None,
 ) -> set[str]:
     path = progress_file(output_file)
     if not path.is_file():
@@ -226,6 +243,11 @@ def load_progress(
     if payload.get("limit_chunks") != limit_chunks:
         raise ValueError(
             "Resume options differ from the original run: --limit-chunks mismatch."
+        )
+    if payload.get("target_questions") != target_questions:
+        raise ValueError(
+            "Resume options differ from the original run: "
+            "--target-questions mismatch."
         )
     chunk_ids = payload.get("processed_chunk_ids")
     if not isinstance(chunk_ids, list) or not all(
@@ -260,6 +282,16 @@ def parse_args() -> argparse.Namespace:
         help="Generate from at most this many new HKPL chunks.",
     )
     parser.add_argument(
+        "--target-questions",
+        type=int,
+        default=None,
+        help=(
+            "Stop after this many deduplicated evaluation questions have "
+            "been generated. More chunks may be processed because invalid "
+            "or duplicate candidates do not count toward the target."
+        ),
+    )
+    parser.add_argument(
         "--all-chunks",
         action="store_true",
         help=(
@@ -270,20 +302,39 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.limit_chunks is not None and args.limit_chunks < 1:
         parser.error("--limit-chunks must be positive")
+    if args.target_questions is not None and args.target_questions < 1:
+        parser.error("--target-questions must be positive")
     return args
 
 
-async def generate_questions_for_chunk(chunk: dict) -> list[dict]:
+async def generate_questions_for_chunk(
+    chunk: dict,
+    related_chunks: list[dict],
+) -> list[dict]:
     domain = infer_domain(chunk["source_title"], chunk["text"])
 
     prompt = f"""
 You are creating an evaluation dataset for a Retrieval-Augmented Generation system for Hong Kong Public Libraries.
 
-Generate exactly {QUESTIONS_PER_CHUNK} factual evaluation question from the official HKPL chunk below.
+Generate exactly {QUESTIONS_PER_CHUNK} factual evaluation question from the official HKPL chunks below.
+
+The first chunk is the anchor. The remaining chunks are sibling chunks from
+the SAME webpage/document and are supplied so that repeated sessions are not
+mistaken for separate, incomplete facts.
 
 VERY IMPORTANT RULES:
-- The question must have ONE and ONLY ONE correct answer.
-- If the chunk is about repeated events, roving exhibitions, workshops, branch sessions, or multiple venues, the question MUST include the exact venue/branch and date/month.
+- The question must have ONE and ONLY ONE complete correct answer.
+- Search ALL supplied chunks for other occurrences of the same named event,
+  workshop, exhibition, branch session, service, or venue before writing the
+  answer.
+- If the question asks about a named item without limiting it to one session,
+  expected_answer_text MUST combine every matching date, time, venue, and
+  branch found in the supplied chunks. Include every supporting chunk ID and
+  one exact evidence snippet from each supporting chunk.
+- If you intentionally ask about only one occurrence of a repeated event,
+  roving exhibition, workshop, branch session, or multi-venue activity, the
+  question MUST state the exact venue/branch AND date/month that identifies
+  that occurrence.
 - Do NOT generate generic repeated questions such as:
   "When and where is the roving exhibition held?"
   "When and where is this event held?"
@@ -291,12 +342,14 @@ VERY IMPORTANT RULES:
 - Instead, generate specific questions such as:
   "When is the roving exhibition titled 'Blissful Moments Between Pages' held at Sham Shui Po Public Library?"
   "What are the dates for 'Blissful Moments Between Pages' at Ma On Shan Public Library?"
-- Each question must be answerable ONLY from this chunk.
+- Each question must be answerable only from the supplied chunks.
 - Do not invent facts.
 - Avoid vague questions.
 - Prefer useful public-service questions.
 - The expected_answer_text must be concise but complete.
-- The expected_context_snippet must be an exact contiguous phrase from the chunk.
+- expected_context_snippets must contain exact contiguous phrases copied from
+  their corresponding source_chunk_ids. The two arrays must be parallel and
+  must include every chunk needed for the complete answer.
 - Return ONLY valid JSON array.
 - Do not include markdown.
 
@@ -306,22 +359,27 @@ JSON format:
     "domain": "{domain}",
     "query": "...",
     "expected_answer_text": "...",
-    "expected_context_snippet": "...",
+    "expected_context_snippets": ["..."],
     "source_title": "{chunk['source_title']}",
     "source_url": "{chunk['source_url']}",
     "source_document_id": "{chunk['document_id']}",
-    "source_chunk_id": "{chunk['chunk_id']}"
+    "source_chunk_ids": ["{chunk['chunk_id']}"]
   }}
 ]
 
-Official HKPL chunk:
-Source title: {chunk["source_title"]}
-Section: {chunk["section_heading"]}
-
-{chunk["text"]}
+Official HKPL chunks:
+{chr(10).join(
+    f'''--- CHUNK {index + 1} ---
+Chunk ID: {related["chunk_id"]}
+Source title: {related["source_title"]}
+Section: {related["section_heading"]}
+Text:
+{related["text"]}'''
+    for index, related in enumerate(related_chunks)
+)}
 """
 
-    raw = await http_llm(prompt, temperature=0.0, max_tokens=650)
+    raw = await http_llm(prompt, temperature=0.0, max_tokens=1400)
 
     try:
         items = clean_json_response(raw)
@@ -341,9 +399,16 @@ Section: {chunk["section_heading"]}
     for item in items:
         query = str(item.get("query", "")).strip()
         answer = str(item.get("expected_answer_text", "")).strip()
-        snippet = str(item.get("expected_context_snippet", "")).strip()
+        raw_snippets = item.get("expected_context_snippets")
+        raw_chunk_ids = item.get("source_chunk_ids")
+        if not isinstance(raw_snippets, list) or not isinstance(raw_chunk_ids, list):
+            print("  Rejected candidate: multi-chunk evidence arrays were missing.")
+            continue
+        snippets = [str(value).strip() for value in raw_snippets if str(value).strip()]
+        chunk_ids = [str(value).strip() for value in raw_chunk_ids if str(value).strip()]
+        available_chunks = {related["chunk_id"]: related for related in related_chunks}
 
-        if not query or not answer or not snippet:
+        if not query or not answer or not snippets or len(snippets) != len(chunk_ids):
             print(
                 "  Skipped candidate: question, answer, or evidence snippet "
                 "was empty."
@@ -352,24 +417,73 @@ Section: {chunk["section_heading"]}
         if not query.endswith("?") or len(query) < 15:
             print(f"  Rejected malformed question: {query!r}")
             continue
-        if normalize_text(snippet) not in normalize_text(chunk["text"]):
+        if any(chunk_id not in available_chunks for chunk_id in chunk_ids):
+            print("  Rejected candidate because it cited an unavailable chunk ID.")
+            continue
+        if any(
+            normalize_text(snippet)
+            not in normalize_text(available_chunks[chunk_id]["text"])
+            for snippet, chunk_id in zip(snippets, chunk_ids, strict=True)
+        ):
+            print("  Rejected candidate because an evidence snippet was not present in its cited chunk.")
+            continue
+
+        # A quoted event/activity title is a reliable cross-chunk key. If that
+        # title occurs in sibling chunks, all of those chunks must be labeled;
+        # otherwise a one-session answer could be judged against a three-session
+        # webpage, which is the exact ambiguity this generator must avoid.
+        quoted_subjects = re.findall(r"[\"'“‘]([^\"'”’]{10,})[\"'”’]", query)
+        question_key = normalize_text(query)
+        has_exact_date_or_month = bool(re.search(
+            r"\b(?:20\d{2}[/.-]\d{1,2}(?:[/.-]\d{1,2})?|"
+            r"\d{1,2}[/.-]\d{1,2}|january|february|march|april|may|june|"
+            r"july|august|september|october|november|december)\b",
+            question_key,
+        ))
+        has_specific_location = bool(re.search(
+            r"\b(?:[a-z]+[ -]){1,6}(?:public library|library branch)\b",
+            question_key,
+        ))
+        session_is_explicitly_scoped = has_exact_date_or_month and has_specific_location
+        incomplete_subject = None
+        for subject in quoted_subjects:
+            subject_key = normalize_text(subject)
+            matching_ids = {
+                chunk_id
+                for chunk_id, related in available_chunks.items()
+                if subject_key in normalize_text(related["text"])
+            }
+            if (
+                not session_is_explicitly_scoped
+                and not matching_ids.issubset(set(chunk_ids))
+            ):
+                incomplete_subject = subject
+                break
+        if incomplete_subject:
             print(
-                "  Rejected candidate because expected_context_snippet is "
-                "not present in the source chunk."
+                "  Rejected candidate because the quoted subject appears in "
+                f"additional sibling chunks: {incomplete_subject!r}."
             )
             continue
+
+        # Preserve order while removing exact duplicate evidence pairs.
+        evidence_pairs = list(dict.fromkeys(zip(chunk_ids, snippets, strict=True)))
+        chunk_ids = [pair[0] for pair in evidence_pairs]
+        snippets = [pair[1] for pair in evidence_pairs]
 
         output.append(
             {
                 "domain": item.get("domain") or domain,
                 "query": query,
                 "expected_answer_text": answer,
-                "expected_context_snippet": snippet,
+                "expected_context_snippet": snippets[0],
+                "expected_context_snippets_json": json.dumps(snippets, ensure_ascii=False),
                 "accepted_answers_json": "[]",
                 "source_title": item.get("source_title") or chunk["source_title"],
                 "source_url": item.get("source_url") or chunk["source_url"],
                 "source_document_id": chunk["document_id"],
-                "source_chunk_id": chunk["chunk_id"],
+                "source_chunk_id": chunk_ids[0],
+                "source_chunk_ids_json": json.dumps(chunk_ids, ensure_ascii=False),
             }
         )
 
@@ -384,7 +498,10 @@ def remove_ambiguous_duplicates(rows: list[dict]) -> list[dict]:
     cleaned: list[dict] = []
     for group in grouped.values():
         if len(group) == 1:
-            cleaned.append(group[0])
+            cleaned.append(max(
+                group,
+                key=lambda row: len(json.loads(row.get("source_chunk_ids_json") or "[]")),
+            ))
             continue
         answer_keys = {
             normalize_text(row["expected_answer_text"])
@@ -413,6 +530,7 @@ async def main() -> None:
             existing_rows,
             all_chunks=args.all_chunks,
             limit_chunks=args.limit_chunks,
+            target_questions=args.target_questions,
         )
         if args.resume
         else set()
@@ -422,11 +540,18 @@ async def main() -> None:
         if args.limit_chunks is not None
         else None
     )
-    chunks = load_chunks(
-        excluded_chunk_ids=processed_chunk_ids,
-        limit=remaining_limit,
+    context_chunks = load_chunks(
         max_chunks_per_document=(None if args.all_chunks else MAX_CHUNKS_PER_DOCUMENT),
     )
+    chunks_by_document: dict[str, list[dict]] = {}
+    for candidate in context_chunks:
+        chunks_by_document.setdefault(candidate["document_id"], []).append(candidate)
+    chunks = [
+        candidate for candidate in context_chunks
+        if candidate["chunk_id"] not in processed_chunk_ids
+    ]
+    if remaining_limit is not None:
+        chunks = chunks[:remaining_limit]
     print(
         f"Loaded {len(chunks)} new HKPL chunks from data_hkpl_knowledge; "
         "distractor corpora were excluded."
@@ -449,10 +574,12 @@ async def main() -> None:
             set(),
             all_chunks=args.all_chunks,
             limit_chunks=args.limit_chunks,
+            target_questions=args.target_questions,
         )
         print(f"Initialized candidate checkpoint: {output_file}")
 
     generated_rows = []
+    target_rows: list[dict] | None = None
     try:
         for index, chunk in enumerate(chunks, start=1):
             print(
@@ -461,7 +588,12 @@ async def main() -> None:
                 f"{chunk['chunk_id']}"
             )
 
-            rows = await generate_questions_for_chunk(chunk)
+            siblings = chunks_by_document[chunk["document_id"]]
+            related_chunks = [
+                chunk,
+                *(sibling for sibling in siblings if sibling["chunk_id"] != chunk["chunk_id"]),
+            ]
+            rows = await generate_questions_for_chunk(chunk, related_chunks)
             generated_rows.extend(rows)
             processed_chunk_ids.add(chunk["chunk_id"])
             save_rows(output_file, [*existing_rows, *generated_rows])
@@ -470,22 +602,39 @@ async def main() -> None:
                 processed_chunk_ids,
                 all_chunks=args.all_chunks,
                 limit_chunks=args.limit_chunks,
+                target_questions=args.target_questions,
             )
             print(
                 f"  Generated {len(rows)} question(s); checkpoint rows="
                 f"{len(existing_rows) + len(generated_rows)}, processed chunks="
                 f"{len(processed_chunk_ids)}."
             )
+            if args.target_questions is not None:
+                deduplicated = remove_ambiguous_duplicates(
+                    [*existing_rows, *generated_rows]
+                )
+                if len(deduplicated) >= args.target_questions:
+                    target_rows = deduplicated[:args.target_questions]
+                    save_rows(output_file, target_rows)
+                    print(
+                        f"Reached target of {args.target_questions} "
+                        "deduplicated questions."
+                    )
+                    break
     finally:
-        save_rows(output_file, [*existing_rows, *generated_rows])
+        save_rows(
+            output_file,
+            target_rows or [*existing_rows, *generated_rows],
+        )
         save_progress(
             output_file,
             processed_chunk_ids,
             all_chunks=args.all_chunks,
             limit_chunks=args.limit_chunks,
+            target_questions=args.target_questions,
         )
 
-    all_rows = [*existing_rows, *generated_rows]
+    all_rows = target_rows or [*existing_rows, *generated_rows]
     before = len(all_rows)
     all_rows = remove_ambiguous_duplicates(all_rows)
     after = len(all_rows)

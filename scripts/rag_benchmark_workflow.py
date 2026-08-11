@@ -122,6 +122,11 @@ def prepare_candidate(args: argparse.Namespace) -> None:
         generation_arguments.append("--all-chunks")
     if args.limit_chunks is not None:
         generation_arguments.extend(["--limit-chunks", str(args.limit_chunks)])
+    if args.target_questions is not None:
+        generation_arguments.extend([
+            "--target-questions",
+            str(args.target_questions),
+        ])
     run_script("generate_evaluation_dataset.py", *generation_arguments)
     validate_candidate(candidate)
     print()
@@ -207,6 +212,7 @@ def parse_args() -> argparse.Namespace:
     prepare.add_argument("--resume", action="store_true")
     prepare.add_argument("--all-chunks", action="store_true")
     prepare.add_argument("--limit-chunks", type=int, default=None)
+    prepare.add_argument("--target-questions", type=int, default=None)
 
     promote = commands.add_parser(
         "promote",

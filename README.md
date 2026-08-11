@@ -103,6 +103,34 @@ vector insertion before the crawler continues.
 | [`scripts/hotpotqa_benchmark.py`](scripts/hotpotqa_benchmark.py) | Adds HotpotQA retrieval distractors. |
 | [`scripts/webz_news_benchmark.py`](scripts/webz_news_benchmark.py) | Adds external news retrieval distractors. |
 
+Evaluation rows support both single-chunk and multi-chunk evidence. The legacy
+`expected_context_snippet` and `source_chunk_id` columns identify the primary
+evidence. `expected_context_snippets_json` and `source_chunk_ids_json` contain
+parallel JSON arrays when a complete answer requires several chunks, such as a
+talk with three dates or a roving exhibition with several venues. The evaluator
+reports a complete retrieval only when every labeled chunk (or every equivalent
+evidence snippet) reaches the relevant stage.
+
+During candidate generation, sibling chunks from the same webpage are shown to
+the question generator. A question about one occurrence must state its exact
+date/month and venue/branch. A question about the named activity generally must
+combine every matching occurrence and label every supporting chunk. Existing
+nine-column CSV files remain readable; run the schema normalizer with `--yes`
+when you want to write the two new JSON-array columns into an older file.
+
+To create exactly 100 deduplicated candidate questions, run:
+
+```bash
+docker compose run --rm langgraph-agent \
+  python scripts/rag_benchmark_workflow.py prepare-candidate \
+  --output data/evaluation_dataset_100.csv \
+  --target-questions 100
+```
+
+The generator may inspect more than 100 chunks because rejected or duplicate
+questions do not count toward the 100-row target.
+The existing `data/evaluation_dataset.csv` is not changed by this command.
+
 ### Observability modules
 
 | File | Individual responsibility |

@@ -21,17 +21,23 @@ COLUMNS = [
     "query",
     "expected_answer_text",
     "expected_context_snippet",
+    "expected_context_snippets_json",
     "accepted_answers_json",
     "source_title",
     "source_url",
     "source_document_id",
     "source_chunk_id",
+    "source_chunk_ids_json",
+]
+LEGACY_COLUMNS = [
+    column for column in COLUMNS
+    if column not in {"expected_context_snippets_json", "source_chunk_ids_json"}
 ]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Normalize the evaluation CSV to the supported nine-column schema.",
+        description="Normalize the evaluation CSV to the multi-chunk evaluation schema.",
     )
     parser.add_argument("--path", type=Path, default=DEFAULT_PATH)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -47,7 +53,7 @@ def main() -> None:
         actual_columns = list(reader.fieldnames or [])
         rows = list(reader)
 
-    if args.check and actual_columns != COLUMNS:
+    if args.check and actual_columns not in (COLUMNS, LEGACY_COLUMNS):
         raise ValueError(
             "Evaluation CSV columns must exactly match, in order: "
             f"{COLUMNS}. Found: {actual_columns}"
@@ -78,6 +84,42 @@ def main() -> None:
             list(dict.fromkeys(alias.strip() for alias in aliases)),
             ensure_ascii=False,
         )
+        snippet_values = json.loads(
+            row.get("expected_context_snippets_json")
+            or json.dumps([item["expected_context_snippet"]])
+        )
+        chunk_id_values = json.loads(
+            row.get("source_chunk_ids_json")
+            or json.dumps([item["source_chunk_id"]])
+        )
+        if (
+            not isinstance(snippet_values, list)
+            or not isinstance(chunk_id_values, list)
+            or not snippet_values
+            or len(snippet_values) != len(chunk_id_values)
+            or not all(isinstance(value, str) and value.strip() for value in snippet_values)
+            or not all(isinstance(value, str) and value.strip() for value in chunk_id_values)
+        ):
+            raise ValueError(
+                f"Evidence and chunk ID arrays must be non-empty parallel "
+                f"string arrays at row {line_number}"
+            )
+        snippet_values = [value.strip() for value in snippet_values]
+        chunk_id_values = [value.strip() for value in chunk_id_values]
+        item["expected_context_snippets_json"] = json.dumps(
+            snippet_values, ensure_ascii=False
+        )
+        item["source_chunk_ids_json"] = json.dumps(
+            chunk_id_values, ensure_ascii=False
+        )
+        if (
+            snippet_values[0] != item["expected_context_snippet"]
+            or chunk_id_values[0] != item["source_chunk_id"]
+        ):
+            raise ValueError(
+                f"Singular evidence fields must equal the first JSON-array "
+                f"items at row {line_number}"
+            )
         missing = [
             column
             for column in COLUMNS
@@ -102,6 +144,14 @@ def main() -> None:
             raise ValueError(
                 f"source_chunk_id does not belong to source_document_id "
                 f"at row {line_number}"
+            )
+        if any(
+            not chunk_id.startswith(f"{document_id}:")
+            for chunk_id in chunk_id_values
+        ):
+            raise ValueError(
+                f"source_chunk_ids_json contains a chunk from another "
+                f"document at row {line_number}"
             )
         cleaned.append(item)
 
