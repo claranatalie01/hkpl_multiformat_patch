@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Crawl approved HKPL pages and synchronously ingest them into pgvector.
-
-This script is the bulk website-ingestion entry point. It discovers URLs from
-configured seed pages, applies local URL filters and the site's ``robots.txt``
-policy, extracts useful HTML (or downloads PDFs), and skips unchanged content.
-
-New or changed sources are passed to
-``src.ingestion.service.ingest_path_sync``. That shared service performs the
-remaining registry, extraction, chunking, embedding, and PostgreSQL insertion
-steps before this crawler continues to the next URL.
-"""
+"""Crawl approved HKPL pages and ingest them into pgvector in bounded batches."""
 
 import argparse
 import os
@@ -30,6 +20,10 @@ from urllib.robotparser import RobotFileParser
 import requests
 from bs4 import BeautifulSoup
 
+from src.ingestion.classification import (
+    MAX_BATCH_ITEMS,
+    classify_batch_items_sync,
+)
 from src.ingestion.registry import find_active_web_document_by_source_url
 from src.ingestion.service import UPLOAD_DIR, ingest_path_sync
 from src.ingestion.write_guard import ensure_corpus_writable
@@ -137,21 +131,23 @@ def extract_title(soup: BeautifulSoup, url: str) -> str:
     return url
 
 
-def extract_main_html(html: str) -> tuple[str, str]:
-    """Return the page title and largest useful content region from raw HTML.
-
-    Navigation and other repeated website chrome are removed before candidate
-    content containers are compared. Pages with too little indexable text are
-    rejected so they do not create low-quality vectors.
-    """
+def extract_main_html(html: str, *, allow_low_content: bool = False) -> tuple[str, str]:
+    """Return the page title and useful content while retaining structured data."""
     soup = BeautifulSoup(html, "html.parser")
+    schema_scripts = [
+        str(script)
+        for script in soup.select('script[type="application/ld+json"]')
+    ]
 
     for tag in soup.select(
-        "script, style, nav, footer, header, noscript, svg, "
+        "style, nav, footer, header, noscript, svg, "
         ".breadcrumb, .breadcrumbs, .side_menu, .sidebar, "
         ".share, .social, .pagination, .search, .menu"
     ):
         tag.decompose()
+    for script in soup.find_all("script"):
+        if str(script.get("type") or "").lower() != "application/ld+json":
+            script.decompose()
 
     title = extract_title(soup, "")
 
@@ -184,12 +180,12 @@ def extract_main_html(html: str) -> tuple[str, str]:
     # Generic content-quality filter.
     # This avoids indexing empty/login/search/navigation pages
     # without hardcoding specific URL paths.
-    if len(extracted_text) < 200:
+    if not extracted_text or (len(extracted_text) < 200 and not allow_low_content):
         raise LowContentPageError(
             f"Skipped page because extracted text is too short: {len(extracted_text)} characters"
         )
 
-    return title, str(best)
+    return title, "".join(schema_scripts) + str(best)
 
 
 def page_hash(html: str) -> str:
@@ -214,13 +210,72 @@ def save_hash(url: str, content_hash: str) -> None:
 
 
 def save_for_ingestion(url: str, content: str | bytes, extension: str) -> Path:
-    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
-    path = UPLOAD_DIR / f"crawler_{digest}{extension}"
+    url_digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    payload = content if isinstance(content, bytes) else content.encode("utf-8")
+    content_digest = hashlib.sha256(payload).hexdigest()[:12]
+    path = UPLOAD_DIR / f"crawler_{url_digest}_{content_digest}{extension}"
     if isinstance(content, bytes):
         path.write_bytes(content)
     else:
         path.write_text(content, encoding="utf-8")
     return path
+
+
+def flush_pending(pending: list[dict], stats: dict) -> None:
+    """Classify and ingest one bounded crawler batch."""
+    if not pending:
+        return
+    batch = pending[:]
+    pending.clear()
+    try:
+        decisions = classify_batch_items_sync([{
+            "id": item["url"],
+            "title": item["title"],
+            "file_type": item["extension"].lstrip("."),
+            "text": item["classifier_text"],
+        } for item in batch])
+    except Exception:
+        stats["failed"] += len(batch)
+        for item in batch:
+            item["path"].unlink(missing_ok=True)
+        logger.exception("Failed to classify crawler batch")
+        return
+
+    for item in batch:
+        try:
+            result = ingest_path_sync(
+                item["path"],
+                original_file_name=item["path"].name,
+                mime_type=item["mime_type"],
+                source_title=item["title"],
+                source_url=item["url"],
+                source_type="crawler",
+                access_level="public",
+                category="HKPL Website",
+                language="en",
+                source_kind="crawler",
+                document_type=decisions[item["url"]]["document_type"],
+                classification_source="llm",
+                replace_document_id=item["replace_document_id"],
+            )
+        except Exception as error:
+            stats["failed"] += 1
+            item["path"].unlink(missing_ok=True)
+            logger.exception("Failed to ingest %s: %s", item["url"], error)
+            continue
+        if result.get("status") == "duplicate":
+            item["path"].unlink(missing_ok=True)
+        save_hash(item["url"], item["content_hash"])
+        if result.get("status") == "skipped":
+            stats["discovery_only"] += 1
+            logger.info("Discovery-only page: %s", item["url"])
+            continue
+        stats["indexed"] += 1
+        if item["is_pdf"]:
+            stats["pdf_indexed"] += 1
+        else:
+            stats["html_indexed"] += 1
+        logger.info("Indexed %s result=%s", item["url"], result)
 
 
 def fetch(session: requests.Session, url: str) -> requests.Response:
@@ -306,12 +361,7 @@ def crawl(
     include_query_urls: bool,
     include_pdfs: bool,
 ) -> dict:
-    """Crawl seed URLs breadth-first and ingest every new or changed source.
-
-    The returned counters distinguish indexed, unchanged, rejected, and failed
-    pages. An ``indexed`` page has completed the full synchronous ingestion
-    pipeline, including creation and storage of its embedding vectors.
-    """
+    """Crawl breadth-first, classifying and ingesting new or changed sources."""
     ensure_corpus_writable("crawl and update HKPL webpages")
     visited = set()
     queue = deque(
@@ -323,6 +373,7 @@ def crawl(
     )
     policy = robots_policy()
     session = requests.Session()
+    pending: list[dict] = []
 
     stats = {
         "visited": 0,
@@ -332,6 +383,7 @@ def crawl(
         "discovered": 0,
         "html_indexed": 0,
         "pdf_indexed": 0,
+        "discovery_only": 0,
         "skipped_low_content": 0,
         "skipped_robots": 0,
         "skipped_unsupported": 0,
@@ -374,7 +426,10 @@ def crawl(
                 mime_type = "application/pdf"
             elif "html" in content_type or not content_type:
                 raw_html = response.text
-                title, main_html = extract_main_html(raw_html)
+                title, main_html = extract_main_html(
+                    raw_html,
+                    allow_low_content=True,
+                )
                 content_hash = page_hash(main_html)
                 saved_content = main_html
                 extension = ".html"
@@ -383,53 +438,6 @@ def crawl(
                 stats["skipped_unsupported"] += 1
                 continue
 
-            if existing_document is None or has_changed(url, content_hash):
-                path = save_for_ingestion(url, saved_content, extension)
-                previous_path = (
-                    UPLOAD_DIR / existing_document["stored_file_name"]
-                    if existing_document
-                    else None
-                )
-
-                # This is the crawler-to-vector-pipeline handoff. The call is
-                # synchronous: when it returns ``completed``, the saved source
-                # has already been extracted, chunked, embedded, and inserted
-                # into PostgreSQL/pgvector.
-                result = ingest_path_sync(
-                    path,
-                    original_file_name=path.name,
-                    mime_type=mime_type,
-                    source_title=title,
-                    source_url=url,
-                    source_type="crawler",
-                    access_level="public",
-                    category="HKPL Website",
-                    language="en",
-                    effective_date=None,
-                    source_kind="crawler",
-                    replace_document_id=(
-                        str(existing_document["document_id"])
-                        if existing_document
-                        else None
-                    ),
-                )
-
-                if (
-                    path != previous_path
-                    and result.get("status") == "duplicate"
-                ):
-                    path.unlink(missing_ok=True)
-
-                save_hash(url, content_hash)
-                stats["indexed"] += 1
-                if is_pdf:
-                    stats["pdf_indexed"] += 1
-                else:
-                    stats["html_indexed"] += 1
-                logger.info("Indexed %s result=%s", url, result)
-            else:
-                stats["unchanged"] += 1
-
             if not is_pdf and depth < max_depth:
                 new_links = discover_links(
                     url,
@@ -437,10 +445,35 @@ def crawl(
                     include_query_urls=include_query_urls,
                 )
                 stats["discovered"] += len(new_links)
-
                 for link in new_links:
                     if link not in visited:
                         queue.append((link, depth + 1))
+
+            if existing_document is None or has_changed(url, content_hash):
+                path = save_for_ingestion(url, saved_content, extension)
+                pending.append({
+                    "path": path,
+                    "url": url,
+                    "title": title,
+                    "extension": extension,
+                    "mime_type": mime_type,
+                    "classifier_text": (
+                        title
+                        if is_pdf
+                        else clean_text(BeautifulSoup(main_html, "html.parser").get_text(" "))
+                    ),
+                    "content_hash": content_hash,
+                    "is_pdf": is_pdf,
+                    "replace_document_id": (
+                        str(existing_document["document_id"])
+                        if existing_document
+                        else None
+                    ),
+                })
+                if len(pending) >= MAX_BATCH_ITEMS:
+                    flush_pending(pending, stats)
+            else:
+                stats["unchanged"] += 1
 
         except LowContentPageError as exc:
             stats["skipped_low_content"] += 1
@@ -452,6 +485,7 @@ def crawl(
             if delay_seconds:
                 time.sleep(delay_seconds)
 
+    flush_pending(pending, stats)
     return stats
 
 
@@ -466,5 +500,7 @@ if __name__ == "__main__":
         include_pdfs=not arguments.exclude_pdfs,
     )
     print(result)
-    successful_pages = result["indexed"] + result["unchanged"]
+    successful_pages = (
+        result["indexed"] + result["unchanged"] + result["discovery_only"]
+    )
     sys.exit(0 if successful_pages > 0 else 1)

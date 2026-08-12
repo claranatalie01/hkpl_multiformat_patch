@@ -43,6 +43,7 @@ from src.infrastructure.db import engine
 from src.ingestion.chunking import (
     chunk_documents,
 )
+from src.ingestion.document_types import normalize_document_type
 from src.ingestion.registry import (
     ensure_registry_schema,
     list_documents,
@@ -420,12 +421,11 @@ def load_faq_documents(
             )
 
             document = Document(
-                text=(
-                    f"Question: {question}\n"
-                    f"Answer: {answer}"
-                ),
+                text=f"{question}\n{answer}",
                 metadata={
                     "document_id": document_id,
+                    "kb_document_id": document_id,
+                    "source_version_id": f"{document_id}:v1",
                     "original_file_name": (
                         Path(csv_path).name
                     ),
@@ -454,6 +454,9 @@ def load_faq_documents(
                         "",
                     ).strip(),
                     "question": question,
+                    "answer_text": answer,
+                    "record_header": question,
+                    "repeat_context": question,
                     "snippet": row.get(
                         "expected_context_snippet",
                         "",
@@ -461,7 +464,19 @@ def load_faq_documents(
                     "row_id": row_id,
                     "row_number": row_index + 2,
                     "section_index": row_index,
-                    "chunk_strategy": "atomic",
+                    "document_type": "faq",
+                    "record_kind": "faq",
+                    "structural_kind": "faq_pair",
+                    "chunk_policy": "atomic_record",
+                    "structure_path": [],
+                    "locator": {
+                        "type": "faq_record",
+                        "record": row_id,
+                        "row": row_index + 2,
+                    },
+                    "parent_record_id": f"{document_id}:faq:{row_id}",
+                    "parser_version": "deterministic-faq-csv-v2",
+                    "evidence_text": f"{question}\n{answer}",
                 },
             )
             document.id_ = (
@@ -540,6 +555,9 @@ def registered_documents_for_rebuild() -> list[dict]:
             f"{document['original_file_name']} ({document_id})"
         )
         try:
+            if normalize_document_type(document.get("document_type")) == "skip":
+                print("  Ready: discovery-only source (no chunks)")
+                continue
             extracted = load_file(
                 stored_path,
                 document_id=document_id,
@@ -560,6 +578,7 @@ def registered_documents_for_rebuild() -> list[dict]:
                     or "upload"
                 ),
                 document_type=document.get("document_type") or "auto",
+                classification_source=document.get("classification_source") or None,
             )
             if not extracted:
                 raise ValueError("No readable content was extracted")
@@ -621,13 +640,24 @@ def audit_knowledge_chunks() -> bool:
                         WHERE embedding IS NOT NULL
                           AND vector_dims(embedding) <> :embed_dim
                     ) AS wrong_dimensions,
-                    COUNT(*) FILTER (WHERE length(trim(text)) < 50) AS short_chunks,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(metadata_->>'token_count', '0')::integer > 512
+                    ) AS over_limit_chunks,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(trim(metadata_->>'evidence_text'), '') = ''
+                    ) AS empty_evidence,
                     COUNT(*) FILTER (
                         WHERE COALESCE(metadata_->>'document_id', '') = ''
                            OR COALESCE(metadata_->>'kb_document_id', '') = ''
                            OR COALESCE(metadata_->>'chunk_id', '') = ''
-                           OR COALESCE(metadata_->>'document_type', '') = ''
-                           OR COALESCE(metadata_->>'chunk_strategy', '') = ''
+                           OR COALESCE(metadata_->>'record_kind', '') = ''
+                           OR COALESCE(metadata_->>'chunk_policy', '') = ''
+                           OR COALESCE(metadata_->>'parent_record_id', '') = ''
+                           OR COALESCE(metadata_->>'parser_version', '') = ''
+                           OR COALESCE(metadata_->>'chunker_version', '') = ''
+                           OR COALESCE(metadata_->>'search_text', '') = ''
+                           OR COALESCE(metadata_->>'token_count', '') = ''
+                           OR COALESCE(metadata_->'locator', '{{}}'::jsonb) = '{{}}'::jsonb
                            OR COALESCE(metadata_->>'document_version', '') = ''
                     ) AS missing_metadata
                 FROM {table_name}
@@ -638,15 +668,17 @@ def audit_knowledge_chunks() -> bool:
         type_rows = connection.execute(
             text(f"""
                 SELECT
-                    COALESCE(metadata_->>'document_type', '(missing)') AS document_type,
-                    COALESCE(metadata_->>'chunk_strategy', '(missing)') AS strategy,
+                    COALESCE(metadata_->>'record_kind', '(missing)') AS record_kind,
+                    COALESCE(metadata_->>'chunk_policy', '(missing)') AS policy,
                     COUNT(*) AS chunks,
+                    ROUND(AVG(COALESCE(metadata_->>'token_count', '0')::integer), 1)
+                        AS average_tokens,
                     ROUND(AVG(length(text)), 1) AS average_characters,
                     MIN(length(text)) AS minimum_characters,
                     MAX(length(text)) AS maximum_characters
                 FROM {table_name}
-                GROUP BY document_type, strategy
-                ORDER BY document_type, strategy
+                GROUP BY record_kind, policy
+                ORDER BY record_kind, policy
             """)
         ).mappings().all()
 
@@ -708,16 +740,15 @@ def audit_knowledge_chunks() -> bool:
             """),
         ).scalars().all()
 
-        split_records = connection.execute(
+        locator_collisions = connection.execute(
             text(f"""
                 SELECT
-                    metadata_->>'kb_document_id' AS document_id,
-                    metadata_->>'original_file_name' AS file_name,
-                    metadata_->>'section_index' AS section_index,
+                    metadata_->>'source_version_id' AS source_version_id,
+                    metadata_->'locator' AS locator,
+                    metadata_->>'part_number' AS part_number,
                     COUNT(*) AS chunks
                 FROM {table_name}
-                WHERE metadata_->>'document_type' = 'record_based'
-                GROUP BY document_id, file_name, section_index
+                GROUP BY source_version_id, locator, part_number
                 HAVING COUNT(*) > 1
                 ORDER BY chunks DESC
             """)
@@ -726,16 +757,19 @@ def audit_knowledge_chunks() -> bool:
         duplicate_groups = connection.execute(
             text(f"""
                 SELECT
-                    md5(text) AS content_hash,
+                    md5(metadata_->>'evidence_text') AS content_hash,
                     COUNT(*) AS copies,
                     COUNT(DISTINCT metadata_->>'kb_document_id') AS documents,
                     STRING_AGG(
                         DISTINCT COALESCE(NULLIF(metadata_->>'dataset', ''), 'hkpl'),
                         ', '
                     ) AS datasets,
-                    LEFT(MIN(regexp_replace(text, '\\s+', ' ', 'g')), 180) AS preview
+                    LEFT(
+                        MIN(regexp_replace(metadata_->>'evidence_text', '\\s+', ' ', 'g')),
+                        180
+                    ) AS preview
                 FROM {table_name}
-                GROUP BY md5(text)
+                GROUP BY md5(metadata_->>'evidence_text')
                 HAVING COUNT(*) > 1
                 ORDER BY copies DESC
                 LIMIT 20
@@ -746,64 +780,48 @@ def audit_knowledge_chunks() -> bool:
             text(f"""
                 SELECT node_id, text, metadata_
                 FROM {table_name}
-                WHERE metadata_->>'document_type' IN ('faq', 'directory', 'announcement')
+                WHERE metadata_->>'record_kind' IN ('faq', 'table')
             """)
         ).mappings().all()
 
     faq_issues: list[dict] = []
-    directory_issues: list[str] = []
-    announcement_issues: list[str] = []
-    dated_entry = re.compile(r"(?m)^\(?\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s*\)?")
+    table_header_issues: list[str] = []
 
     for row in typed_chunks:
         node_id = row["node_id"]
-        content = row["text"] or ""
         metadata = row["metadata_"] or {}
-        document_type = metadata.get("document_type")
+        evidence = metadata.get("evidence_text") or ""
+        record_kind = metadata.get("record_kind")
 
-        if document_type == "faq":
-            questions = set(re.findall(r"(?i)\bQ(\d+)\s*[:.)]", content))
-            answers = set(re.findall(r"(?i)\bA(\d+)\s*[:.)]", content))
-            labelled_question = bool(re.search(r"(?i)\bquestion\s*:", content))
-            labelled_answer = bool(re.search(r"(?i)\banswer\s*:", content))
-            issue_reason = ""
-            if (questions or answers) and questions != answers:
-                issue_reason = (
-                    f"numbered labels differ: Q={sorted(questions)} "
-                    f"A={sorted(answers)}"
-                )
-            elif labelled_question != labelled_answer:
-                issue_reason = "Question:/Answer: labels are not paired"
-
-            if issue_reason:
+        if record_kind == "faq" and metadata.get("structural_kind") == "faq_pair":
+            question = metadata.get("question") or ""
+            answer = metadata.get("answer_text") or evidence[len(question):].strip()
+            if not question or not answer or not evidence.startswith(question):
                 faq_issues.append({
                     "node_id": node_id,
-                    "reason": issue_reason,
+                    "reason": "missing or detached question/answer evidence",
                     "title": metadata.get("source_title", ""),
                     "url": metadata.get("source_url") or metadata.get("url", ""),
-                    "preview": re.sub(r"\s+", " ", content).strip()[:240],
+                    "preview": re.sub(r"\s+", " ", evidence).strip()[:240],
                 })
-        elif document_type == "directory":
-            if not metadata.get("library_name"):
-                directory_issues.append(node_id)
         elif (
-            document_type == "announcement"
-            and metadata.get("announcement_entry_index") is not None
-            and not dated_entry.search(content)
+            record_kind == "table"
+            and metadata.get("chunk_policy") == "oversized_leaf"
+            and not (metadata.get("table_header") or metadata.get("repeat_context"))
         ):
-            announcement_issues.append(node_id)
+            table_header_issues.append(node_id)
 
     checks = {
         "missing embeddings": int(summary["missing_embeddings"]),
         "wrong embedding dimensions": int(summary["wrong_dimensions"]),
-        "chunks shorter than 50 characters": int(summary["short_chunks"]),
+        "chunks over 512 tokens": int(summary["over_limit_chunks"]),
+        "chunks with empty evidence": int(summary["empty_evidence"]),
         "chunks missing required metadata": int(summary["missing_metadata"]),
         "registry chunk-count mismatches": len(registry_mismatches),
         "stale or orphaned chunks": len(stale_or_orphaned),
-        "record rows split across chunks": len(split_records),
+        "source/version/locator/part collisions": len(locator_collisions),
         "FAQ pairing issues": len(faq_issues),
-        "directory chunks missing library metadata": len(directory_issues),
-        "dated announcement chunks missing a date": len(announcement_issues),
+        "headerless split tables": len(table_header_issues),
     }
 
     print("=" * 80)
@@ -818,11 +836,12 @@ def audit_knowledge_chunks() -> bool:
             f"- {row['dataset']}/{row['corpus_role']}: "
             f"{row['chunks']} chunks"
         )
-    print("\nDocument type and strategy distribution:")
+    print("\nRecord kind and chunk policy distribution:")
     for row in type_rows:
         print(
-            f"- {row['document_type']}/{row['strategy']}: "
-            f"{row['chunks']} chunks, chars avg={row['average_characters']} "
+            f"- {row['record_kind']}/{row['policy']}: "
+            f"{row['chunks']} chunks, tokens avg={row['average_tokens']} "
+            f"chars avg={row['average_characters']} "
             f"min={row['minimum_characters']} max={row['maximum_characters']}"
         )
 
@@ -831,12 +850,12 @@ def audit_knowledge_chunks() -> bool:
         status = "PASS" if count == 0 else "FAIL"
         print(f"- {status}: {label} ({count})")
 
-    if split_records:
-        print("\nSplit record rows:")
-        for row in split_records[:20]:
+    if locator_collisions:
+        print("\nLocator collisions:")
+        for row in locator_collisions[:20]:
             print(
-                f"- {row['file_name']} section={row['section_index']} "
-                f"chunks={row['chunks']} document={row['document_id']}"
+                f"- source_version={row['source_version_id']} locator={row['locator']} "
+                f"part={row['part_number']} chunks={row['chunks']}"
             )
     if faq_issues:
         print("\nFAQ pairing issues:")
@@ -846,6 +865,10 @@ def audit_knowledge_chunks() -> bool:
                 f"title={issue['title']} url={issue['url']}"
             )
             print(f"  preview={issue['preview']}")
+    if table_header_issues:
+        print("\nHeaderless split table chunks:")
+        for node_id in table_header_issues[:20]:
+            print(f"- {node_id}")
     if duplicate_groups:
         print("\nReview warning: exact duplicate chunk text exists:")
         for row in duplicate_groups:

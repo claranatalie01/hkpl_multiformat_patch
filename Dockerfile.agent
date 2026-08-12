@@ -10,6 +10,7 @@ RUN apt-get update \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-chi-tra \
+        tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -27,7 +28,7 @@ COPY main.py .
 RUN mkdir -p \
     /app/uploads \
     /app/data \
-    /app/storage
+    /app/storage/docling
 
 EXPOSE 8001
 

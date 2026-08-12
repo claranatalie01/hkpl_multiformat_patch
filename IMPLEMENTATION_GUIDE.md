@@ -84,9 +84,9 @@ cp .env.example .env
 ```
 
 Set a non-empty admin key in `.env` before exposing the service.
-Only `DB_PASSWORD`, `ADMIN_API_KEY`, `PHOENIX_PROJECT_NAME`, `HF_TOKEN`, and
-`DOCUMENT_TYPE_RULES_JSON` are interpolated from `.env` by the current Compose
-file. Other runtime defaults are literal entries in `docker-compose.yml`.
+Only `DB_PASSWORD`, `ADMIN_API_KEY`, `PHOENIX_PROJECT_NAME`, and `HF_TOKEN` are
+interpolated from `.env` by the current Compose file. Other runtime defaults are
+literal entries in `docker-compose.yml`.
 
 Rebuild the agent because system and Python dependencies changed:
 
@@ -405,7 +405,7 @@ Files passed through the CLI are copied into `/app/uploads` and registered:
 docker compose run --rm \
   -e KNOWLEDGE_CORPUS_READ_ONLY=false \
   langgraph-agent \
-  uv run python scripts/ingest_documents.py /app/data/sample.pdf
+  uv run python scripts/ingest_documents.py /app/data/sample.pdf --document-type prose
 ```
 
 To ingest a mounted directory:
@@ -419,17 +419,40 @@ docker compose run --rm \
 
 ## Chunking behaviour
 
-- FAQ, CSV, Excel, XML, JSON, and JSONL records use an atomic strategy.
-- News uses article boundaries plus sentence-aware prose chunks; the title is
-  repeated in every chunk.
-- PDF, DOCX, PPTX, Markdown, TXT, HTML, and OCR text use overlapping prose
-  chunks.
-- Default prose chunk size: 512 tokens.
-- Default overlap: 64 tokens.
-- Large atomic records can still split at 2048 tokens.
+- A librarian labels an individual source as `faq`, `record`, or `prose`.
+  An unlabelled individual source uses the bounded 512-token/64-token-overlap
+  fallback and does not call the classifier.
+- Directory and crawler batches use the existing generation model once per
+  mini-batch of at most 20 sources. The schema-constrained result must contain
+  exactly one decision for every input ID or the batch fails without fallback.
+- The batch-only `skip` label marks listing, index, and navigation pages as
+  discovery-only. Their immutable source files are retained for rebuilds and
+  audits, but they produce zero searchable chunks. Physical tables bypass the
+  model and use deterministic rows.
+- `faq` keeps each question with its answer; `record` keeps one notice, event,
+  or branch profile together; `prose` uses Docling headings and hierarchy.
+- CSV, Excel, JSON, JSONL, and XML use deterministic record parsing with typed
+  locators. PDF, DOCX, PPTX, HTML, Markdown, text, and images use Docling.
+- The Qwen3 embedding tokenizer enforces a 512-token hard cap including source
+  context. Clean structural boundaries have no overlap; only an oversized leaf
+  uses 64-token overlap and repeats its FAQ question, record title, or table
+  header when applicable.
 
-These defaults are currently set in `docker-compose.yml`. Only variables
-written as `${NAME:-default}` are overridden through `.env` by Compose.
+The classifier prompt uses only title, file type, and the first 1,200 characters
+of each source, with temperature zero and reasoning disabled. Its labels are:
+
+```text
+faq    actual question-answer pairs
+record one self-contained notice, event detail, or branch profile
+prose  policies, guidance, articles, and other useful narrative content
+skip   listing/index/navigation content whose main value is links
+```
+
+Domain categories remain separate metadata; they do not change chunking.
+
+These defaults are set in `docker-compose.yml`. Production requires the pinned
+Qwen tokenizer under `models/qwen3-embedding` and pre-fetched Docling artifacts
+under `models/docling`; ingestion does not download models at runtime.
 
 ## Supported and unsupported formats
 
@@ -447,9 +470,8 @@ standard Office formats.
 
 ## Important limitations
 
-- PDF extraction uses PyMuPDF plus page OCR fallback. It is not a complete
-  layout understanding system for highly complex multi-column documents,
-  charts, or merged tables.
+- Docling preserves reading order, headings, tables, and page provenance, but
+  extraction quality still depends on the source document and local artifacts.
 - OCR quality depends on scan quality and installed languages.
 - FastAPI BackgroundTasks is suitable for this prototype, but a production
   deployment should use a durable worker queue.

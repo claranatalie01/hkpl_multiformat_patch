@@ -1,28 +1,29 @@
-"""Extract supported source files into structured LlamaIndex Documents.
+"""Extract supported source formats into structured evidence records."""
 
-Readers preserve provenance such as URL, page, slide, sheet, row, section,
-version, and extraction method. They produce normalized text and metadata only;
-chunk creation and embedding happen later in ``chunking`` and ``service``.
-"""
+from __future__ import annotations
 
 import csv
 import hashlib
-import io
 import json
+import os
 import re
-import unicodedata
+from dataclasses import dataclass
+from importlib.metadata import version as package_version
 from pathlib import Path
-import fitz
-import openpyxl
-import pytesseract
-from bs4 import BeautifulSoup
-from docx import Document as WordDocument
-from lxml import etree
-from PIL import Image
-from pptx import Presentation
+from typing import Any, Iterable
 
+import openpyxl
+from bs4 import BeautifulSoup, Tag
 from llama_index.core import Document
-from .document_types import detect_document_type
+from lxml import etree
+
+from .chunking import build_search_text
+from .document_types import (
+    chunk_policy_for,
+    normalize_document_type,
+    resolve_record_kind,
+)
+from .tokenizer import DEFAULT_MAX_TOKENS, get_embedding_tokenizer
 
 
 SUPPORTED_EXTENSIONS = {
@@ -46,20 +47,10 @@ SUPPORTED_EXTENSIONS = {
     ".tiff",
 }
 
-LEGACY_EXTENSIONS = {
-    ".doc",
-    ".xls",
-    ".ppt",
-}
+LEGACY_EXTENSIONS = {".doc", ".xls", ".ppt"}
+DETERMINISTIC_EXTENSIONS = {".csv", ".xlsx", ".xlsm", ".json", ".jsonl", ".xml"}
+DOCLING_EXTENSIONS = SUPPORTED_EXTENSIONS - DETERMINISTIC_EXTENSIONS
 
-
-def normalize_text(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text or "")
-    text = text.replace("\u00a0", " ")
-    text = text.replace("\x00", "")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
 
 def file_content_hash(path: Path) -> str:
     digest = hashlib.sha256()
@@ -81,656 +72,730 @@ def _base_metadata(
     document_version: int,
     content_hash: str,
     file_type: str,
-    category: str | None = None,
-    language: str | None = None,
-    effective_date: str | None = None,
-    source_kind: str = "upload",
-    document_type: str = "auto",
-) -> dict:
+    category: str,
+    language: str,
+    effective_date: str,
+    source_kind: str,
+    document_type: str,
+    classification_source: str,
+    branch_ids: Iterable[str] | None,
+) -> dict[str, Any]:
     return {
         "document_id": document_id,
-        "original_file_name": original_file_name,
+        "kb_document_id": document_id,
+        "source_version_id": f"{document_id}:v{document_version}",
         "file_name": original_file_name,
+        "original_file_name": original_file_name,
         "stored_file_name": stored_file_name,
-        "file_type": file_type,
-        "source_title": source_title or Path(original_file_name).stem,
+        "source_title": source_title or original_file_name,
         "source_url": source_url or "",
         "url": source_url or "",
         "source_type": source_type,
         "access_level": access_level,
         "document_version": document_version,
         "content_hash": content_hash,
+        "file_type": file_type,
         "category": category or "",
         "language": language or "",
         "effective_date": effective_date or "",
         "source_kind": source_kind,
         "document_type": document_type,
+        "record_kind": resolve_record_kind({"document_type": document_type}),
+        "classification_source": classification_source,
+        "branch_ids": list(branch_ids or []),
     }
 
 
 def _make_document(
-    text: str,
+    evidence_text: str,
     *,
-    base_metadata: dict,
+    base_metadata: dict[str, Any],
     section_index: int,
-    chunk_strategy: str = "prose",
-    extra_metadata: dict | None = None,
+    structural_kind: str,
+    locator: dict[str, Any],
+    structure_path: Iterable[str] = (),
+    extra_metadata: dict[str, Any] | None = None,
 ) -> Document | None:
-    clean = normalize_text(text)
-    if not clean:
+    evidence_text = (evidence_text or "").strip()
+    if not evidence_text:
         return None
 
     metadata = {
         **base_metadata,
         "section_index": section_index,
-        "chunk_strategy": chunk_strategy,
+        "structural_kind": structural_kind,
+        "structure_path": [part for part in structure_path if part],
+        "locator": locator,
+        "parser_version": "deterministic-v2",
+        **(extra_metadata or {}),
     }
+    record_kind = resolve_record_kind(metadata, structural_kind=structural_kind)
+    metadata.update({
+        "record_kind": record_kind,
+        "chunk_policy": chunk_policy_for(record_kind, structural_kind),
+        "evidence_text": evidence_text,
+    })
+    metadata["search_text"] = build_search_text(metadata, evidence_text)
 
-    if extra_metadata:
-        metadata.update(extra_metadata)
-
-    metadata["document_type"] = detect_document_type(clean, metadata)
-
-    document = Document(
-        text=clean,
-        metadata=metadata,
-    )
-
+    document = Document(text=evidence_text, metadata=metadata)
     document.id_ = (
-        f"{base_metadata['document_id']}:"
-        f"v{base_metadata['document_version']}:"
-        f"section:{section_index}"
+        f"{base_metadata['source_version_id']}:record:{section_index}"
     )
-
     return document
 
 
-def _ocr_image(image: Image.Image, languages: str) -> str:
-    return normalize_text(
-        pytesseract.image_to_string(
-            image,
-            lang=languages,
-            config="--psm 6",
-        )
-    )
+def _field_text(column: Any, value: Any) -> str:
+    return f"{str(column).strip()}: {str(value).strip()}"
 
-def _extract_pdf_text_with_layout_markers(page) -> str:
-    data = page.get_text("dict")
-    lines = []
 
-    for block in data.get("blocks", []):
-        for line in block.get("lines", []):
-            spans = line.get("spans", [])
-            if not spans:
-                continue
-
-            text = normalize_text(" ".join(span.get("text", "") for span in spans))
-            if not text:
-                continue
-
-            max_size = max(span.get("size", 0) for span in spans)
-            is_bold = any("bold" in span.get("font", "").lower() for span in spans)
-
-            lines.append(
-                {
-                    "text": text,
-                    "font_size": max_size,
-                    "is_bold": is_bold,
-                }
-            )
-
-    if not lines:
-        return ""
-
-    sizes = sorted(line["font_size"] for line in lines)
-    median_size = sizes[len(sizes) // 2]
-
-    output_lines = []
-
-    for item in lines:
-        text = item["text"]
-        word_count = len(text.split())
-        has_terminal_punctuation = text.endswith((".", "?", "!", ":"))
-        has_many_digits = sum(ch.isdigit() for ch in text) >= 3
-
-        heading_score = 0
-
-        if item["font_size"] > median_size + 1:
-            heading_score += 2
-
-        if item["is_bold"]:
-            heading_score += 1
-
-        if word_count <= 6:
-            heading_score += 1
-
-        if not has_terminal_punctuation:
-            heading_score += 1
-
-        if not has_many_digits:
-            heading_score += 1
-
-        # Layout/typography-based heading detection.
-        # Not based on district names or specific HKPL words.
-        if heading_score >= 4:
-            output_lines.append(f"## {text}")
-        else:
-            output_lines.append(text)
-
-    return normalize_text("\n".join(output_lines))
-
-def _load_pdf(
-    path: Path,
-    base_metadata: dict,
-    ocr_languages: str,
-) -> list[Document]:
+def _load_csv(path: Path, base_metadata: dict[str, Any]) -> list[Document]:
     documents: list[Document] = []
-    pdf = fitz.open(path)
-
-    try:
-        for page_index, page in enumerate(pdf):
-            page_number = page_index + 1
-
-            text = _extract_pdf_text_with_layout_markers(page)
-            extraction_method = "native_layout_text"
-
-            if len(text) < 40:
-                pixmap = page.get_pixmap(
-                    matrix=fitz.Matrix(2, 2),
-                    alpha=False,
-                )
-                image = Image.open(
-                    io.BytesIO(pixmap.tobytes("png"))
-                )
-                ocr_text = _ocr_image(image, ocr_languages)
-
-                if len(ocr_text) > len(text):
-                    text = ocr_text
-                    extraction_method = "ocr"
-
-            document = _make_document(
-                text,
-                base_metadata=base_metadata,
-                section_index=page_index,
-                chunk_strategy="prose",
-                extra_metadata={
-                    "page_number": page_number,
-                    "extraction_method": extraction_method,
-                },
-            )
-
-            if document:
-                documents.append(document)
-    finally:
-        pdf.close()
-
-    return documents
-
-
-def _load_docx(
-    path: Path,
-    base_metadata: dict,
-) -> list[Document]:
-    word_document = WordDocument(path)
-    documents: list[Document] = []
-
-    current_heading = ""
-    current_parts: list[str] = []
-    section_index = 0
-
-    def flush_section() -> None:
-        nonlocal section_index, current_parts
-        if not current_parts:
-            return
-
-        content = "\n".join(current_parts)
-        document = _make_document(
-            content,
-            base_metadata=base_metadata,
-            section_index=section_index,
-            chunk_strategy="prose",
-            extra_metadata={
-                "section_heading": current_heading,
-                "content_kind": "paragraphs",
-            },
-        )
-        if document:
-            documents.append(document)
-            section_index += 1
-        current_parts = []
-
-    for paragraph in word_document.paragraphs:
-        text = normalize_text(paragraph.text)
-        if not text:
-            continue
-
-        style_name = (
-            paragraph.style.name.lower()
-            if paragraph.style and paragraph.style.name
-            else ""
-        )
-
-        if style_name.startswith("heading"):
-            flush_section()
-            current_heading = text
-            current_parts = [text]
-        else:
-            current_parts.append(text)
-
-    flush_section()
-
-    for table_index, table in enumerate(word_document.tables):
-        rows = []
-        for row in table.rows:
-            cells = [
-                normalize_text(cell.text)
-                for cell in row.cells
-            ]
-            rows.append(" | ".join(cells))
-
-        document = _make_document(
-            "\n".join(rows),
-            base_metadata=base_metadata,
-            section_index=section_index,
-            chunk_strategy="atomic",
-            extra_metadata={
-                "table_index": table_index,
-                "content_kind": "table",
-            },
-        )
-        if document:
-            documents.append(document)
-            section_index += 1
-
-    return documents
-
-
-def _load_pptx(
-    path: Path,
-    base_metadata: dict,
-) -> list[Document]:
-    presentation = Presentation(path)
-    documents: list[Document] = []
-
-    for slide_index, slide in enumerate(presentation.slides):
-        parts = []
-        for shape in slide.shapes:
-            if hasattr(shape, "text"):
-                text = normalize_text(shape.text)
-                if text:
-                    parts.append(text)
-
-        document = _make_document(
-            "\n".join(parts),
-            base_metadata=base_metadata,
-            section_index=slide_index,
-            chunk_strategy="prose",
-            extra_metadata={
-                "slide_number": slide_index + 1,
-            },
-        )
-        if document:
-            documents.append(document)
-
-    return documents
-
-
-def _load_csv(
-    path: Path,
-    base_metadata: dict,
-) -> list[Document]:
-    documents: list[Document] = []
-
-    with path.open(
-        newline="",
-        encoding="utf-8-sig",
-        errors="replace",
-    ) as file:
+    with path.open(newline="", encoding="utf-8-sig", errors="strict") as file:
         reader = csv.DictReader(file)
-
+        headers = [str(header) for header in (reader.fieldnames or []) if header is not None]
+        header_text = " | ".join(headers)
         for row_index, row in enumerate(reader):
             fields = [
-                f"{normalize_text(str(column))}: "
-                f"{normalize_text(str(value))}"
+                _field_text(column, value)
                 for column, value in row.items()
-                if column is not None
-                and value is not None
-                and normalize_text(str(value))
+                if column is not None and value is not None and str(value).strip()
             ]
-
             document = _make_document(
                 "\n".join(fields),
                 base_metadata=base_metadata,
                 section_index=row_index,
-                chunk_strategy="atomic",
+                structural_kind="table_row",
+                locator={"type": "table_row", "row": row_index + 2},
                 extra_metadata={
                     "row_number": row_index + 2,
-                    "content_kind": "table_row",
+                    "table_header": header_text,
+                    "repeat_context": header_text,
                 },
             )
             if document:
                 documents.append(document)
-
     return documents
 
 
-def _load_excel(
-    path: Path,
-    base_metadata: dict,
-) -> list[Document]:
-    workbook = openpyxl.load_workbook(
-        path,
-        data_only=True,
-        read_only=True,
-    )
+def _load_excel(path: Path, base_metadata: dict[str, Any]) -> list[Document]:
+    workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
     documents: list[Document] = []
     section_index = 0
-
-    for worksheet in workbook.worksheets:
-        iterator = worksheet.iter_rows(values_only=True)
-
-        try:
-            first_row = next(iterator)
-        except StopIteration:
-            continue
-
-        headers = [
-            normalize_text(str(value)) if value is not None else ""
-            for value in first_row
-        ]
-
-        for row_number, row in enumerate(iterator, start=2):
-            values = [
-                normalize_text(str(value)) if value is not None else ""
-                for value in row
-            ]
-
-            fields = [
-                f"{header}: {value}"
-                for header, value in zip(headers, values)
-                if header and value
-            ]
-
-            document = _make_document(
-                "\n".join(fields),
-                base_metadata=base_metadata,
-                section_index=section_index,
-                chunk_strategy="atomic",
-                extra_metadata={
-                    "sheet_name": worksheet.title,
-                    "row_number": row_number,
-                    "content_kind": "table_row",
-                },
-            )
-            if document:
-                documents.append(document)
-                section_index += 1
-
-    workbook.close()
-    return documents
-
-
-def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
-    sections: list[tuple[str, str]] = []
-    heading = ""
-    parts: list[str] = []
-
-    for line in text.splitlines():
-        match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
-        if match:
-            if parts:
-                sections.append((heading, "\n".join(parts)))
-            heading = normalize_text(match.group(2))
-            parts = [line]
-        else:
-            parts.append(line)
-
-    if parts:
-        sections.append((heading, "\n".join(parts)))
-
-    return sections
-
-
-def _load_text_or_markdown(
-    path: Path,
-    base_metadata: dict,
-) -> list[Document]:
-    raw = path.read_text(encoding="utf-8", errors="replace")
-
-    if path.suffix.lower() == ".md":
-        sections = _split_markdown_sections(raw)
-    else:
-        sections = [
-            ("", section)
-            for section in re.split(r"\n\s*\n", raw)
-            if normalize_text(section)
-        ]
-
-    documents: list[Document] = []
-    for section_index, (heading, text) in enumerate(sections):
-        document = _make_document(
-            text,
-            base_metadata=base_metadata,
-            section_index=section_index,
-            chunk_strategy="prose",
-            extra_metadata={
-                "section_heading": heading,
-            },
-        )
-        if document:
-            documents.append(document)
-
-    return documents
-
-
-def _load_html(
-    path: Path,
-    base_metadata: dict,
-) -> list[Document]:
-    html = path.read_text(
-        encoding="utf-8",
-        errors="replace",
-    )
-    soup = BeautifulSoup(html, "html.parser")
-
-    for element in soup(
-        [
-            "script",
-            "style",
-            "nav",
-            "footer",
-            "noscript",
-            "svg",
-        ]
-    ):
-        element.decompose()
-
-    page_title = (
-        normalize_text(soup.title.get_text(" ", strip=True))
-        if soup.title
-        else base_metadata["source_title"]
-    )
-
-    documents: list[Document] = []
-    current_heading = page_title
-    current_parts: list[str] = []
-    section_index = 0
-
-    def flush() -> None:
-        nonlocal section_index, current_parts
-        if not current_parts:
-            return
-
-        document = _make_document(
-            "\n".join(current_parts),
-            base_metadata={
-                **base_metadata,
-                "source_title": page_title,
-            },
-            section_index=section_index,
-            chunk_strategy="prose",
-            extra_metadata={
-                "section_heading": current_heading,
-            },
-        )
-        if document:
-            documents.append(document)
-            section_index += 1
-        current_parts = []
-
-    body = soup.body or soup
-
-    for element in body.find_all(
-        ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table"]
-    ):
-        text = normalize_text(element.get_text(" ", strip=True))
-        if not text:
-            continue
-
-        if element.name and element.name.startswith("h"):
-            flush()
-            current_heading = text
-            current_parts = [text]
-        else:
-            current_parts.append(text)
-
-    flush()
-
-    if not documents:
-        document = _make_document(
-            soup.get_text("\n", strip=True),
-            base_metadata={
-                **base_metadata,
-                "source_title": page_title,
-            },
-            section_index=0,
-            chunk_strategy="prose",
-        )
-        if document:
-            documents.append(document)
-
-    return documents
-
-
-def _load_xml(
-    path: Path,
-    base_metadata: dict,
-) -> list[Document]:
-    parser = etree.XMLParser(
-        recover=True,
-        resolve_entities=False,
-        no_network=True,
-        huge_tree=False,
-    )
-    tree = etree.parse(str(path), parser)
-    root = tree.getroot()
-
-    children = list(root)
-    targets = children if children else [root]
-
-    documents: list[Document] = []
-
-    for section_index, element in enumerate(targets):
-        text_parts = [
-            normalize_text(text)
-            for text in element.itertext()
-            if normalize_text(text)
-        ]
-        tag = etree.QName(element.tag).localname
-
-        document = _make_document(
-            "\n".join(text_parts),
-            base_metadata=base_metadata,
-            section_index=section_index,
-            chunk_strategy="atomic",
-            extra_metadata={
-                "xml_tag": tag,
-            },
-        )
-        if document:
-            documents.append(document)
-
+    try:
+        for worksheet in workbook.worksheets:
+            rows = worksheet.iter_rows(values_only=True)
+            try:
+                raw_headers = next(rows)
+            except StopIteration:
+                continue
+            headers = [str(value).strip() if value is not None else "" for value in raw_headers]
+            header_text = " | ".join(header for header in headers if header)
+            for row_number, row in enumerate(rows, start=2):
+                fields = [
+                    _field_text(header, value)
+                    for header, value in zip(headers, row)
+                    if header and value is not None and str(value).strip()
+                ]
+                document = _make_document(
+                    "\n".join(fields),
+                    base_metadata=base_metadata,
+                    section_index=section_index,
+                    structural_kind="table_row",
+                    locator={
+                        "type": "sheet_row",
+                        "sheet": worksheet.title,
+                        "row": row_number,
+                    },
+                    structure_path=[worksheet.title],
+                    extra_metadata={
+                        "sheet_name": worksheet.title,
+                        "row_number": row_number,
+                        "table_header": header_text,
+                        "repeat_context": header_text,
+                    },
+                )
+                if document:
+                    documents.append(document)
+                    section_index += 1
+    finally:
+        workbook.close()
     return documents
 
 
 def _json_record_to_text(record: object) -> str:
     if isinstance(record, dict):
         return "\n".join(
-            f"{normalize_text(str(key))}: "
-            f"{normalize_text(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value))}"
+            _field_text(
+                key,
+                json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                if isinstance(value, (dict, list))
+                else value,
+            )
             for key, value in record.items()
         )
-
     if isinstance(record, list):
-        return "\n".join(
-            normalize_text(str(item))
-            for item in record
-        )
-
-    return normalize_text(str(record))
+        return "\n".join(str(item) for item in record)
+    return str(record)
 
 
-def _load_json(
-    path: Path,
-    base_metadata: dict,
-) -> list[Document]:
-    documents: list[Document] = []
-
+def _load_json(path: Path, base_metadata: dict[str, Any]) -> list[Document]:
     if path.suffix.lower() == ".jsonl":
-        records = []
-        with path.open(
-            encoding="utf-8",
-            errors="replace",
-        ) as file:
-            for line in file:
-                line = line.strip()
-                if line:
-                    records.append(json.loads(line))
+        with path.open(encoding="utf-8", errors="strict") as file:
+            records = [json.loads(line) for line in file if line.strip()]
     else:
-        data = json.loads(
-            path.read_text(
-                encoding="utf-8",
-                errors="replace",
-            )
-        )
+        data = json.loads(path.read_text(encoding="utf-8", errors="strict"))
         records = data if isinstance(data, list) else [data]
 
+    documents: list[Document] = []
     for record_index, record in enumerate(records):
         document = _make_document(
             _json_record_to_text(record),
             base_metadata=base_metadata,
             section_index=record_index,
-            chunk_strategy="atomic",
+            structural_kind="record",
+            locator={"type": "json_record", "record": record_index},
+            extra_metadata={"record_index": record_index},
+        )
+        if document:
+            documents.append(document)
+    return documents
+
+
+def _xml_record_text(element: etree._Element) -> str:
+    fields: list[str] = []
+    for child in element.iter():
+        if child is element and len(element):
+            continue
+        tag = etree.QName(child.tag).localname
+        value = " ".join(part.strip() for part in child.itertext() if part.strip())
+        if value:
+            fields.append(f"{tag}: {value}")
+    if not fields:
+        fields.append(" ".join(part.strip() for part in element.itertext() if part.strip()))
+    return "\n".join(fields)
+
+
+def _load_xml(path: Path, base_metadata: dict[str, Any]) -> list[Document]:
+    parser = etree.XMLParser(
+        recover=False,
+        resolve_entities=False,
+        no_network=True,
+        huge_tree=False,
+    )
+    root = etree.parse(str(path), parser).getroot()
+    targets = list(root) or [root]
+    documents: list[Document] = []
+    for record_index, element in enumerate(targets):
+        tag = etree.QName(element.tag).localname
+        document = _make_document(
+            _xml_record_text(element),
+            base_metadata=base_metadata,
+            section_index=record_index,
+            structural_kind="record",
+            locator={"type": "xml_record", "tag": tag, "record": record_index},
+            structure_path=[etree.QName(root.tag).localname, tag],
+            extra_metadata={"xml_tag": tag, "record_index": record_index},
+        )
+        if document:
+            documents.append(document)
+    return documents
+
+
+@dataclass(frozen=True)
+class FaqPair:
+    question: str
+    answer: str
+    anchor: str = ""
+
+
+def _clean_html_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, Tag):
+        return value.get_text("\n", strip=True)
+    if isinstance(value, str) and "<" in value:
+        return BeautifulSoup(value, "html.parser").get_text("\n", strip=True)
+    return str(value).strip()
+
+
+def _walk_json(value: Any) -> Iterable[dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_json(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_json(child)
+
+
+def _faq_from_schema_org(soup: BeautifulSoup) -> list[FaqPair]:
+    pairs: list[FaqPair] = []
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(script.string or script.get_text())
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for item in _walk_json(data):
+            item_type = item.get("@type")
+            types = item_type if isinstance(item_type, list) else [item_type]
+            if "FAQPage" not in types:
+                continue
+            for entity in item.get("mainEntity", []):
+                if not isinstance(entity, dict):
+                    continue
+                question = _clean_html_text(entity.get("name"))
+                accepted = entity.get("acceptedAnswer") or {}
+                answer = _clean_html_text(
+                    accepted.get("text") if isinstance(accepted, dict) else accepted
+                )
+                if question and answer:
+                    pairs.append(FaqPair(question, answer))
+    return pairs
+
+
+def _faq_from_details(soup: BeautifulSoup) -> list[FaqPair]:
+    pairs: list[FaqPair] = []
+    for details in soup.find_all("details"):
+        summary = details.find("summary")
+        if not summary:
+            continue
+        answer_parts = [
+            _clean_html_text(child)
+            for child in details.children
+            if child is not summary and _clean_html_text(child)
+        ]
+        question = _clean_html_text(summary)
+        answer = "\n".join(answer_parts).strip()
+        if question and answer:
+            pairs.append(FaqPair(question, answer, str(details.get("id") or "")))
+    return pairs
+
+
+def _faq_from_definition_lists(soup: BeautifulSoup) -> list[FaqPair]:
+    pairs: list[FaqPair] = []
+    for term in soup.find_all("dt"):
+        answers: list[str] = []
+        sibling = term.find_next_sibling()
+        while sibling and sibling.name != "dt":
+            if sibling.name == "dd":
+                answers.append(_clean_html_text(sibling))
+            sibling = sibling.find_next_sibling()
+        question = _clean_html_text(term)
+        answer = "\n".join(part for part in answers if part)
+        if question and answer:
+            pairs.append(FaqPair(question, answer, str(term.get("id") or "")))
+    return pairs
+
+
+def _faq_from_aria(soup: BeautifulSoup) -> list[FaqPair]:
+    pairs: list[FaqPair] = []
+    for control in soup.select("[aria-controls]"):
+        target_id = str(control.get("aria-controls") or "").strip()
+        target = soup.find(id=target_id) if target_id else None
+        question = _clean_html_text(control)
+        answer = _clean_html_text(target)
+        if question and answer:
+            pairs.append(FaqPair(question, answer, target_id))
+    return pairs
+
+
+def _is_question_block(tag: Tag) -> bool:
+    text = _clean_html_text(tag)
+    if not text.endswith(("?", "？")):
+        return False
+    if tag.name in {"h1", "h2", "h3", "h4", "h5", "h6", "strong", "b"}:
+        return True
+    return tag.name in {"p", "div", "li"} and bool(tag.find(["strong", "b", "em"]))
+
+
+def _faq_from_question_blocks(soup: BeautifulSoup) -> list[FaqPair]:
+    pairs: list[FaqPair] = []
+    candidates = [tag for tag in soup.find_all(True) if _is_question_block(tag)]
+    candidate_ids = {id(tag) for tag in candidates}
+    for question_block in candidates:
+        sibling = question_block.find_next_sibling()
+        answer_parts: list[str] = []
+        while sibling:
+            if id(sibling) in candidate_ids or sibling.name in {"h1", "h2", "h3"}:
+                break
+            text = _clean_html_text(sibling)
+            if text:
+                answer_parts.append(text)
+            if answer_parts:
+                break
+            sibling = sibling.find_next_sibling()
+        question = _clean_html_text(question_block)
+        answer = "\n".join(answer_parts)
+        if question and answer:
+            pairs.append(FaqPair(question, answer, str(question_block.get("id") or "")))
+    return pairs
+
+
+_QUESTION_MARKER = re.compile(
+    r"^\s*(?:(?:Q(?:uestion)?)(?:\s*\.?\s*\d+)?|問(?:題)?|问题)"
+    r"\s*(?:[.:：、)]\s*)?(?P<text>.*)$",
+    re.IGNORECASE,
+)
+_ANSWER_MARKER = re.compile(
+    r"^\s*(?:(?:A(?:nswer)?)(?:\s*\.?\s*\d+)?|答(?:案)?)"
+    r"\s*(?:[.:：、)]\s*)?(?P<text>.*)$",
+    re.IGNORECASE,
+)
+
+
+def _faq_from_markers(soup: BeautifulSoup) -> list[FaqPair]:
+    lines = [line.strip() for line in soup.get_text("\n").splitlines() if line.strip()]
+    pairs: list[FaqPair] = []
+    question = ""
+    answer_parts: list[str] = []
+    state = ""
+
+    def flush() -> None:
+        nonlocal question, answer_parts
+        answer = "\n".join(answer_parts).strip()
+        if question and answer:
+            pairs.append(FaqPair(question, answer))
+        question = ""
+        answer_parts = []
+
+    for line in lines:
+        q_match = _QUESTION_MARKER.match(line)
+        a_match = _ANSWER_MARKER.match(line)
+        if q_match:
+            flush()
+            question = q_match.group("text").strip()
+            state = "question"
+        elif a_match and question:
+            answer_parts = [a_match.group("text").strip()] if a_match.group("text").strip() else []
+            state = "answer"
+        elif state == "question" and question:
+            question = f"{question}\n{line}".strip()
+        elif state == "answer":
+            answer_parts.append(line)
+    flush()
+    return pairs
+
+
+def extract_faq_pairs(html: str, *, hinted: bool = False) -> list[FaqPair]:
+    """Extract FAQ pairs using ordered structural strategies."""
+    soup = BeautifulSoup(html, "html.parser")
+    strategies = (
+        _faq_from_schema_org,
+        _faq_from_details,
+        _faq_from_definition_lists,
+        _faq_from_aria,
+        _faq_from_question_blocks,
+        _faq_from_markers,
+    )
+    for index, strategy in enumerate(strategies):
+        pairs = strategy(soup)
+        if pairs and (hinted or index < 4 or len(pairs) >= 2):
+            return pairs
+    return []
+
+
+def extract_html_record_metadata(html: str, record_kind: str) -> dict[str, Any]:
+    """Extract typed date fields without using them as chunk boundaries."""
+    soup = BeautifulSoup(html, "html.parser")
+    metadata: dict[str, Any] = {}
+    wanted_types = {
+        "record": {"Event", "NewsArticle", "Article"},
+        "event": {"Event"},
+        "notice": {"NewsArticle", "Article"},
+    }
+    date_fields = {
+        "record": ("startDate", "endDate", "datePublished", "dateModified"),
+        "event": ("startDate", "endDate"),
+        "notice": ("datePublished", "dateModified"),
+    }
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(script.string or script.get_text())
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for item in _walk_json(data):
+            item_type = item.get("@type")
+            item_types = set(item_type if isinstance(item_type, list) else [item_type])
+            if not item_types.intersection(wanted_types.get(record_kind, set())):
+                continue
+            for field in date_fields.get(record_kind, ()):
+                if item.get(field):
+                    metadata[field] = str(item[field])
+            if item.get("name"):
+                metadata["record_header"] = _clean_html_text(item["name"])
+
+    time_values = [
+        str(tag.get("datetime"))
+        for tag in soup.find_all("time")
+        if tag.get("datetime")
+    ]
+    if time_values:
+        metadata["html_time_values"] = time_values
+    if not metadata.get("effective_date"):
+        metadata["effective_date"] = (
+            metadata.get("startDate")
+            or metadata.get("datePublished")
+            or (time_values[0] if time_values else "")
+        )
+    return metadata
+
+
+def _load_html_faq(
+    path: Path,
+    base_metadata: dict[str, Any],
+) -> list[Document]:
+    html = path.read_text(encoding="utf-8", errors="strict")
+    hinted = base_metadata.get("record_kind") == "faq"
+    pairs = extract_faq_pairs(html, hinted=hinted)
+    if not pairs:
+        return []
+
+    documents: list[Document] = []
+    parent_record = hashlib.sha256(
+        str(base_metadata["source_version_id"]).encode("utf-8")
+    ).hexdigest()[:24]
+    for pair_index, pair in enumerate(pairs):
+        evidence = f"{pair.question}\n{pair.answer}"
+        locator = {
+            "type": "web_anchor" if pair.anchor else "faq_record",
+            "anchor": pair.anchor,
+            "record": pair_index,
+        }
+        document = _make_document(
+            evidence,
+            base_metadata={**base_metadata, "record_kind": "faq"},
+            section_index=pair_index,
+            structural_kind="faq_pair",
+            locator=locator,
             extra_metadata={
-                "record_index": record_index,
+                "question": pair.question,
+                "record_header": pair.question,
+                "repeat_context": pair.question,
+                "parent_record_id": f"{parent_record}:{pair_index}",
+                "answer_text": pair.answer,
             },
         )
         if document:
             documents.append(document)
-
     return documents
 
 
-def _load_image(
-    path: Path,
-    base_metadata: dict,
-    ocr_languages: str,
-) -> list[Document]:
-    with Image.open(path) as image:
-        text = _ocr_image(image.convert("RGB"), ocr_languages)
+def _docling_converter(ocr_languages: str):
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
 
-    document = _make_document(
-        text,
-        base_metadata=base_metadata,
-        section_index=0,
-        chunk_strategy="prose",
-        extra_metadata={
-            "extraction_method": "ocr",
-            "ocr_languages": ocr_languages,
-        },
+    artifacts_path = Path(os.getenv("DOCLING_ARTIFACTS_PATH", "/app/models/docling"))
+    if not artifacts_path.exists():
+        raise RuntimeError(
+            f"Docling artifacts are not available at {artifacts_path}; ingestion cannot continue offline."
+        )
+
+    pipeline_options = PdfPipelineOptions(
+        artifacts_path=artifacts_path,
+        enable_remote_services=False,
+        allow_external_plugins=False,
+        document_timeout=float(os.getenv("DOCLING_DOCUMENT_TIMEOUT_SECONDS", "300")),
+        do_ocr=True,
+        ocr_options=TesseractCliOcrOptions(
+            lang=[language for language in ocr_languages.split("+") if language]
+        ),
+        do_table_structure=True,
+        do_code_enrichment=False,
+        do_formula_enrichment=False,
+        do_picture_classification=False,
+        do_picture_description=False,
+    )
+    format_option = PdfFormatOption(pipeline_options=pipeline_options)
+    return DocumentConverter(format_options={
+        InputFormat.PDF: format_option,
+        InputFormat.IMAGE: format_option,
+    })
+
+
+def _docling_json_path(base_metadata: dict[str, Any]) -> Path:
+    output_root = Path(os.getenv("DOCLING_JSON_DIR", "/app/storage/docling"))
+    output_root.mkdir(parents=True, exist_ok=True)
+    return output_root / (
+        f"{base_metadata['document_id']}-v{base_metadata['document_version']}-"
+        f"{base_metadata['content_hash'][:12]}.json"
     )
 
-    return [document] if document else []
+
+def _persist_docling_document(
+    docling_document: Any,
+    base_metadata: dict[str, Any],
+) -> Path:
+    output_path = _docling_json_path(base_metadata)
+    payload = {
+        "parser_version": f"docling-{package_version('docling')}",
+        "source_version_id": base_metadata["source_version_id"],
+        "content_hash": base_metadata["content_hash"],
+        "document": docling_document.model_dump(mode="json"),
+    }
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def _load_or_convert_docling(
+    path: Path,
+    base_metadata: dict[str, Any],
+    ocr_languages: str,
+) -> tuple[Any, Path]:
+    from docling_core.types.doc import DoclingDocument
+
+    json_path = _docling_json_path(base_metadata)
+    parser_version = f"docling-{package_version('docling')}"
+    if json_path.exists():
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        if (
+            payload.get("content_hash") == base_metadata["content_hash"]
+            and payload.get("parser_version") == parser_version
+        ):
+            return DoclingDocument.model_validate(payload["document"]), json_path
+
+    result = _docling_converter(ocr_languages).convert(path)
+    docling_document = result.document
+    return docling_document, _persist_docling_document(docling_document, base_metadata)
+
+
+def _docling_locator(doc_items: list[Any], structure_path: list[str]) -> dict[str, Any]:
+    references = [str(item.self_ref) for item in doc_items if getattr(item, "self_ref", None)]
+    pages = sorted({
+        int(prov.page_no)
+        for item in doc_items
+        for prov in (getattr(item, "prov", None) or [])
+        if getattr(prov, "page_no", None) is not None
+    })
+    locator: dict[str, Any] = {
+        "type": "docling_items",
+        "item_refs": references,
+    }
+    if pages:
+        locator.update({
+            "type": "page" if len(pages) == 1 else "page_range",
+            "page": pages[0],
+            "page_end": pages[-1],
+        })
+    if structure_path:
+        locator["heading_path"] = structure_path
+    return locator
+
+
+def _table_header_text(table_text: str) -> str:
+    lines = [line for line in table_text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if len(lines) > 1 and re.fullmatch(r"[\s|:+-]+", lines[1]):
+        return "\n".join(lines[:2])
+    return lines[0]
+
+
+def _load_docling(
+    path: Path,
+    base_metadata: dict[str, Any],
+    ocr_languages: str,
+) -> list[Document]:
+    from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
+    from docling_core.types.doc import TableItem
+
+    docling_document, json_path = _load_or_convert_docling(
+        path,
+        base_metadata,
+        ocr_languages,
+    )
+    parser_version = f"docling-{package_version('docling')}"
+    source_parent_id = hashlib.sha256(
+        str(base_metadata["source_version_id"]).encode("utf-8")
+    ).hexdigest()[:24]
+
+    if normalize_document_type(base_metadata.get("document_type")) == "auto":
+        evidence_text = docling_document.export_to_markdown().strip()
+        if not evidence_text:
+            return []
+        metadata = {
+            **base_metadata,
+            "section_index": 0,
+            "structural_kind": "fallback",
+            "structure_path": [],
+            "locator": {"type": "document"},
+            "parser_version": parser_version,
+            "docling_json_path": str(json_path),
+            "parent_record_id": source_parent_id,
+            "chunk_policy": "fallback",
+            "evidence_text": evidence_text,
+        }
+        metadata["search_text"] = build_search_text(metadata, evidence_text)
+        return [Document(text=evidence_text, metadata=metadata)]
+
+    tokenizer = get_embedding_tokenizer(DEFAULT_MAX_TOKENS)
+    chunker = HybridChunker(
+        tokenizer=tokenizer,
+        repeat_table_header=True,
+        merge_peers=True,
+        omit_header_on_overflow=False,
+    )
+    documents: list[Document] = []
+    for chunk_index, chunk in enumerate(chunker.chunk(dl_doc=docling_document)):
+        evidence_text = str(chunk.text or "").strip()
+        if not evidence_text:
+            continue
+        structure_path = [str(value) for value in (chunk.meta.headings or []) if value]
+        doc_items = list(chunk.meta.doc_items or [])
+        is_table = any(isinstance(item, TableItem) for item in doc_items)
+        structural_kind = "table" if is_table else "hierarchical_leaf"
+        locator = _docling_locator(doc_items, structure_path)
+        metadata = {
+            **base_metadata,
+            "section_index": chunk_index,
+            "structural_kind": structural_kind,
+            "structure_path": structure_path,
+            "locator": locator,
+            "parser_version": parser_version,
+            "docling_json_path": str(json_path),
+            "docling_item_refs": locator.get("item_refs", []),
+            "parent_record_id": source_parent_id,
+        }
+        record_kind = resolve_record_kind(metadata, structural_kind=structural_kind)
+        if record_kind == "record":
+            record_header = str(
+                base_metadata.get("record_header")
+                or base_metadata.get("source_title")
+                or ""
+            ).strip()
+            metadata.update({
+                "record_header": record_header,
+                "repeat_context": record_header,
+            })
+            if record_header and not evidence_text.startswith(record_header):
+                evidence_text = f"{record_header}\n{evidence_text}"
+        if is_table:
+            table_header = _table_header_text(evidence_text)
+            metadata.update({
+                "table_header": table_header,
+                "repeat_context": table_header,
+            })
+        metadata.update({
+            "record_kind": record_kind,
+            "chunk_policy": chunk_policy_for(
+                str(base_metadata.get("document_type") or "auto"),
+                structural_kind,
+            ),
+            "evidence_text": evidence_text,
+        })
+        if locator.get("page"):
+            metadata["page_number"] = locator["page"]
+        if structure_path:
+            metadata["section_heading"] = structure_path[-1]
+        metadata["search_text"] = build_search_text(metadata, evidence_text)
+
+        document = Document(text=evidence_text, metadata=metadata)
+        document.id_ = f"{base_metadata['source_version_id']}:docling:{chunk_index}"
+        documents.append(document)
+    return documents
 
 
 def load_file(
@@ -744,35 +809,27 @@ def load_file(
     access_level: str = "public",
     document_version: int = 1,
     content_hash: str | None = None,
-    ocr_languages: str = "eng+chi_tra",
+    ocr_languages: str = "eng+chi_tra+chi_sim",
     category: str | None = None,
     language: str | None = None,
     effective_date: str | None = None,
     source_kind: str = "upload",
     document_type: str = "auto",
+    classification_source: str | None = None,
+    branch_ids: Iterable[str] | None = None,
 ) -> list[Document]:
-    """Dispatch a saved source to its format-specific structural reader.
-
-    Returns one or more pre-chunking ``Document`` sections with common source
-    metadata. PDFs use native layout-aware extraction with OCR fallback, while
-    HTML is divided around headings, paragraphs, list items, and tables.
-    """
-    
+    """Dispatch a source to a deterministic reader or pinned Docling parser."""
     extension = path.suffix.lower()
-
     if extension in LEGACY_EXTENSIONS:
         raise ValueError(
             f"Legacy format {extension} is not supported directly. "
             "Convert it to .docx, .xlsx, or .pptx first."
         )
-
     if extension not in SUPPORTED_EXTENSIONS:
-        raise ValueError(
-            f"Unsupported file extension: {extension}"
-        )
+        raise ValueError(f"Unsupported file extension: {extension}")
 
     actual_hash = content_hash or file_content_hash(path)
-
+    selected_type = normalize_document_type(document_type)
     base_metadata = _base_metadata(
         document_id=document_id,
         original_file_name=original_file_name,
@@ -789,37 +846,31 @@ def load_file(
         effective_date=effective_date or "",
         source_kind=source_kind,
         document_type=document_type,
+        classification_source=(
+            classification_source
+            or ("fallback" if selected_type == "auto" else "librarian")
+        ),
+        branch_ids=branch_ids,
     )
 
-    if extension == ".pdf":
-        return _load_pdf(path, base_metadata, ocr_languages)
-    if extension == ".docx":
-        return _load_docx(path, base_metadata)
-    if extension == ".pptx":
-        return _load_pptx(path, base_metadata)
     if extension == ".csv":
         return _load_csv(path, base_metadata)
     if extension in {".xlsx", ".xlsm"}:
         return _load_excel(path, base_metadata)
-    if extension in {".md", ".txt"}:
-        return _load_text_or_markdown(path, base_metadata)
-    if extension in {".html", ".htm"}:
-        return _load_html(path, base_metadata)
-    if extension == ".xml":
-        return _load_xml(path, base_metadata)
     if extension in {".json", ".jsonl"}:
         return _load_json(path, base_metadata)
-    if extension in {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".tif",
-        ".tiff",
-    }:
-        return _load_image(
-            path,
-            base_metadata,
-            ocr_languages,
-        )
-
+    if extension == ".xml":
+        return _load_xml(path, base_metadata)
+    if extension in {".html", ".htm"}:
+        html = path.read_text(encoding="utf-8", errors="strict")
+        if base_metadata["record_kind"] == "record":
+            base_metadata.update(
+                extract_html_record_metadata(html, base_metadata["record_kind"])
+            )
+        if base_metadata["record_kind"] == "faq":
+            faq_documents = _load_html_faq(path, base_metadata)
+            if faq_documents:
+                return faq_documents
+    if extension in DOCLING_EXTENSIONS:
+        return _load_docling(path, base_metadata, ocr_languages)
     raise ValueError(f"No reader configured for {extension}")

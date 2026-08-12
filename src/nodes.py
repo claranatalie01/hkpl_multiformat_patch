@@ -388,8 +388,9 @@ async def rag_pipeline_node(state: LibraryBotState) -> dict:
         # Use 0.0 if score is missing
         score = node.score if node.score is not None else 0.0
 
-        # Store the actual retrieved text
-        chunk_texts.append(node.node.text)
+        # Retrieval operates on contextual search_text, but generation and
+        # citations must see only the exact selected source evidence.
+        chunk_texts.append(metadata.get("evidence_text") or node.node.text)
 
         # Store the retrieval/reranking score
         scores.append(score)
@@ -420,6 +421,10 @@ async def rag_pipeline_node(state: LibraryBotState) -> dict:
                 "row_number": metadata.get("row_number"),
                 "domain": metadata.get("domain", ""),
                 "question": metadata.get("question", ""),
+                "locator": metadata.get("locator", {}),
+                "record_kind": metadata.get("record_kind", "prose"),
+                "structure_path": metadata.get("structure_path", []),
+                "branch_ids": metadata.get("branch_ids", []),
                 "document_version": metadata.get("document_version"),
                 "access_level": metadata.get("access_level", "public"),
             }
@@ -453,11 +458,17 @@ def format_citations(sources: list[dict]) -> str:
             or "HKPL knowledge base"
         )
         url = source.get("source_url") or source.get("url", "")
-        page = source.get("page_number")
+        locator = source.get("locator") or {}
+        page = source.get("page_number") or locator.get("page")
+        page_end = locator.get("page_end")
         slide = source.get("slide_number")
-        section = source.get("section_heading", "")
-        sheet = source.get("sheet_name", "")
-        row = source.get("row_number")
+        structure_path = source.get("structure_path") or locator.get("heading_path") or []
+        section = source.get("section_heading", "") or (
+            structure_path[-1] if structure_path else ""
+        )
+        sheet = source.get("sheet_name", "") or locator.get("sheet", "")
+        row = source.get("row_number") or locator.get("row")
+        anchor = locator.get("anchor", "")
         domain = source.get("domain", "")
         question = source.get("question", "")
 
@@ -470,6 +481,7 @@ def format_citations(sources: list[dict]) -> str:
             sheet,
             row,
             question,
+            json.dumps(locator, ensure_ascii=False, sort_keys=True),
         )
         if key in seen:
             continue
@@ -477,7 +489,9 @@ def format_citations(sources: list[dict]) -> str:
 
         details = []
         if page:
-            details.append(f"page {page}")
+            details.append(
+                f"pages {page}-{page_end}" if page_end and page_end != page else f"page {page}"
+            )
         if slide:
             details.append(f"slide {slide}")
         if section:
@@ -486,6 +500,8 @@ def format_citations(sources: list[dict]) -> str:
             details.append(f'sheet "{sheet}"')
         if row:
             details.append(f"row {row}")
+        if anchor:
+            details.append(f"anchor {anchor}")
         if domain:
             details.append(domain)
 

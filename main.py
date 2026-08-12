@@ -93,6 +93,7 @@ class UrlIndexRequest(BaseModel):
     language: str | None = None
     effective_date: str | None = None
     access_level: str = "public"
+    document_type: str = "auto"
 
 
 class TestQueryRequest(BaseModel):
@@ -304,6 +305,7 @@ async def index_url(
         language=payload.language,
         effective_date=payload.effective_date,
         source_kind="webpage",
+        document_type=validate_document_type(payload.document_type),
         replace_document_id=(
             str(existing_document["document_id"])
             if existing_document

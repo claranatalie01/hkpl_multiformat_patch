@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services>
+  <service><name>還書箱</name><description>24-hour book drop</description></service>
+  <service><name>兒童圖書館</name><description>Children's library</description></service>
+</services>

@@ -29,6 +29,7 @@ def ensure_registry_schema() -> None:
                     source_title TEXT,
                     source_url TEXT,
                     source_type TEXT NOT NULL DEFAULT 'admin_upload',
+                    classification_source TEXT NOT NULL DEFAULT 'fallback',
                     access_level TEXT NOT NULL DEFAULT 'public',
                     version INTEGER NOT NULL DEFAULT 1,
                     status TEXT NOT NULL,
@@ -126,6 +127,16 @@ def ensure_registry_schema() -> None:
             ALTER TABLE knowledge_documents
             ADD COLUMN IF NOT EXISTS document_type TEXT NOT NULL DEFAULT 'auto'
         """))
+        connection.execute(text("""
+            ALTER TABLE knowledge_documents
+            ADD COLUMN IF NOT EXISTS classification_source TEXT NOT NULL DEFAULT 'fallback'
+        """))
+        connection.execute(text("""
+            UPDATE knowledge_documents
+            SET classification_source = 'persisted'
+            WHERE document_type <> 'auto'
+              AND classification_source = 'fallback'
+        """))
 
 
 def _row_to_dict(row: Any) -> dict:
@@ -134,6 +145,9 @@ def _row_to_dict(row: Any) -> dict:
 
 def find_completed_duplicate(
     content_hash: str,
+    *,
+    source_url: str = "",
+    original_file_name: str = "",
 ) -> Optional[dict]:
     with engine.connect() as connection:
         row = connection.execute(
@@ -143,11 +157,23 @@ def find_completed_duplicate(
                 FROM knowledge_documents
                 WHERE content_hash = :content_hash
                   AND status = 'completed'
+                  AND (
+                    (:source_url <> '' AND source_url = :source_url)
+                    OR (
+                      :source_url = ''
+                      AND COALESCE(source_url, '') = ''
+                      AND original_file_name = :original_file_name
+                    )
+                  )
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """
             ),
-            {"content_hash": content_hash},
+            {
+                "content_hash": content_hash,
+                "source_url": source_url,
+                "original_file_name": original_file_name,
+            },
         ).fetchone()
 
     return _row_to_dict(row) if row else None
@@ -187,6 +213,7 @@ def create_document(
     source_title: str,
     source_url: str,
     source_type: str,
+    classification_source: str,
     access_level: str,
     category: str | None = None,
     language: str | None = None,
@@ -211,6 +238,7 @@ def create_document(
                     source_title,
                     source_url,
                     source_type,
+                    classification_source,
                     access_level,
                     version,
                     status,
@@ -230,6 +258,7 @@ def create_document(
                     :source_title,
                     :source_url,
                     :source_type,
+                    :classification_source,
                     :access_level,
                     1,
                     'uploaded',
@@ -252,6 +281,7 @@ def create_document(
                 "source_title": source_title,
                 "source_url": source_url,
                 "source_type": source_type,
+                "classification_source": classification_source,
                 "access_level": access_level,
                 "category": category,
                 "language": language,
@@ -276,6 +306,7 @@ def prepare_replacement(
     source_title: str,
     source_url: str,
     source_type: str,
+    classification_source: str,
     access_level: str,
     category: str | None = None,
     language: str | None = None,
@@ -298,6 +329,7 @@ def prepare_replacement(
                     source_title = :source_title,
                     source_url = :source_url,
                     source_type = :source_type,
+                    classification_source = :classification_source,
                     access_level = :access_level,
                     category = :category,
                     language = :language,
@@ -324,6 +356,7 @@ def prepare_replacement(
                 "source_title": source_title,
                 "source_url": source_url,
                 "source_type": source_type,
+                "classification_source": classification_source,
                 "access_level": access_level,
                 "category": category,
                 "language": language,
@@ -336,7 +369,11 @@ def prepare_replacement(
     return _row_to_dict(row) if row else None
 
 
-def prepare_reindex(document_id: str, document_type: str | None = None) -> Optional[dict]:
+def prepare_reindex(
+    document_id: str,
+    document_type: str | None = None,
+    classification_source: str | None = None,
+) -> Optional[dict]:
     with engine.begin() as connection:
         row = connection.execute(
             text(
@@ -344,6 +381,11 @@ def prepare_reindex(document_id: str, document_type: str | None = None) -> Optio
                 UPDATE knowledge_documents
                 SET
                     document_type = COALESCE(:document_type, document_type, 'auto'),
+                    classification_source = COALESCE(
+                        :classification_source,
+                        classification_source,
+                        'fallback'
+                    ),
                     version = version + 1,
                     status = 'uploaded',
                     chunk_count = 0,
@@ -357,10 +399,68 @@ def prepare_reindex(document_id: str, document_type: str | None = None) -> Optio
             {
                 "document_id": document_id,
                 "document_type": document_type,
+                "classification_source": classification_source,
             },
         ).fetchone()
 
     return _row_to_dict(row) if row else None
+
+
+def restore_document(document: dict) -> None:
+    """Restore a registry row after a failed in-place replacement."""
+    with engine.begin() as connection:
+        connection.execute(
+            text("""
+                UPDATE knowledge_documents
+                SET
+                    original_file_name = :original_file_name,
+                    stored_file_name = :stored_file_name,
+                    file_type = :file_type,
+                    mime_type = :mime_type,
+                    content_hash = :content_hash,
+                    source_title = :source_title,
+                    source_url = :source_url,
+                    source_type = :source_type,
+                    classification_source = :classification_source,
+                    access_level = :access_level,
+                    version = :version,
+                    status = :status,
+                    chunk_count = :chunk_count,
+                    error_message = :error_message,
+                    category = :category,
+                    language = :language,
+                    effective_date = :effective_date,
+                    source_kind = :source_kind,
+                    document_type = :document_type,
+                    updated_at = NOW()
+                WHERE document_id = :document_id
+            """),
+            dict(document),
+        )
+
+
+def set_document_type(
+    document_id: str,
+    document_type: str,
+    classification_source: str,
+) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text("""
+                UPDATE knowledge_documents
+                SET
+                    document_type = :document_type,
+                    classification_source = :classification_source,
+                    updated_at = NOW()
+                WHERE document_id = :document_id
+                  AND status <> 'deleted'
+            """),
+            {
+                "document_id": document_id,
+                "document_type": document_type,
+                "classification_source": classification_source,
+            },
+        )
 
 
 def update_status(
