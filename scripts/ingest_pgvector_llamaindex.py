@@ -231,6 +231,7 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
                     f"source_chunk_id does not belong to source_document_id "
                     f"at row {line_number}: {chunk_id!r}"
                 )
+            parsed_evidence: dict[str, list[str]] = {}
             for field, fallback in (
                 ("expected_context_snippets_json", [item["expected_context_snippet"]]),
                 ("source_chunk_ids_json", [item["source_chunk_id"]]),
@@ -249,7 +250,11 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
                         f"{field} must be a JSON array of non-empty strings "
                         f"for {item['query']!r}."
                     )
-                values = list(dict.fromkeys(value.strip() for value in values))
+                # Preserve array positions. The same exact evidence sentence
+                # may legitimately occur in several different chunks, so
+                # deduplicating snippets independently would destroy their
+                # one-to-one relationship with the chunk-ID array.
+                values = [value.strip() for value in values]
                 if field == "source_chunk_ids_json" and any(
                     not value.startswith(f"{document_id}:") for value in values
                 ):
@@ -257,14 +262,29 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
                         "Every source_chunk_ids_json value must belong to "
                         f"source_document_id at row {line_number}."
                     )
-                item[field] = json.dumps(values, ensure_ascii=False)
-            evidence_snippets = json.loads(item["expected_context_snippets_json"])
-            evidence_chunk_ids = json.loads(item["source_chunk_ids_json"])
+                parsed_evidence[field] = values
+            evidence_snippets = parsed_evidence["expected_context_snippets_json"]
+            evidence_chunk_ids = parsed_evidence["source_chunk_ids_json"]
             if len(evidence_snippets) != len(evidence_chunk_ids):
                 raise ValueError(
                     "expected_context_snippets_json and source_chunk_ids_json "
                     f"must be parallel arrays for {item['query']!r}."
                 )
+            evidence_pairs = list(dict.fromkeys(zip(
+                evidence_chunk_ids,
+                evidence_snippets,
+                strict=True,
+            )))
+            evidence_chunk_ids = [pair[0] for pair in evidence_pairs]
+            evidence_snippets = [pair[1] for pair in evidence_pairs]
+            item["expected_context_snippets_json"] = json.dumps(
+                evidence_snippets,
+                ensure_ascii=False,
+            )
+            item["source_chunk_ids_json"] = json.dumps(
+                evidence_chunk_ids,
+                ensure_ascii=False,
+            )
             if (
                 evidence_snippets[0] != item["expected_context_snippet"]
                 or evidence_chunk_ids[0] != item["source_chunk_id"]

@@ -355,7 +355,9 @@ def parse_json_string_list(value, fallback: list[str]) -> list[str]:
         str(item).strip() for item in values
         if isinstance(item, str) and item.strip()
     ]
-    return list(dict.fromkeys(cleaned or fallback))
+    # Do not deduplicate here: repeated text in different chunks must retain
+    # the same positional relationship as source_chunk_ids_json.
+    return cleaned or fallback
 
 
 def load_hkpl_rows(limit: int | None) -> list[dict]:

@@ -70,7 +70,9 @@ def parse_json_string_list(value, fallback: list[str]) -> list[str]:
         str(item).strip() for item in values
         if isinstance(item, str) and item.strip()
     ]
-    return list(dict.fromkeys(cleaned or fallback))
+    # Preserve positions because identical snippets can support different
+    # chunks in the parallel source_chunk_ids_json array.
+    return cleaned or fallback
 
 
 def parse_args() -> argparse.Namespace:
