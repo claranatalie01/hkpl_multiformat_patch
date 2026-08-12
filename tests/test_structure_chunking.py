@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.preview_ingestion import CHUNK_TABLE, DOCUMENT_TABLE
+
 import openpyxl
 from llama_index.core import Document
 
@@ -74,6 +76,12 @@ def source_document(
 
 
 class DocumentTypeTests(unittest.TestCase):
+    def test_preview_tables_are_isolated_from_live_corpus(self):
+        self.assertEqual(DOCUMENT_TABLE, "ingestion_preview_documents")
+        self.assertEqual(CHUNK_TABLE, "ingestion_preview_chunks")
+        self.assertNotIn(DOCUMENT_TABLE, {"knowledge_documents", "data_hkpl_knowledge"})
+        self.assertNotIn(CHUNK_TABLE, {"knowledge_documents", "data_hkpl_knowledge"})
+
     def test_physical_table_precedes_admin_faq_hint(self) -> None:
         metadata = {"document_type": "faq", "structural_kind": "table_row"}
         self.assertEqual(resolve_record_kind(metadata), "table")
@@ -111,7 +119,7 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         prompt, options = calls[0]
         self.assertIn("faq|record|prose|skip", prompt)
-        self.assertIn("Physical tables are handled before this call", prompt)
+        self.assertIn("Tables and spreadsheets still need one of these labels", prompt)
         self.assertEqual(options["temperature"], 0.0)
         self.assertFalse(options["enable_thinking"])
 

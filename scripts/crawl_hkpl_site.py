@@ -25,6 +25,7 @@ from src.ingestion.classification import (
     classify_batch_items_sync,
 )
 from src.ingestion.registry import find_active_web_document_by_source_url
+from src.ingestion.readers import load_file
 from src.ingestion.service import UPLOAD_DIR, ingest_path_sync
 from src.ingestion.write_guard import ensure_corpus_writable
 
@@ -221,6 +222,28 @@ def save_for_ingestion(url: str, content: str | bytes, extension: str) -> Path:
     return path
 
 
+def extracted_classifier_text(path: Path, item: dict) -> str:
+    """Extract source content before asking the 9B model for a label."""
+    documents = load_file(
+        path,
+        document_id=f"crawler-preview-{hashlib.sha256(item['url'].encode()).hexdigest()[:16]}",
+        original_file_name=path.name,
+        source_title=item["title"],
+        source_url=item["url"],
+        source_type="crawler",
+        source_kind="crawler",
+        document_type="auto",
+        classification_source="llm",
+    )
+    sample = "\n\n".join(
+        str(document.metadata.get("evidence_text") or document.get_content())
+        for document in documents
+    )
+    if not sample.strip():
+        raise ValueError("No content was extracted for classification.")
+    return sample
+
+
 def flush_pending(pending: list[dict], stats: dict) -> None:
     """Classify and ingest one bounded crawler batch."""
     if not pending:
@@ -228,6 +251,8 @@ def flush_pending(pending: list[dict], stats: dict) -> None:
     batch = pending[:]
     pending.clear()
     try:
+        for item in batch:
+            item["classifier_text"] = extracted_classifier_text(item["path"], item)
         decisions = classify_batch_items_sync([{
             "id": item["url"],
             "title": item["title"],
@@ -457,11 +482,6 @@ def crawl(
                     "title": title,
                     "extension": extension,
                     "mime_type": mime_type,
-                    "classifier_text": (
-                        title
-                        if is_pdf
-                        else clean_text(BeautifulSoup(main_html, "html.parser").get_text(" "))
-                    ),
                     "content_hash": content_hash,
                     "is_pdf": is_pdf,
                     "replace_document_id": (

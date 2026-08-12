@@ -420,15 +420,15 @@ docker compose run --rm \
 ## Chunking behaviour
 
 - A librarian labels an individual source as `faq`, `record`, or `prose`.
-  An unlabelled individual source uses the bounded 512-token/64-token-overlap
-  fallback and does not call the classifier.
+  Every unlabelled source is classified from extracted content by the same
+  Qwen3.5-9B generation model, with reasoning disabled.
 - Directory and crawler batches use the existing generation model once per
   mini-batch of at most 20 sources. The schema-constrained result must contain
   exactly one decision for every input ID or the batch fails without fallback.
 - The batch-only `skip` label marks listing, index, and navigation pages as
   discovery-only. Their immutable source files are retained for rebuilds and
-  audits, but they produce zero searchable chunks. Physical tables bypass the
-  model and use deterministic rows.
+  audits, but they produce zero searchable chunks. Tables still receive an LLM
+  label, while their physical rows remain deterministic chunk boundaries.
 - `faq` keeps each question with its answer; `record` keeps one notice, event,
   or branch profile together; `prose` uses Docling headings and hierarchy.
 - CSV, Excel, JSON, JSONL, and XML use deterministic record parsing with typed

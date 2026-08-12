@@ -235,6 +235,27 @@ def process_registered_document(
         )
 
     try:
+        if normalize_document_type(record.get("document_type")) == "auto":
+            update_status(document_id, "extracting")
+            classification_documents = _load_record(record, document_type="auto")
+            if not classification_documents:
+                raise ValueError("No readable content was extracted for classification.")
+            decision = classify_batch_items_sync([{
+                "id": document_id,
+                "title": record.get("source_title") or record["original_file_name"],
+                "file_type": record.get("file_type") or "",
+                "text": "\n\n".join(
+                    str(document.metadata.get("evidence_text") or document.get_content())
+                    for document in classification_documents
+                ),
+            }])[document_id]["document_type"]
+            set_document_type(document_id, decision, "llm")
+            record = {
+                **record,
+                "document_type": decision,
+                "classification_source": "llm",
+            }
+
         if normalize_document_type(record.get("document_type")) == "skip":
             removed_old_chunks = delete_document_chunks(document_id)
             update_status(document_id, "completed", chunk_count=0, error_message=None)
@@ -347,7 +368,6 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
     records: list[dict] = []
     items: list[dict] = []
     persisted_labels: dict[str, str] = {}
-    structural_labels: dict[str, str] = {}
     unlabelled_ids: set[str] = set()
 
     try:
@@ -367,14 +387,6 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
             if not documents:
                 raise ValueError(f"No readable content was extracted for {document_id}.")
 
-            if all(
-                str(document.metadata.get("structural_kind") or "")
-                in {"table", "table_row"}
-                for document in documents
-            ):
-                structural_labels[document_id] = "table"
-                continue
-
             items.append({
                 "id": document_id,
                 "title": record.get("source_title") or record["original_file_name"],
@@ -388,7 +400,6 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
         classified = classify_batch_items_sync(items)
         decisions = {
             **persisted_labels,
-            **structural_labels,
             **{
                 item_id: decision["document_type"]
                 for item_id, decision in classified.items()
@@ -411,7 +422,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
         set_document_type(
             document_id,
             decisions[document_id],
-            "structure" if document_id in structural_labels else "llm",
+            "llm",
         )
 
     results: list[dict] = []
