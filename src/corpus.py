@@ -19,7 +19,7 @@ from .infrastructure.vector_store import VECTOR_TABLE, vector_store
 from .ingestion.write_guard import ensure_corpus_writable
 
 
-PRIMARY_DATASET = "hkpl"
+Y_DATASET = "hkpl"
 PRIMARY_CORPUS_ROLE = "primary"
 DISTRACTOR_CORPUS_ROLE = "distractor"
 LEGACY_DISTRACTOR_DATASETS = frozenset({"hotpotqa", "webz_news"})

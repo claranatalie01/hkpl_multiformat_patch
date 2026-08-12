@@ -131,6 +131,16 @@ The generator may inspect more than 100 chunks because rejected or duplicate
 questions do not count toward the 100-row target.
 The existing `data/evaluation_dataset.csv` is not changed by this command.
 
+Each accepted anchor consumes every chunk listed in its
+`source_chunk_ids_json`. Those sibling evidence chunks are checkpointed and
+skipped as future anchors, preventing the same multi-chunk fact from generating
+several paraphrased questions. Each chunk ID may appear in at most one accepted
+evaluation row. Siblings that were shown as context but were not cited remain
+eligible for other facts. The generator also accepts at most one LLM candidate
+per anchor even if the model returns extra JSON objects;
+deduplication remains as a final safety check for repeated content across
+different source documents.
+
 ### Observability modules
 
 | File | Individual responsibility |

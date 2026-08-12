@@ -64,6 +64,29 @@ def clean_json_response(raw: str):
     return json.loads(raw)
 
 
+def row_source_chunk_ids(row: dict) -> list[str]:
+    """Return every evidence chunk consumed by one evaluation row.
+
+    New rows store all evidence IDs in ``source_chunk_ids_json``. Legacy rows
+    have only ``source_chunk_id``. Invalid optional JSON falls back to the
+    singular ID so resume checkpoints remain safe and backward compatible.
+    """
+    raw_ids = row.get("source_chunk_ids_json")
+    try:
+        values = json.loads(raw_ids) if raw_ids else []
+    except (json.JSONDecodeError, TypeError):
+        values = []
+    chunk_ids = [
+        str(value).strip()
+        for value in values
+        if isinstance(value, str) and value.strip()
+    ]
+    primary_id = str(row.get("source_chunk_id") or "").strip()
+    if not chunk_ids and primary_id:
+        chunk_ids = [primary_id]
+    return list(dict.fromkeys(chunk_ids))
+
+
 def infer_domain(title: str, text_value: str) -> str:
     joined = f"{title} {text_value}".lower()
 
@@ -394,6 +417,13 @@ Text:
         print("  Skipped: the model returned no evaluation candidate.")
         return []
 
+    if len(items) > QUESTIONS_PER_CHUNK:
+        print(
+            f"  Model returned {len(items)} candidates; only the first "
+            f"{QUESTIONS_PER_CHUNK} is allowed for one anchor."
+        )
+        items = items[:QUESTIONS_PER_CHUNK]
+
     output = []
 
     for item in items:
@@ -491,6 +521,13 @@ Text:
 
 
 def remove_ambiguous_duplicates(rows: list[dict]) -> list[dict]:
+    """Remove duplicate questions and enforce one evaluation row per chunk.
+
+    A multi-chunk row reserves every cited evidence chunk. Later rows that
+    overlap any reserved chunk are removed, even when their question wording
+    differs. This prevents sibling anchors and extra model outputs from turning
+    the same evidence into several evaluation examples.
+    """
     grouped: dict[str, list[dict]] = {}
     for row in rows:
         grouped.setdefault(normalize_text(row["query"]), []).append(row)
@@ -500,7 +537,7 @@ def remove_ambiguous_duplicates(rows: list[dict]) -> list[dict]:
         if len(group) == 1:
             cleaned.append(max(
                 group,
-                key=lambda row: len(json.loads(row.get("source_chunk_ids_json") or "[]")),
+                key=lambda row: len(row_source_chunk_ids(row)),
             ))
             continue
         answer_keys = {
@@ -508,7 +545,10 @@ def remove_ambiguous_duplicates(rows: list[dict]) -> list[dict]:
             for row in group
         }
         if len(answer_keys) == 1:
-            cleaned.append(group[0])
+            cleaned.append(max(
+                group,
+                key=lambda row: len(row_source_chunk_ids(row)),
+            ))
             continue
 
         print()
@@ -517,13 +557,36 @@ def remove_ambiguous_duplicates(rows: list[dict]) -> list[dict]:
         for index, row in enumerate(group, start=1):
             print(f"Answer {index}:", row["expected_answer_text"])
 
-    return cleaned
+    non_overlapping: list[dict] = []
+    used_chunk_ids: set[str] = set()
+    for row in cleaned:
+        evidence_ids = set(row_source_chunk_ids(row))
+        overlap = evidence_ids.intersection(used_chunk_ids)
+        if overlap:
+            print()
+            print("Removed question because its evidence chunk was already used:")
+            print("Question:", row["query"])
+            print("Reused chunk IDs:", ", ".join(sorted(overlap)))
+            continue
+        non_overlapping.append(row)
+        used_chunk_ids.update(evidence_ids)
+
+    return non_overlapping
 
 
 async def main() -> None:
     args = parse_args()
     output_file = args.output.resolve()
     existing_rows = load_existing_rows(output_file) if args.resume else []
+    if existing_rows:
+        before_resume_cleanup = len(existing_rows)
+        existing_rows = remove_ambiguous_duplicates(existing_rows)
+        if len(existing_rows) != before_resume_cleanup:
+            print(
+                "Removed "
+                f"{before_resume_cleanup - len(existing_rows)} duplicate or "
+                "evidence-overlapping checkpoint rows before resuming."
+            )
     processed_chunk_ids = (
         load_progress(
             output_file,
@@ -535,6 +598,15 @@ async def main() -> None:
         if args.resume
         else set()
     )
+    # Older checkpoints recorded only the anchor. Add every evidence chunk
+    # already represented by resumed rows so those siblings cannot become new
+    # anchors and produce paraphrased duplicates.
+    consumed_chunk_ids = {
+        chunk_id
+        for existing_row in existing_rows
+        for chunk_id in row_source_chunk_ids(existing_row)
+    }
+    processed_chunk_ids.update(consumed_chunk_ids)
     remaining_limit = (
         max(args.limit_chunks - len(processed_chunk_ids), 0)
         if args.limit_chunks is not None
@@ -582,6 +654,8 @@ async def main() -> None:
     target_rows: list[dict] | None = None
     try:
         for index, chunk in enumerate(chunks, start=1):
+            if chunk["chunk_id"] in processed_chunk_ids:
+                continue
             print(
                 f"[{index}/{len(chunks)}] "
                 f"{chunk['source_title']} | {chunk['section_heading']} | "
@@ -591,11 +665,23 @@ async def main() -> None:
             siblings = chunks_by_document[chunk["document_id"]]
             related_chunks = [
                 chunk,
-                *(sibling for sibling in siblings if sibling["chunk_id"] != chunk["chunk_id"]),
+                *(
+                    sibling
+                    for sibling in siblings
+                    if sibling["chunk_id"] != chunk["chunk_id"]
+                    and sibling["chunk_id"] not in consumed_chunk_ids
+                ),
             ]
             rows = await generate_questions_for_chunk(chunk, related_chunks)
             generated_rows.extend(rows)
             processed_chunk_ids.add(chunk["chunk_id"])
+            consumed_evidence_ids = {
+                chunk_id
+                for row in rows
+                for chunk_id in row_source_chunk_ids(row)
+            }
+            consumed_chunk_ids.update(consumed_evidence_ids)
+            processed_chunk_ids.update(consumed_evidence_ids)
             save_rows(output_file, [*existing_rows, *generated_rows])
             save_progress(
                 output_file,
@@ -609,6 +695,14 @@ async def main() -> None:
                 f"{len(existing_rows) + len(generated_rows)}, processed chunks="
                 f"{len(processed_chunk_ids)}."
             )
+            if consumed_evidence_ids.difference({chunk["chunk_id"]}):
+                print(
+                    "  Consumed sibling evidence chunks; they will not be "
+                    "used as later anchors: "
+                    + ", ".join(sorted(
+                        consumed_evidence_ids.difference({chunk["chunk_id"]})
+                    ))
+                )
             if args.target_questions is not None:
                 deduplicated = remove_ambiguous_duplicates(
                     [*existing_rows, *generated_rows]
