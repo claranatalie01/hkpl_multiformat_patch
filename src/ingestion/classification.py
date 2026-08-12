@@ -49,8 +49,36 @@ Items: {json.dumps(samples, ensure_ascii=False, separators=(",", ":"))}
     raw = await llm_call(
         prompt,
         temperature=0.0,
-        max_tokens=32 + len(items) * 32,
+        max_tokens=64 + len(items) * 48,
         enable_thinking=False,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "hkpl_document_types",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "minItems": len(items),
+                            "maxItems": len(items),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "type": {"type": "string", "enum": list(CLASSIFIER_TYPES)},
+                                },
+                                "required": ["id", "type"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["items"],
+                    "additionalProperties": False,
+                },
+            },
+        },
     )
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     payload = json.loads(match.group(0) if match else raw)

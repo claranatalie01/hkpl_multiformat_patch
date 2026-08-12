@@ -8,6 +8,7 @@ handled separately by ``infrastructure.embedding``.
 import logging
 import os
 from dataclasses import dataclass
+from typing import Any
 
 import aiohttp
 from dotenv import load_dotenv
@@ -35,6 +36,7 @@ async def http_llm_with_usage(
     max_tokens: int | None = None,
     enable_thinking: bool = False,
     thinking_budget_tokens: int = 1000,
+    response_format: dict[str, Any] | None = None,
 ) -> LLMResponse:
     max_tokens = max_tokens or LLM_MAX_TOKENS
     payload = {
@@ -51,6 +53,8 @@ async def http_llm_with_usage(
             thinking_budget_tokens if enable_thinking else 0
         ),
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
     timeout = aiohttp.ClientTimeout(total=LLM_TIMEOUT_SECONDS)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
@@ -99,6 +103,7 @@ async def http_llm(
     max_tokens: int | None = None,
     enable_thinking: bool = False,
     thinking_budget_tokens: int = 1000,
+    response_format: dict[str, Any] | None = None,
 ) -> str:
     response = await http_llm_with_usage(
         prompt,
@@ -106,5 +111,6 @@ async def http_llm(
         max_tokens=max_tokens,
         enable_thinking=enable_thinking,
         thinking_budget_tokens=thinking_budget_tokens,
+        response_format=response_format,
     )
     return response.text

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -657,7 +658,22 @@ def _load_or_convert_docling(
         ):
             return DoclingDocument.model_validate(payload["document"]), json_path
 
-    result = _docling_converter(ocr_languages).convert(path)
+    conversion_path = path
+    temporary_directory: tempfile.TemporaryDirectory[str] | None = None
+    if path.suffix.lower() in {".html", ".htm"}:
+        html = path.read_text(encoding="utf-8", errors="strict")
+        if not re.search(r"<html(?:\s|>)", html, re.IGNORECASE):
+            temporary_directory = tempfile.TemporaryDirectory()
+            conversion_path = Path(temporary_directory.name) / path.name
+            conversion_path.write_text(
+                f"<!doctype html><html><body>{html}</body></html>",
+                encoding="utf-8",
+            )
+    try:
+        result = _docling_converter(ocr_languages).convert(conversion_path)
+    finally:
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
     docling_document = result.document
     return docling_document, _persist_docling_document(docling_document, base_metadata)
 

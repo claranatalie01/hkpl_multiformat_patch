@@ -122,6 +122,8 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Tables and spreadsheets still need one of these labels", prompt)
         self.assertEqual(options["temperature"], 0.0)
         self.assertFalse(options["enable_thinking"])
+        self.assertEqual(options["response_format"]["type"], "json_schema")
+        self.assertTrue(options["response_format"]["json_schema"]["strict"])
 
     async def test_rejects_partial_or_invalid_output(self) -> None:
         items = [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}]
