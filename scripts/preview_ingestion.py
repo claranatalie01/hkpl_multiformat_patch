@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,18 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+# The application normally runs under /app in Docker. This preview command is
+# also intended to run directly from a server checkout without root access.
+os.environ.setdefault("UPLOAD_DIR", str(PROJECT_ROOT / "uploads"))
+os.environ.setdefault("DOCLING_ARTIFACTS_PATH", str(PROJECT_ROOT / "models" / "docling"))
+os.environ.setdefault("DOCLING_JSON_DIR", str(PROJECT_ROOT / "storage" / "docling"))
+os.environ.setdefault(
+    "EMBEDDING_TOKENIZER_PATH",
+    str(PROJECT_ROOT / "models" / "qwen3-embedding"),
+)
 
 from src.infrastructure.db import engine
 from src.ingestion.chunking import chunk_documents
