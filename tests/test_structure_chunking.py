@@ -6,7 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.preview_ingestion import CHUNK_TABLE, DOCUMENT_TABLE
+from scripts.preview_ingestion import (
+    CHUNK_TABLE,
+    DOCUMENT_TABLE,
+    postgres_json,
+    postgres_text,
+)
 
 import openpyxl
 from llama_index.core import Document
@@ -81,6 +86,10 @@ class DocumentTypeTests(unittest.TestCase):
         self.assertEqual(CHUNK_TABLE, "ingestion_preview_chunks")
         self.assertNotIn(DOCUMENT_TABLE, {"knowledge_documents", "data_hkpl_knowledge"})
         self.assertNotIn(CHUNK_TABLE, {"knowledge_documents", "data_hkpl_knowledge"})
+
+    def test_preview_removes_postgres_nul_characters(self):
+        self.assertEqual(postgres_text("before\x00after"), "beforeafter")
+        self.assertEqual(postgres_json({"text": "before\x00after"}), '{"text": "beforeafter"}')
 
     def test_physical_table_precedes_admin_faq_hint(self) -> None:
         metadata = {"document_type": "faq", "structural_kind": "table_row"}

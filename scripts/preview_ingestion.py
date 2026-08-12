@@ -38,6 +38,15 @@ DOCUMENT_TABLE = "ingestion_preview_documents"
 CHUNK_TABLE = "ingestion_preview_chunks"
 
 
+def postgres_text(value: object) -> str:
+    """PostgreSQL text/jsonb cannot contain Unicode NUL characters."""
+    return str(value or "").replace("\x00", "")
+
+
+def postgres_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str).replace("\\u0000", "")
+
+
 def ensure_preview_schema() -> None:
     with engine.begin() as connection:
         connection.execute(text(f"""
@@ -98,10 +107,10 @@ def extract_for_classification(path: Path, record: dict) -> tuple[str, list]:
         document_type="auto",
         classification_source="llm",
     )
-    sample = "\n\n".join(
+    sample = postgres_text("\n\n".join(
         str(document.metadata.get("evidence_text") or document.get_content())
         for document in documents
-    )[:SAMPLE_CHARACTERS]
+    ))[:SAMPLE_CHARACTERS]
     if not sample.strip():
         raise ValueError("No content was extracted for classification.")
     return sample, documents
@@ -111,16 +120,18 @@ def save_document_preview(run_id: str, record: dict, sample: str, **values: obje
     payload = {
         "run_id": run_id,
         "document_id": str(record["document_id"]),
-        "source_title": record.get("source_title") or record["original_file_name"],
-        "source_url": record.get("source_url") or "",
-        "file_name": record["original_file_name"],
-        "file_type": record.get("file_type") or Path(record["stored_file_name"]).suffix.lstrip("."),
-        "classifier_sample": sample,
+        "source_title": postgres_text(record.get("source_title") or record["original_file_name"]),
+        "source_url": postgres_text(record.get("source_url")),
+        "file_name": postgres_text(record["original_file_name"]),
+        "file_type": postgres_text(
+            record.get("file_type") or Path(record["stored_file_name"]).suffix.lstrip(".")
+        ),
+        "classifier_sample": postgres_text(sample),
         "document_type": values.get("document_type"),
         "status": values.get("status", "pending"),
         "section_count": values.get("section_count", 0),
         "chunk_count": values.get("chunk_count", 0),
-        "error_message": values.get("error_message"),
+        "error_message": postgres_text(values.get("error_message")) or None,
     }
     with engine.begin() as connection:
         connection.execute(text(f"""
@@ -146,6 +157,7 @@ def save_chunks(run_id: str, document_id: str, nodes: list) -> None:
     rows = []
     for ordinal, node in enumerate(nodes):
         metadata = dict(node.metadata or {})
+        clean_metadata_json = postgres_json(metadata)
         rows.append({
             "run_id": run_id,
             "document_id": document_id,
@@ -153,12 +165,14 @@ def save_chunks(run_id: str, document_id: str, nodes: list) -> None:
             "ordinal": ordinal,
             "record_kind": metadata.get("record_kind") or "prose",
             "chunk_policy": metadata.get("chunk_policy") or "fallback",
-            "structure_path": json.dumps(metadata.get("structure_path") or [], ensure_ascii=False),
-            "locator": json.dumps(metadata.get("locator") or {}, ensure_ascii=False),
+            "structure_path": postgres_json(metadata.get("structure_path") or []),
+            "locator": postgres_json(metadata.get("locator") or {}),
             "token_count": int(metadata.get("token_count") or 0),
-            "evidence_text": metadata.get("evidence_text") or "",
-            "search_text": metadata.get("search_text") or node.get_content(),
-            "metadata": json.dumps(metadata, ensure_ascii=False, default=str),
+            "evidence_text": postgres_text(metadata.get("evidence_text")),
+            "search_text": postgres_text(
+                metadata.get("search_text") or node.get_content()
+            ),
+            "metadata": clean_metadata_json,
         })
     if rows:
         with engine.begin() as connection:
