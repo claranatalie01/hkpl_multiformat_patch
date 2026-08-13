@@ -583,7 +583,14 @@ def _load_html_faq(
 
 def _docling_converter(ocr_languages: str):
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
+    from docling.datamodel.object_detection_engine_options import (
+        TransformersObjectDetectionEngineOptions,
+    )
+    from docling.datamodel.pipeline_options import (
+        LayoutObjectDetectionOptions,
+        PdfPipelineOptions,
+        TesseractCliOcrOptions,
+    )
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
     artifacts_path = Path(os.getenv("DOCLING_ARTIFACTS_PATH", "/app/models/docling"))
@@ -606,6 +613,14 @@ def _docling_converter(ocr_languages: str):
         do_formula_enrichment=False,
         do_picture_classification=False,
         do_picture_description=False,
+        # torch.compile needs a C++ toolchain at runtime. Compilation is only a
+        # performance optimization and makes the slim offline image brittle.
+        layout_options=LayoutObjectDetectionOptions.from_preset(
+            "layout_heron_default",
+            engine_options=TransformersObjectDetectionEngineOptions(
+                compile_model=False,
+            ),
+        ),
     )
     format_option = PdfFormatOption(pipeline_options=pipeline_options)
     return DocumentConverter(format_options={
