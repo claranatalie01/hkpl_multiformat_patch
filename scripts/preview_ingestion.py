@@ -267,12 +267,21 @@ def run_preview(
 
         if not prepared:
             continue
-        decisions = classify_batch_items_sync([{
-            "id": str(record["document_id"]),
-            "title": record.get("source_title") or record["original_file_name"],
-            "file_type": record.get("file_type") or "",
-            "text": sample,
-        } for record, sample in prepared])
+        try:
+            decisions = classify_batch_items_sync([{
+                "id": str(record["document_id"]),
+                "title": record.get("source_title") or record["original_file_name"],
+                "file_type": record.get("file_type") or "",
+                "text": sample,
+            } for record, sample in prepared])
+        except Exception as error:
+            for record, sample in prepared:
+                save_document_preview(
+                    run_id, record, sample, status="failed",
+                    error_message=f"Classification failed: {error}"[:2000],
+                )
+            print(f"FAILED classification batch: {error}")
+            continue
 
         for record, sample in prepared:
             document_id = str(record["document_id"])

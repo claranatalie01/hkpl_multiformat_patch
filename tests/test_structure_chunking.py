@@ -11,6 +11,7 @@ from scripts.preview_ingestion import (
     DOCUMENT_TABLE,
     postgres_json,
     postgres_text,
+    run_preview,
 )
 
 import openpyxl
@@ -103,6 +104,43 @@ class DocumentTypeTests(unittest.TestCase):
         self.assertEqual(validate_document_type("announcement"), "announcement")
         self.assertEqual(resolve_record_kind({"document_type": "announcement"}), "record")
         self.assertEqual(resolve_record_kind({"document_type": "directory"}), "record")
+
+
+class PreviewRunTests(unittest.TestCase):
+    def test_bad_classifier_batch_does_not_abort_later_batches(self) -> None:
+        records = [{
+            "document_id": str(index),
+            "original_file_name": f"{index}.txt",
+            "stored_file_name": f"{index}.txt",
+            "source_type": "crawler",
+        } for index in range(MAX_BATCH_ITEMS + 1)]
+        decisions = {str(MAX_BATCH_ITEMS): {"document_type": "prose"}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            for record in records:
+                (Path(directory) / record["stored_file_name"]).write_text("text")
+            with (
+                patch("scripts.preview_ingestion.UPLOAD_DIR", Path(directory)),
+                patch("scripts.preview_ingestion.ensure_preview_schema"),
+                patch("scripts.preview_ingestion.list_documents", return_value=records),
+                patch("scripts.preview_ingestion.extract_for_classification", return_value=("text", [])),
+                patch("scripts.preview_ingestion.save_document_preview") as save,
+                patch("scripts.preview_ingestion.preview_record") as preview,
+                patch(
+                    "scripts.preview_ingestion.classify_batch_items_sync",
+                    side_effect=[ValueError("bad JSON"), decisions],
+                ),
+            ):
+                run_preview(
+                    run_id="run", limit=None, crawler_only=True, classify_only=False
+                )
+
+        self.assertEqual(preview.call_count, 1)
+        self.assertTrue(any(
+            call.kwargs.get("status") == "failed"
+            and "Classification failed" in call.kwargs.get("error_message", "")
+            for call in save.call_args_list
+        ))
 
 
 class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
