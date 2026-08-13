@@ -100,10 +100,10 @@ def _split_evidence(
     metadata: dict[str, Any],
     tokenizer: Any,
     max_tokens: int,
-) -> list[str]:
+) -> tuple[list[str], dict[str, Any]]:
     search_text = build_search_text(metadata, evidence_text)
     if tokenizer.count_tokens(search_text) <= max_tokens:
-        return [evidence_text]
+        return [evidence_text], metadata
 
     repeat_context = str(
         metadata.get("repeat_context")
@@ -111,33 +111,61 @@ def _split_evidence(
         or metadata.get("table_header")
         or ""
     ).strip()
+    search_metadata = dict(metadata)
+
+    def available_tokens() -> int:
+        probe = "\n\n".join(part for part in (repeat_context, "x") if part)
+        return (
+            max_tokens
+            - tokenizer.count_tokens(build_search_text(search_metadata, probe))
+            + tokenizer.count_tokens("x")
+        )
+
+    for key, empty_value in (
+        ("search_aliases", []),
+        ("structure_path", []),
+        ("record_header", ""),
+        ("source_title", ""),
+    ):
+        if available_tokens() > FALLBACK_OVERLAP:
+            break
+        search_metadata[key] = empty_value
+    if available_tokens() <= FALLBACK_OVERLAP:
+        repeat_context = ""
+    available = available_tokens()
+    if available <= FALLBACK_OVERLAP:
+        raise ValueError("Chunk context leaves no room for evidence text.")
+
     body = evidence_text
     if repeat_context and normalize_search_text(body).startswith(
         normalize_search_text(repeat_context)
     ):
         body = body[len(repeat_context):].lstrip("\r\n :")
 
-    probe = "\n\n".join(part for part in (repeat_context, "x") if part)
-    prefix_tokens = tokenizer.count_tokens(build_search_text(metadata, probe)) - 1
-    available = max_tokens - prefix_tokens
-    if available <= FALLBACK_OVERLAP:
-        raise ValueError("Document context leaves no room for a 512/64 fallback chunk.")
-
     offsets = _token_offsets(tokenizer, body)
     if not offsets:
-        return [evidence_text]
+        return [evidence_text], search_metadata
     parts: list[str] = []
-    step = available - FALLBACK_OVERLAP
-    for start in range(0, len(offsets), step):
+    start = 0
+    while start < len(offsets):
         end = min(start + available, len(offsets))
-        part = body[offsets[start][0]:offsets[end - 1][1]]
-        if part.strip():
-            parts.append(part)
+        evidence_part = ""
+        while end > start:
+            part = body[offsets[start][0]:offsets[end - 1][1]]
+            evidence_part = f"{repeat_context}\n{part}" if repeat_context else part
+            if tokenizer.count_tokens(
+                build_search_text(search_metadata, evidence_part)
+            ) <= max_tokens:
+                break
+            end -= 1
+        if end == start:
+            raise ValueError("Chunk context leaves no room for evidence text.")
+        if evidence_part.strip():
+            parts.append(evidence_part)
         if end == len(offsets):
             break
-    if repeat_context:
-        parts = [f"{repeat_context}\n{part}" for part in parts]
-    return parts
+        start = max(start + 1, end - FALLBACK_OVERLAP)
+    return parts, search_metadata
 
 
 def _chunk_id(
@@ -206,14 +234,14 @@ def chunk_documents(
             ),
         })
 
-        parts = _split_evidence(
+        parts, search_metadata = _split_evidence(
             evidence_text,
             metadata,
             tokenizer,
             max_tokens,
         )
         for part_number, evidence_part in enumerate(parts, start=1):
-            search_text = build_search_text(metadata, evidence_part)
+            search_text = build_search_text(search_metadata, evidence_part)
             token_count = int(tokenizer.count_tokens(search_text))
             if token_count > max_tokens:
                 raise ValueError(f"Chunk exceeds {max_tokens} tokens: {token_count}")

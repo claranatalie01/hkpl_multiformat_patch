@@ -10,7 +10,10 @@ from ..infrastructure.embedding import embed_model
 from ..infrastructure.db import engine
 from ..infrastructure.vector_store import VECTOR_TABLE, vector_store
 from .chunking import chunk_documents
-from .classification import classify_batch_items_sync
+from .classification import (
+    classify_batch_items_resilient_sync,
+    classify_batch_items_sync,
+)
 from .document_types import normalize_document_type, validate_document_type
 from .readers import (
     SUPPORTED_EXTENSIONS,
@@ -369,6 +372,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
     items: list[dict] = []
     persisted_labels: dict[str, str] = {}
     unlabelled_ids: set[str] = set()
+    classification_failures: dict[str, str] = {}
 
     try:
         for document_id in document_ids:
@@ -397,7 +401,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
                 ),
             })
 
-        classified = classify_batch_items_sync(items)
+        classified, classification_failures = classify_batch_items_resilient_sync(items)
         decisions = {
             **persisted_labels,
             **{
@@ -405,7 +409,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
                 for item_id, decision in classified.items()
             },
         }
-        if set(decisions) != set(document_ids):
+        if set(decisions).union(classification_failures) != set(document_ids):
             raise ValueError("Batch classification did not produce one decision per document.")
     except Exception as error:
         for record in records:
@@ -419,6 +423,13 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
         raise
 
     for document_id in unlabelled_ids:
+        if document_id in classification_failures:
+            update_status(
+                document_id,
+                "failed",
+                error_message=classification_failures[document_id][:2000],
+            )
+            continue
         set_document_type(
             document_id,
             decisions[document_id],
@@ -427,6 +438,13 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
 
     results: list[dict] = []
     for document_id in document_ids:
+        if document_id in classification_failures:
+            results.append({
+                "document_id": document_id,
+                "status": "failed",
+                "error": classification_failures[document_id][:2000],
+            })
+            continue
         try:
             results.append(process_registered_document(document_id))
         except Exception as error:

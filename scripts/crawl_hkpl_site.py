@@ -22,7 +22,7 @@ from bs4 import BeautifulSoup
 
 from src.ingestion.classification import (
     MAX_BATCH_ITEMS,
-    classify_batch_items_sync,
+    classify_batch_items_resilient_sync,
 )
 from src.ingestion.registry import find_active_web_document_by_source_url
 from src.ingestion.readers import load_file
@@ -250,23 +250,36 @@ def flush_pending(pending: list[dict], stats: dict) -> None:
         return
     batch = pending[:]
     pending.clear()
-    try:
-        for item in batch:
+    prepared: list[dict] = []
+    for item in batch:
+        try:
             item["classifier_text"] = extracted_classifier_text(item["path"], item)
-        decisions = classify_batch_items_sync([{
-            "id": item["url"],
-            "title": item["title"],
-            "file_type": item["extension"].lstrip("."),
-            "text": item["classifier_text"],
-        } for item in batch])
-    except Exception:
-        stats["failed"] += len(batch)
-        for item in batch:
+            prepared.append(item)
+        except Exception as error:
+            stats["failed"] += 1
             item["path"].unlink(missing_ok=True)
-        logger.exception("Failed to classify crawler batch")
+            logger.exception("Failed to extract %s: %s", item["url"], error)
+
+    if not prepared:
         return
 
-    for item in batch:
+    decisions, classification_failures = classify_batch_items_resilient_sync([{
+        "id": item["url"],
+        "title": item["title"],
+        "file_type": item["extension"].lstrip("."),
+        "text": item["classifier_text"],
+    } for item in prepared])
+
+    for item in prepared:
+        if item["url"] in classification_failures:
+            stats["failed"] += 1
+            item["path"].unlink(missing_ok=True)
+            logger.error(
+                "Failed to classify %s: %s",
+                item["url"],
+                classification_failures[item["url"]],
+            )
+            continue
         try:
             result = ingest_path_sync(
                 item["path"],

@@ -18,7 +18,11 @@ import openpyxl
 from llama_index.core import Document
 
 from src.ingestion.chunking import build_search_text, chunk_documents
-from src.ingestion.classification import MAX_BATCH_ITEMS, classify_batch_items
+from src.ingestion.classification import (
+    MAX_BATCH_ITEMS,
+    classify_batch_items,
+    classify_batch_items_resilient,
+)
 from src.ingestion.document_types import (
     chunk_policy_for,
     resolve_record_kind,
@@ -115,6 +119,7 @@ class PreviewRunTests(unittest.TestCase):
             "source_type": "crawler",
         } for index in range(MAX_BATCH_ITEMS + 1)]
         decisions = {str(MAX_BATCH_ITEMS): {"document_type": "prose"}}
+        failures = {str(index): "bad JSON" for index in range(MAX_BATCH_ITEMS)}
 
         with tempfile.TemporaryDirectory() as directory:
             for record in records:
@@ -127,8 +132,8 @@ class PreviewRunTests(unittest.TestCase):
                 patch("scripts.preview_ingestion.save_document_preview") as save,
                 patch("scripts.preview_ingestion.preview_record") as preview,
                 patch(
-                    "scripts.preview_ingestion.classify_batch_items_sync",
-                    side_effect=[ValueError("bad JSON"), decisions],
+                    "scripts.preview_ingestion.classify_batch_items_resilient_sync",
+                    side_effect=[({}, failures), (decisions, {})],
                 ),
             ):
                 run_preview(
@@ -150,8 +155,8 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
         async def fake_llm(prompt: str, **kwargs: object) -> str:
             calls.append((prompt, kwargs))
             return json.dumps({"items": [
-                {"id": "a", "type": "faq"},
-                {"id": "b", "type": "skip"},
+                {"id": "0", "type": "faq"},
+                {"id": "1", "type": "skip"},
             ]})
 
         result = await classify_batch_items([
@@ -171,14 +176,18 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(options["enable_thinking"])
         self.assertEqual(options["response_format"]["type"], "json_schema")
         self.assertTrue(options["response_format"]["json_schema"]["strict"])
+        id_schema = options["response_format"]["json_schema"]["schema"][
+            "properties"
+        ]["items"]["items"]["properties"]["id"]
+        self.assertEqual(id_schema["enum"], ["0", "1"])
 
     async def test_rejects_partial_or_invalid_output(self) -> None:
         items = [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}]
         invalid_outputs = (
-            '{"items":[{"id":"a","type":"prose"}]}',
-            '{"items":[{"id":"a","type":"prose"},{"id":"x","type":"faq"}]}',
-            '{"items":[{"id":"a","type":"prose"},{"id":"a","type":"faq"}]}',
-            '{"items":[{"id":"a","type":"event"},{"id":"b","type":"prose"}]}',
+            '{"items":[{"id":"0","type":"prose"}]}',
+            '{"items":[{"id":"0","type":"prose"},{"id":"x","type":"faq"}]}',
+            '{"items":[{"id":"0","type":"prose"},{"id":"0","type":"faq"}]}',
+            '{"items":[{"id":"0","type":"event"},{"id":"1","type":"prose"}]}',
         )
         for raw in invalid_outputs:
             async def fake_llm(*_: object, output: str = raw, **__: object) -> str:
@@ -201,6 +210,27 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
                 llm_call=fake_llm,
             )
         self.assertFalse(called)
+
+    async def test_failed_batch_isolated_to_rejected_item(self) -> None:
+        calls = 0
+
+        async def fake_llm(prompt: str, **_: object) -> str:
+            nonlocal calls
+            calls += 1
+            if '"text":"one"' in prompt and '"text":"two"' in prompt:
+                raise ValueError("bad batch JSON")
+            if '"text":"two"' in prompt:
+                raise ValueError("bad item JSON")
+            return '{"items":[{"id":"0","type":"prose"}]}'
+
+        decisions, failures = await classify_batch_items_resilient(
+            [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}],
+            llm_call=fake_llm,
+        )
+
+        self.assertEqual(decisions, {"a": {"document_type": "prose"}})
+        self.assertEqual(failures, {"b": "bad item JSON"})
+        self.assertEqual(calls, 3)
 
 
 class FaqAdapterTests(unittest.TestCase):
@@ -330,6 +360,27 @@ class ChunkConstructionTests(unittest.TestCase):
         )
         self.assertGreater(len(nodes), 1)
         self.assertTrue(all(node.metadata["evidence_text"].startswith(header) for node in nodes))
+
+    def test_oversized_context_is_removed_from_search_not_metadata(self) -> None:
+        title = "Very long official source title " * 8
+        header = "Very long repeated record header " * 8
+        document = source_document(
+            f"{header}\n" + ("evidence " * 80),
+            record_kind="record",
+            source_title=title,
+            record_header=header,
+            repeat_context=header,
+            structure_path=["Very long heading " * 8],
+        )
+
+        nodes = chunk_documents(
+            [document], tokenizer=CharacterTokenizer(160), max_tokens=160
+        )
+
+        self.assertGreater(len(nodes), 1)
+        self.assertTrue(all(node.metadata["token_count"] <= 160 for node in nodes))
+        self.assertTrue(all(node.metadata["source_title"] == title for node in nodes))
+        self.assertTrue(all(node.metadata["record_header"] == header for node in nodes))
 
     def test_search_text_whitelist(self) -> None:
         search = build_search_text({

@@ -28,7 +28,11 @@ os.environ.setdefault(
 
 from src.infrastructure.db import engine
 from src.ingestion.chunking import chunk_documents
-from src.ingestion.classification import MAX_BATCH_ITEMS, SAMPLE_CHARACTERS, classify_batch_items_sync
+from src.ingestion.classification import (
+    MAX_BATCH_ITEMS,
+    SAMPLE_CHARACTERS,
+    classify_batch_items_resilient_sync,
+)
 from src.ingestion.readers import load_file
 from src.ingestion.registry import list_documents
 from src.ingestion.service import OCR_LANGUAGES, UPLOAD_DIR
@@ -267,24 +271,24 @@ def run_preview(
 
         if not prepared:
             continue
-        try:
-            decisions = classify_batch_items_sync([{
-                "id": str(record["document_id"]),
-                "title": record.get("source_title") or record["original_file_name"],
-                "file_type": record.get("file_type") or "",
-                "text": sample,
-            } for record, sample in prepared])
-        except Exception as error:
-            for record, sample in prepared:
+        decisions, classification_failures = classify_batch_items_resilient_sync([{
+            "id": str(record["document_id"]),
+            "title": record.get("source_title") or record["original_file_name"],
+            "file_type": record.get("file_type") or "",
+            "text": sample,
+        } for record, sample in prepared])
+
+        for record, sample in prepared:
+            document_id = str(record["document_id"])
+            if document_id in classification_failures:
+                error = classification_failures[document_id]
                 save_document_preview(
                     run_id, record, sample, status="failed",
                     error_message=f"Classification failed: {error}"[:2000],
                 )
-            print(f"FAILED classification batch: {error}")
-            continue
+                print(f"FAILED classification {record['original_file_name']}: {error}")
+                continue
 
-        for record, sample in prepared:
-            document_id = str(record["document_id"])
             document_type = decisions[document_id]["document_type"]
             try:
                 if classify_only:
