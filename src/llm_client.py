@@ -70,7 +70,11 @@ async def http_llm_with_usage(
             data = await response.json()
 
     logger.debug("LLM raw response: %s", data)
-    message = data["choices"][0]["message"]
+    choice = data["choices"][0]
+    finish_reason = str(choice.get("finish_reason") or "")
+    if finish_reason and finish_reason != "stop":
+        logger.warning("LLM completion ended with finish_reason=%s", finish_reason)
+    message = choice["message"]
     content = message["content"]
     reasoning_content = str(message.get("reasoning_content") or "")
     if not content or not content.strip():

@@ -12,7 +12,6 @@ from ..infrastructure.vector_store import VECTOR_TABLE, vector_store
 from .chunking import chunk_documents
 from .classification import (
     classify_batch_items_resilient_sync,
-    classify_batch_items_sync,
 )
 from .document_types import normalize_document_type, validate_document_type
 from .readers import (
@@ -243,20 +242,26 @@ def process_registered_document(
             classification_documents = _load_record(record, document_type="auto")
             if not classification_documents:
                 raise ValueError("No readable content was extracted for classification.")
-            decision = classify_batch_items_sync([{
+            classified, classification_failures = classify_batch_items_resilient_sync([{
                 "id": document_id,
                 "title": record.get("source_title") or record["original_file_name"],
+                "source_url": record.get("source_url") or "",
                 "file_type": record.get("file_type") or "",
                 "text": "\n\n".join(
                     str(document.metadata.get("evidence_text") or document.get_content())
                     for document in classification_documents
                 ),
-            }])[document_id]["document_type"]
-            set_document_type(document_id, decision, "llm")
+            }])
+            if document_id in classification_failures:
+                raise ValueError(classification_failures[document_id])
+            classification = classified[document_id]
+            decision = classification["document_type"]
+            classification_source = classification.get("classification_source", "llm")
+            set_document_type(document_id, decision, classification_source)
             record = {
                 **record,
                 "document_type": decision,
-                "classification_source": "llm",
+                "classification_source": classification_source,
             }
 
         if normalize_document_type(record.get("document_type")) == "skip":
@@ -373,6 +378,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
     persisted_labels: dict[str, str] = {}
     unlabelled_ids: set[str] = set()
     classification_failures: dict[str, str] = {}
+    classification_sources: dict[str, str] = {}
 
     try:
         for document_id in document_ids:
@@ -394,6 +400,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
             items.append({
                 "id": document_id,
                 "title": record.get("source_title") or record["original_file_name"],
+                "source_url": record.get("source_url") or "",
                 "file_type": record.get("file_type") or "",
                 "text": "\n\n".join(
                     str(document.metadata.get("evidence_text") or document.get_content())
@@ -402,6 +409,10 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
             })
 
         classified, classification_failures = classify_batch_items_resilient_sync(items)
+        classification_sources = {
+            item_id: decision.get("classification_source", "llm")
+            for item_id, decision in classified.items()
+        }
         decisions = {
             **persisted_labels,
             **{
@@ -433,7 +444,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
         set_document_type(
             document_id,
             decisions[document_id],
-            "llm",
+            classification_sources.get(document_id, "llm"),
         )
 
     results: list[dict] = []

@@ -13,6 +13,7 @@ from functools import lru_cache
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urljoin
 
 import openpyxl
 from bs4 import BeautifulSoup, Tag
@@ -727,6 +728,171 @@ def _table_header_text(table_text: str) -> str:
     return lines[0]
 
 
+def _load_html_form_directory(
+    path: Path,
+    base_metadata: dict[str, Any],
+) -> list[Document]:
+    """Turn the HKPL forms landing page into searchable form-link records."""
+    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
+    documents: list[Document] = []
+    for row_index, row in enumerate(soup.select("table tr")):
+        cells = [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
+        link = row.find("a", href=True)
+        if len(cells) < 2 or not link or cells[:2] == ["Form No.", "Form Name"]:
+            continue
+        form_number, form_name = cells[:2]
+        href = urljoin(
+            str(base_metadata.get("source_url") or ""),
+            str(link.get("href") or "").strip(),
+        )
+        evidence = f"Form number: {form_number}\nForm name: {form_name}\nDownload URL: {href}"
+        document = _make_document(
+            evidence,
+            base_metadata=base_metadata,
+            section_index=len(documents),
+            structural_kind="table_row",
+            locator={"type": "web_link", "row": row_index + 1, "url": href},
+            structure_path=("Forms",),
+            extra_metadata={
+                "form_number": form_number,
+                "form_name": form_name,
+                "download_url": href,
+                "table_header": "Form number | Form name | Download URL",
+                "repeat_context": "Form number | Form name | Download URL",
+            },
+        )
+        if document:
+            documents.append(document)
+    return documents
+
+
+def _load_html_event_records(
+    path: Path,
+    base_metadata: dict[str, Any],
+) -> list[Document]:
+    """Keep each HKPL event-detail table as one field-aware record."""
+    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
+    root = soup.select_one(".main_content") or soup
+    documents: list[Document] = []
+    for table_index, table in enumerate(root.find_all("table")):
+        fields: list[str] = []
+        for row in table.find_all("tr"):
+            cells = [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
+            if len(cells) >= 2 and any(cells):
+                fields.append(f"{cells[0].rstrip(':')}: {' | '.join(cells[1:])}")
+        evidence = "\n".join(fields)
+        document = _make_document(
+            evidence,
+            base_metadata=base_metadata,
+            section_index=len(documents),
+            structural_kind="record",
+            locator={"type": "web_table", "table": table_index + 1},
+            structure_path=(base_metadata.get("source_title") or "Event",),
+        )
+        if document:
+            documents.append(document)
+    return documents
+
+
+def _load_html_branch_profile(
+    path: Path,
+    base_metadata: dict[str, Any],
+) -> list[Document]:
+    """Preserve each tab of an HKPL branch profile as an addressable section."""
+    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
+    documents: list[Document] = []
+    for panel in soup.select(".info_tabcont"):
+        evidence = panel.get_text("\n", strip=True)
+        if len(evidence) < 40 or "loading events" in evidence.lower():
+            continue
+        anchor = str(panel.get("id") or "")
+        document = _make_document(
+            evidence,
+            base_metadata=base_metadata,
+            section_index=len(documents),
+            structural_kind="record",
+            locator={"type": "web_anchor", "anchor": anchor},
+            structure_path=(base_metadata.get("source_title") or "Library profile",),
+        )
+        if document:
+            documents.append(document)
+    return documents
+
+
+def _expanded_table_rows(table: Tag) -> list[list[str]]:
+    """Expand row/column spans so schedule cells retain their row context."""
+    rows: list[list[str]] = []
+    pending: dict[int, tuple[str, int]] = {}
+    for html_row in table.find_all("tr"):
+        values: dict[int, str] = {}
+        for column, (value, remaining) in list(pending.items()):
+            values[column] = value
+            if remaining <= 1:
+                del pending[column]
+            else:
+                pending[column] = (value, remaining - 1)
+
+        column = 0
+        for cell in html_row.find_all(["th", "td"], recursive=False):
+            while column in values:
+                column += 1
+            value = cell.get_text(" ", strip=True)
+            colspan = max(int(cell.get("colspan") or 1), 1)
+            rowspan = max(int(cell.get("rowspan") or 1), 1)
+            for offset in range(colspan):
+                values[column + offset] = value
+                if rowspan > 1:
+                    pending[column + offset] = (value, rowspan - 1)
+            column += colspan
+        if values:
+            rows.append([values.get(index, "") for index in range(max(values) + 1)])
+    return rows
+
+
+def _load_html_hours_rows(
+    path: Path,
+    base_metadata: dict[str, Any],
+) -> list[Document]:
+    """Index HKPL hours and mobile schedules by logical table row."""
+    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
+    root = soup.select_one(".main_content") or soup
+    documents: list[Document] = []
+    for table_index, table in enumerate(root.find_all("table")):
+        rows = _expanded_table_rows(table)
+        if not rows:
+            continue
+        wide = max(len(row) for row in rows) >= 3
+        header_count = 0
+        if wide:
+            header_count = 2 if len(rows) > 1 and any(
+                "week " in cell.lower() for cell in rows[1]
+            ) else 1
+        header = "\n".join(" | ".join(row) for row in rows[:header_count]).strip()
+        group = ""
+        for row_index, row in enumerate(rows[header_count:], start=header_count + 1):
+            unique_values = [value for value in dict.fromkeys(row) if value]
+            if wide and len(unique_values) == 1:
+                group = unique_values[0]
+                continue
+            row_text = " | ".join(row).strip(" |")
+            evidence = "\n".join(part for part in (header, group, row_text) if part)
+            document = _make_document(
+                evidence,
+                base_metadata=base_metadata,
+                section_index=len(documents),
+                structural_kind="table_row",
+                locator={"type": "web_table_row", "table": table_index + 1, "row": row_index},
+                structure_path=(base_metadata.get("source_title") or "Opening hours",),
+                extra_metadata={
+                    "table_header": header,
+                    "repeat_context": header,
+                },
+            )
+            if document:
+                documents.append(document)
+    return documents
+
+
 def _load_docling(
     path: Path,
     base_metadata: dict[str, Any],
@@ -896,6 +1062,39 @@ def load_file(
         return _load_xml(path, base_metadata)
     if extension in {".html", ".htm"}:
         html = path.read_text(encoding="utf-8", errors="strict")
+        html_source_url = str(base_metadata.get("source_url") or "")
+        if re.search(
+            r"/about-us/forms\.html(?:[?#].*)?$",
+            html_source_url,
+            re.IGNORECASE,
+        ):
+            form_documents = _load_html_form_directory(path, base_metadata)
+            if form_documents:
+                return form_documents
+        if re.search(
+            r"/extension-activities/(?:event|sub-event)/\d+",
+            html_source_url,
+            re.IGNORECASE,
+        ):
+            event_documents = _load_html_event_records(path, base_metadata)
+            if event_documents:
+                return event_documents
+        if re.search(
+            r"/locations/opening-hours(?:-\d+)?\.html(?:[?#].*)?$",
+            html_source_url,
+            re.IGNORECASE,
+        ):
+            hours_documents = _load_html_hours_rows(path, base_metadata)
+            if hours_documents:
+                return hours_documents
+        if re.search(
+            r"/locations/(?!opening-hours|mobile-libraries|libraries)[^/]+/[^/]+\.html(?:[?#].*)?$",
+            html_source_url,
+            re.IGNORECASE,
+        ):
+            branch_documents = _load_html_branch_profile(path, base_metadata)
+            if branch_documents:
+                return branch_documents
         if base_metadata["record_kind"] == "record":
             base_metadata.update(
                 extract_html_record_metadata(html, base_metadata["record_kind"])

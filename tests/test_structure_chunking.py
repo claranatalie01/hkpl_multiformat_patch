@@ -13,6 +13,7 @@ from scripts.preview_ingestion import (
     postgres_text,
     run_preview,
 )
+from scripts.crawl_hkpl_site import extract_main_html
 
 import openpyxl
 from llama_index.core import Document
@@ -20,6 +21,7 @@ from llama_index.core import Document
 from src.ingestion.chunking import build_search_text, chunk_documents
 from src.ingestion.classification import (
     MAX_BATCH_ITEMS,
+    classification_sample,
     classify_batch_items,
     classify_batch_items_resilient,
 )
@@ -147,6 +149,40 @@ class PreviewRunTests(unittest.TestCase):
             for call in save.call_args_list
         ))
 
+    def test_preview_records_fallback_source_and_error(self) -> None:
+        record = {
+            "document_id": "one",
+            "original_file_name": "one.txt",
+            "stored_file_name": "one.txt",
+            "source_type": "crawler",
+        }
+        decision = {
+            "one": {
+                "document_type": "prose",
+                "classification_source": "fallback",
+                "classification_error": "malformed JSON",
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "one.txt").write_text("text")
+            with (
+                patch("scripts.preview_ingestion.UPLOAD_DIR", Path(directory)),
+                patch("scripts.preview_ingestion.ensure_preview_schema"),
+                patch("scripts.preview_ingestion.list_documents", return_value=[record]),
+                patch("scripts.preview_ingestion.extract_for_classification", return_value=("text", [])),
+                patch("scripts.preview_ingestion.save_document_preview"),
+                patch("scripts.preview_ingestion.preview_record") as preview,
+                patch(
+                    "scripts.preview_ingestion.classify_batch_items_resilient_sync",
+                    return_value=(decision, {}),
+                ),
+            ):
+                run_preview(
+                    run_id="run", limit=None, crawler_only=True, classify_only=False
+                )
+
+        self.assertEqual(preview.call_args.args[-2:], ("fallback", "malformed JSON"))
+
 
 class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
     async def test_uses_one_compact_generation_call(self) -> None:
@@ -171,7 +207,8 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         prompt, options = calls[0]
         self.assertIn("faq|record|prose|skip", prompt)
-        self.assertIn("Tables and spreadsheets still need one of these labels", prompt)
+        self.assertIn("factual tables, directories", prompt)
+        self.assertIn("Keep service/guidance pages", prompt)
         self.assertEqual(options["temperature"], 0.0)
         self.assertFalse(options["enable_thinking"])
         self.assertEqual(options["response_format"]["type"], "json_schema")
@@ -228,9 +265,30 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
             llm_call=fake_llm,
         )
 
-        self.assertEqual(decisions, {"a": {"document_type": "prose"}})
-        self.assertEqual(failures, {"b": "bad item JSON"})
+        self.assertEqual(decisions["a"], {"document_type": "prose"})
+        self.assertEqual(decisions["b"]["document_type"], "prose")
+        self.assertEqual(decisions["b"]["classification_source"], "fallback")
+        self.assertEqual(decisions["b"]["classification_error"], "bad item JSON")
+        self.assertEqual(failures, {})
         self.assertEqual(calls, 3)
+
+    async def test_llm_decision_precedes_faq_fallback(self) -> None:
+        async def fake_llm(*_: object, **__: object) -> str:
+            return '{"items":[{"id":"0","type":"prose"}]}'
+
+        decisions, failures = await classify_batch_items_resilient([{
+            "id": "faq-page",
+            "text": "Q: First?\nA: One\nQ: Second?\nA: Two",
+        }], llm_call=fake_llm)
+
+        self.assertEqual(decisions, {"faq-page": {"document_type": "prose"}})
+        self.assertEqual(failures, {})
+
+    def test_classifier_sample_keeps_head_and_tail(self) -> None:
+        sample = classification_sample("HEAD" + ("x" * 2000) + "TAIL", limit=100)
+        self.assertTrue(sample.startswith("HEAD"))
+        self.assertTrue(sample.endswith("TAIL"))
+        self.assertIn("middle omitted", sample)
 
 
 class FaqAdapterTests(unittest.TestCase):
@@ -324,6 +382,34 @@ class ChunkConstructionTests(unittest.TestCase):
         nodes = chunk_documents(documents, tokenizer=CharacterTokenizer(), max_tokens=512)
         self.assertEqual(len(nodes), 2)
         self.assertNotEqual(nodes[0].node_id, nodes[1].node_id)
+
+    def test_equal_text_and_locator_in_distinct_sections_get_distinct_ids(self) -> None:
+        documents = [
+            source_document("Same wording", section_index=1),
+            source_document("Same wording", section_index=2),
+        ]
+        nodes = chunk_documents(documents, tokenizer=CharacterTokenizer(), max_tokens=512)
+        self.assertNotEqual(nodes[0].node_id, nodes[1].node_id)
+        self.assertNotEqual(
+            nodes[0].metadata["parent_record_id"],
+            nodes[1].metadata["parent_record_id"],
+        )
+
+    def test_oversized_prose_prefers_semantic_boundaries_without_overlap(self) -> None:
+        document = source_document(
+            "First paragraph ends here.\n\n"
+            "Second paragraph also ends cleanly.\n\n"
+            "Third paragraph finishes naturally.",
+            source_title="T",
+        )
+        nodes = chunk_documents(
+            [document], tokenizer=CharacterTokenizer(70), max_tokens=70
+        )
+        self.assertGreater(len(nodes), 1)
+        self.assertTrue(all(node.metadata["chunk_overlap"] == 0 for node in nodes))
+        self.assertTrue(all(
+            node.metadata["evidence_text"].endswith(".") for node in nodes
+        ))
 
     def test_oversized_faq_repeats_question_and_respects_cap(self) -> None:
         question = "How do I renew a book?"
@@ -466,6 +552,89 @@ class DeterministicReaderTests(unittest.TestCase):
             with patch("src.ingestion.readers._load_docling", side_effect=RuntimeError("failed")):
                 with self.assertRaisesRegex(RuntimeError, "failed"):
                     self._load(path)
+
+    def test_forms_landing_page_keeps_link_records(self) -> None:
+        html = """
+        <table><tr><th>Form No.</th><th>Form Name</th></tr>
+        <tr><td>LCS 050</td><td><a href="/forms/LCS050.pdf">Application</a></td></tr>
+        </table>
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "forms.html"
+            path.write_text(html, encoding="utf-8")
+            documents = self._load(
+                path,
+                document_type="prose",
+                source_url="https://www.hkpl.gov.hk/en/about-us/forms.html",
+            )
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0].metadata["record_kind"], "table")
+        self.assertIn("https://www.hkpl.gov.hk/forms/LCS050.pdf", documents[0].text)
+
+    def test_event_page_keeps_field_rows_together(self) -> None:
+        html = """
+        <div class="main_content"><table>
+          <tr><th>Date &amp; Time:</th><td>30 August 2026, 2:30 p.m.</td></tr>
+          <tr><th>Venue:</th><td>Ping Shan Tin Shui Wai Public Library</td></tr>
+          <tr><th>Description:</th><td>A useful public talk.</td></tr>
+        </table></div>
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "event.html"
+            path.write_text(html, encoding="utf-8")
+            documents = self._load(
+                path,
+                document_type="record",
+                source_url="https://www.hkpl.gov.hk/en/extension-activities/event/123/example",
+            )
+        self.assertEqual(len(documents), 1)
+        self.assertIn("Date & Time: 30 August 2026", documents[0].text)
+        self.assertIn("Venue: Ping Shan", documents[0].text)
+
+    def test_hours_table_expands_rowspans_and_repeats_header(self) -> None:
+        html = """
+        <div class="main_content"><table>
+          <tr><th>Day</th><th>Session</th><th>Location</th></tr>
+          <tr><td rowspan="2">Monday</td><td>AM</td><td>Central</td></tr>
+          <tr><td>PM</td><td>Kowloon</td></tr>
+        </table></div>
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hours.html"
+            path.write_text(html, encoding="utf-8")
+            documents = self._load(
+                path,
+                document_type="prose",
+                source_url="https://www.hkpl.gov.hk/en/locations/opening-hours-03.html",
+            )
+        self.assertEqual(len(documents), 2)
+        self.assertIn("Monday | PM | Kowloon", documents[1].text)
+        self.assertTrue(all("Day | Session | Location" in doc.text for doc in documents))
+
+
+class MainContentSelectionTests(unittest.TestCase):
+    def test_prefers_substantive_main_content_over_large_link_sidebar(self) -> None:
+        html = """
+        <html><head><title>FAQ</title></head><body><div id="content">
+          <div class="left_nav">{links}</div>
+          <div class="main_content"><h1>Useful FAQ</h1><p>{body}</p></div>
+        </div></body></html>
+        """.format(
+            links=" ".join(f'<a href="/{i}">Menu {i}</a>' for i in range(100)),
+            body="Useful factual answer. " * 15,
+        )
+        _, extracted = extract_main_html(html)
+        self.assertIn("Useful factual answer", extracted)
+        self.assertNotIn("Menu 99", extracted)
+
+    def test_falls_back_to_outer_content_when_inner_container_is_empty(self) -> None:
+        html = """
+        <html><head><title>Kids reading</title></head><body><div id="content">
+          <div class="left-menu"><p>{body}</p></div><div class="inner-body"></div>
+        </div></body></html>
+        """.format(body="Recommended reading content. " * 12)
+        _, extracted = extract_main_html(html)
+        self.assertIn("Recommended reading content", extracted)
 
 
 class RecordMetadataTests(unittest.TestCase):

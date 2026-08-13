@@ -30,7 +30,7 @@ from src.infrastructure.db import engine
 from src.ingestion.chunking import chunk_documents
 from src.ingestion.classification import (
     MAX_BATCH_ITEMS,
-    SAMPLE_CHARACTERS,
+    classification_sample,
     classify_batch_items_resilient_sync,
 )
 from src.ingestion.readers import load_file
@@ -111,10 +111,10 @@ def extract_for_classification(path: Path, record: dict) -> tuple[str, list]:
         document_type="auto",
         classification_source="llm",
     )
-    sample = postgres_text("\n\n".join(
+    sample = classification_sample(postgres_text("\n\n".join(
         str(document.metadata.get("evidence_text") or document.get_content())
         for document in documents
-    ))[:SAMPLE_CHARACTERS]
+    )))
     if not sample.strip():
         raise ValueError("No content was extracted for classification.")
     return sample, documents
@@ -132,6 +132,7 @@ def save_document_preview(run_id: str, record: dict, sample: str, **values: obje
         ),
         "classifier_sample": postgres_text(sample),
         "document_type": values.get("document_type"),
+        "classification_source": values.get("classification_source", "llm"),
         "status": values.get("status", "pending"),
         "section_count": values.get("section_count", 0),
         "chunk_count": values.get("chunk_count", 0),
@@ -142,14 +143,15 @@ def save_document_preview(run_id: str, record: dict, sample: str, **values: obje
             INSERT INTO {DOCUMENT_TABLE} (
                 run_id, document_id, source_title, source_url, file_name,
                 file_type, classifier_sample, document_type, status,
-                section_count, chunk_count, error_message
+                classification_source, section_count, chunk_count, error_message
             ) VALUES (
                 :run_id, :document_id, :source_title, :source_url, :file_name,
                 :file_type, :classifier_sample, :document_type, :status,
-                :section_count, :chunk_count, :error_message
+                :classification_source, :section_count, :chunk_count, :error_message
             )
             ON CONFLICT (run_id, document_id) DO UPDATE SET
                 document_type = EXCLUDED.document_type,
+                classification_source = EXCLUDED.classification_source,
                 status = EXCLUDED.status,
                 section_count = EXCLUDED.section_count,
                 chunk_count = EXCLUDED.chunk_count,
@@ -199,11 +201,15 @@ def preview_record(
     record: dict,
     sample: str,
     document_type: str,
+    classification_source: str,
+    classification_error: str | None = None,
 ) -> None:
     document_id = str(record["document_id"])
     if document_type == "skip":
         save_document_preview(
             run_id, record, sample, document_type=document_type,
+            classification_source=classification_source,
+            error_message=classification_error,
             status="skipped", section_count=0, chunk_count=0,
         )
         return
@@ -225,12 +231,14 @@ def preview_record(
         effective_date=str(record.get("effective_date") or ""),
         source_kind=record.get("source_kind") or record.get("source_type") or "preview",
         document_type=document_type,
-        classification_source="llm",
+        classification_source=classification_source,
     )
     nodes = chunk_documents(documents)
     save_chunks(run_id, document_id, nodes)
     save_document_preview(
         run_id, record, sample, document_type=document_type,
+        classification_source=classification_source,
+        error_message=classification_error,
         status="completed", section_count=len(documents), chunk_count=len(nodes),
     )
 
@@ -274,6 +282,7 @@ def run_preview(
         decisions, classification_failures = classify_batch_items_resilient_sync([{
             "id": str(record["document_id"]),
             "title": record.get("source_title") or record["original_file_name"],
+            "source_url": record.get("source_url") or "",
             "file_type": record.get("file_type") or "",
             "text": sample,
         } for record, sample in prepared])
@@ -290,19 +299,33 @@ def run_preview(
                 continue
 
             document_type = decisions[document_id]["document_type"]
+            classification_source = decisions[document_id].get(
+                "classification_source", "llm"
+            )
+            classification_error = decisions[document_id].get("classification_error")
             try:
                 if classify_only:
                     save_document_preview(
                         run_id, record, sample, document_type=document_type,
+                        classification_source=classification_source,
+                        error_message=classification_error,
                         status="classified", section_count=0, chunk_count=0,
                     )
                     print(f"{document_type:6} {record.get('source_url') or record['original_file_name']}")
                     continue
-                preview_record(run_id, record, sample, document_type)
+                preview_record(
+                    run_id,
+                    record,
+                    sample,
+                    document_type,
+                    classification_source,
+                    classification_error,
+                )
                 print(f"{document_type:6} {record.get('source_url') or record['original_file_name']}")
             except Exception as error:
                 save_document_preview(
                     run_id, record, sample, document_type=document_type,
+                    classification_source=classification_source,
                     status="failed", error_message=str(error)[:2000],
                 )
                 print(f"FAILED {record['original_file_name']}: {error}")

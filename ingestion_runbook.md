@@ -200,7 +200,8 @@ This command:
 - selects all registered crawler and uploaded sources;
 - extracts their content;
 - classifies unlabelled sources with the local Qwen3.5-9B model, with reasoning
-  disabled;
+  disabled; rejected batches are bisected and a deterministic per-document
+  fallback is used only if the single-item LLM attempt also fails;
 - creates 512-token-bounded pre-embedding chunks;
 - writes only the two preview tables;
 - saves the terminal log under `data/ingestion_preview`.
@@ -228,11 +229,11 @@ Check progress by status and document type:
 
 ```bash
 docker exec hkpl_postgres psql -U postgres -d hkpl_vector_db -c "
-SELECT status, document_type, COUNT(*)
+SELECT status, document_type, classification_source, COUNT(*)
 FROM ingestion_preview_documents
 WHERE run_id = '$RUN_ID'
-GROUP BY status, document_type
-ORDER BY status, document_type;"
+GROUP BY status, document_type, classification_source
+ORDER BY status, document_type, classification_source;"
 ```
 
 Follow the saved log:
@@ -274,6 +275,10 @@ ORDER BY source_title;
 Replace the example timestamp with the actual run ID. Exit `psql` with `\q`.
 Do not evaluate chunk quality until extraction and classification failures are
 understood.
+
+Rows with `classification_source = 'fallback'` should be manually reviewed.
+They indicate that the LLM failed even after the batch was reduced to one item;
+they are not deterministic pre-classification of otherwise healthy LLM calls.
 
 ### 9. Audit chunk quality before embedding
 

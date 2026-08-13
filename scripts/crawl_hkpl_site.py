@@ -142,8 +142,7 @@ def extract_main_html(html: str, *, allow_low_content: bool = False) -> tuple[st
 
     for tag in soup.select(
         "style, nav, footer, header, noscript, svg, "
-        ".breadcrumb, .breadcrumbs, .side_menu, .sidebar, "
-        ".share, .social, .pagination, .search, .menu"
+        ".breadcrumb, .breadcrumbs, .share, .social, .pagination, .search, .menu"
     ):
         tag.decompose()
     for script in soup.find_all("script"):
@@ -155,23 +154,20 @@ def extract_main_html(html: str, *, allow_low_content: bool = False) -> tuple[st
     candidates = [
         "main",
         "article",
-        "#content",
-        ".content",
         ".main_content",
         ".content_detail",
+        ".inner-body",
         "#main-content",
+        "#content",
+        ".content",
     ]
 
     best = None
-    best_len = 0
-
     for selector in candidates:
         found = soup.select_one(selector)
-        if found:
-            text_len = len(clean_text(found.get_text(" ", strip=True)))
-            if text_len > best_len:
-                best = found
-                best_len = text_len
+        if found and len(clean_text(found.get_text(" ", strip=True))) >= 100:
+            best = found
+            break
 
     if best is None:
         best = soup.body or soup
@@ -266,6 +262,7 @@ def flush_pending(pending: list[dict], stats: dict) -> None:
     decisions, classification_failures = classify_batch_items_resilient_sync([{
         "id": item["url"],
         "title": item["title"],
+        "source_url": item["url"],
         "file_type": item["extension"].lstrip("."),
         "text": item["classifier_text"],
     } for item in prepared])
@@ -293,7 +290,9 @@ def flush_pending(pending: list[dict], stats: dict) -> None:
                 language="en",
                 source_kind="crawler",
                 document_type=decisions[item["url"]]["document_type"],
-                classification_source="llm",
+                classification_source=decisions[item["url"]].get(
+                    "classification_source", "llm"
+                ),
                 replace_document_id=item["replace_document_id"],
             )
         except Exception as error:

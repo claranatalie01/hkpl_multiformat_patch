@@ -18,7 +18,7 @@ from .tokenizer import DEFAULT_MAX_TOKENS, get_embedding_tokenizer
 
 MAX_TOKENS = int(os.getenv("CHUNK_SIZE", str(DEFAULT_MAX_TOKENS)))
 FALLBACK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "64"))
-CHUNKER_VERSION = os.getenv("CHUNKER_VERSION", "hkpl-structure-v2")
+CHUNKER_VERSION = "hkpl-structure-v3"
 
 
 def get_text(document: Document) -> str:
@@ -95,15 +95,35 @@ def _token_offsets(tokenizer: Any, text: str) -> list[tuple[int, int]]:
     ]
 
 
+def _semantic_units(text: str) -> list[str]:
+    """Prefer structural and sentence boundaries before raw token offsets."""
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
+    units: list[str] = []
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) > 1 and all(
+            re.match(r"^(?:[-*•]|\d+[.)])\s+", line) for line in lines
+        ):
+            units.extend(lines)
+            continue
+        sentences = [
+            part.strip()
+            for part in re.split(r"(?<=[.!?。！？])\s+", block)
+            if part.strip()
+        ]
+        units.extend(sentences)
+    return units or ([text.strip()] if text.strip() else [])
+
+
 def _split_evidence(
     evidence_text: str,
     metadata: dict[str, Any],
     tokenizer: Any,
     max_tokens: int,
-) -> tuple[list[str], dict[str, Any]]:
+) -> tuple[list[str], dict[str, Any], bool]:
     search_text = build_search_text(metadata, evidence_text)
     if tokenizer.count_tokens(search_text) <= max_tokens:
-        return [evidence_text], metadata
+        return [evidence_text], metadata, False
 
     repeat_context = str(
         metadata.get("repeat_context")
@@ -142,9 +162,38 @@ def _split_evidence(
     ):
         body = body[len(repeat_context):].lstrip("\r\n :")
 
+    semantic_parts: list[str] = []
+    current = ""
+    for unit in _semantic_units(body):
+        candidate = f"{current}\n\n{unit}" if current else unit
+        evidence_part = f"{repeat_context}\n{candidate}" if repeat_context else candidate
+        if tokenizer.count_tokens(
+            build_search_text(search_metadata, evidence_part)
+        ) <= max_tokens:
+            current = candidate
+            continue
+        if current:
+            semantic_parts.append(
+                f"{repeat_context}\n{current}" if repeat_context else current
+            )
+            current = ""
+        single = f"{repeat_context}\n{unit}" if repeat_context else unit
+        if tokenizer.count_tokens(build_search_text(search_metadata, single)) <= max_tokens:
+            current = unit
+        else:
+            semantic_parts = []
+            break
+    else:
+        if current:
+            semantic_parts.append(
+                f"{repeat_context}\n{current}" if repeat_context else current
+            )
+        if semantic_parts:
+            return semantic_parts, search_metadata, False
+
     offsets = _token_offsets(tokenizer, body)
     if not offsets:
-        return [evidence_text], search_metadata
+        return [evidence_text], search_metadata, False
     parts: list[str] = []
     start = 0
     while start < len(offsets):
@@ -165,7 +214,7 @@ def _split_evidence(
         if end == len(offsets):
             break
         start = max(start + 1, end - FALLBACK_OVERLAP)
-    return parts, search_metadata
+    return parts, search_metadata, True
 
 
 def _chunk_id(
@@ -179,7 +228,16 @@ def _chunk_id(
         or f"{metadata.get('kb_document_id') or metadata.get('document_id') or 'source'}"
         f":v{metadata.get('document_version', 1)}"
     )
-    locator_json = json.dumps(locator, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    location_identity = {
+        "locator": locator,
+        "section_index": metadata.get("section_index"),
+    }
+    locator_json = json.dumps(
+        location_identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     locator_hash = hashlib.sha256(locator_json.encode("utf-8")).hexdigest()[:12]
     evidence_hash = hashlib.sha256(evidence_text.encode("utf-8")).hexdigest()[:16]
     return f"{source_version}:l{locator_hash}:p{part_number}:{evidence_hash}"
@@ -213,7 +271,8 @@ def chunk_documents(
         if not parent_record_id:
             identity = (
                 f"{metadata.get('source_version_id') or metadata.get('document_id')}|"
-                f"{json.dumps(locator, ensure_ascii=False, sort_keys=True)}"
+                f"{json.dumps(locator, ensure_ascii=False, sort_keys=True)}|"
+                f"{metadata.get('section_index')}"
             )
             parent_record_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
 
@@ -234,7 +293,7 @@ def chunk_documents(
             ),
         })
 
-        parts, search_metadata = _split_evidence(
+        parts, search_metadata, used_token_fallback = _split_evidence(
             evidence_text,
             metadata,
             tokenizer,
@@ -254,7 +313,11 @@ def chunk_documents(
                 "part_count": len(parts),
                 "token_count": token_count,
                 "chunk_size": max_tokens,
-                "chunk_overlap": FALLBACK_OVERLAP if len(parts) > 1 else 0,
+                "chunk_overlap": (
+                    FALLBACK_OVERLAP
+                    if used_token_fallback and len(parts) > 1
+                    else 0
+                ),
             }
             chunk_id = _chunk_id(part_metadata, locator, part_number, evidence_part)
             part_metadata.update({"chunk_id": chunk_id, "chunk_index": part_number - 1})
