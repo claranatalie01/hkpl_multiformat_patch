@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, Iterable
@@ -581,6 +582,7 @@ def _load_html_faq(
     return documents
 
 
+@lru_cache(maxsize=4)
 def _docling_converter(ocr_languages: str):
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.object_detection_engine_options import (
