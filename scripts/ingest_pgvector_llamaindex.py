@@ -55,8 +55,6 @@ from src.ingestion.service import (
     reindex_registered_document,
 )
 from src.ingestion.write_guard import ensure_corpus_writable
-
-
 EVALUATION_DATASET_TABLE = os.getenv(
     "EVALUATION_DATASET_TABLE",
     "evaluation_dataset",
@@ -674,7 +672,6 @@ def audit_knowledge_chunks() -> bool:
                            OR COALESCE(metadata_->>'chunk_policy', '') = ''
                            OR COALESCE(metadata_->>'parent_record_id', '') = ''
                            OR COALESCE(metadata_->>'parser_version', '') = ''
-                           OR COALESCE(metadata_->>'chunker_version', '') = ''
                            OR COALESCE(metadata_->>'search_text', '') = ''
                            OR COALESCE(metadata_->>'token_count', '') = ''
                            OR COALESCE(metadata_->'locator', '{{}}'::jsonb) = '{{}}'::jsonb
@@ -909,7 +906,9 @@ def audit_knowledge_chunks() -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ingest FAQ knowledge and/or synchronize the evaluation dataset.",
+        description=(
+            "Ingest FAQ or registered knowledge and synchronize evaluation data."
+        ),
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(

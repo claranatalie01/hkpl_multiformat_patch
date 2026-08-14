@@ -9,7 +9,6 @@ data/rag_evaluation/
 data/hotpotqa/
 data/webz_news/
 data/incoming/
-data/ingestion_preview/
 data/generation_results.csv
 data/generation_summary.json
 data/retrieval_results.csv

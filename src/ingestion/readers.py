@@ -13,7 +13,7 @@ from functools import lru_cache
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import openpyxl
 from bs4 import BeautifulSoup, Tag
@@ -53,6 +53,10 @@ SUPPORTED_EXTENSIONS = {
 LEGACY_EXTENSIONS = {".doc", ".xls", ".ppt"}
 DETERMINISTIC_EXTENSIONS = {".csv", ".xlsx", ".xlsm", ".json", ".jsonl", ".xml"}
 DOCLING_EXTENSIONS = SUPPORTED_EXTENSIONS - DETERMINISTIC_EXTENSIONS
+LITERAL_PDF_URL = re.compile(
+    r"(?P<url>(?:https?://|/)[^\"'<>]*?\.pdf(?:\?[^\"'<>]*)?)",
+    re.IGNORECASE,
+)
 
 
 def file_content_hash(path: Path) -> str:
@@ -766,6 +770,62 @@ def _load_html_form_directory(
     return documents
 
 
+def _load_html_fallback(
+    path: Path,
+    base_metadata: dict[str, Any],
+) -> list[Document]:
+    """Recover useful HTML text when Docling exports an empty document."""
+    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
+    for tag in soup.select("script, style, noscript, template"):
+        tag.decompose()
+
+    base_url = str(base_metadata.get("source_url") or "")
+    base_host = urlparse(base_url).netloc.lower()
+    resource_links: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for tag in soup.find_all(True):
+        label = re.sub(r"\s+", " ", tag.get_text(" ", strip=True)).strip()
+        for value in tag.attrs.values():
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                for match in LITERAL_PDF_URL.finditer(str(item)):
+                    absolute = urljoin(base_url, match.group("url"))
+                    parsed = urlparse(absolute)
+                    if (
+                        parsed.scheme not in {"http", "https"}
+                        or (base_host and parsed.netloc.lower() != base_host)
+                        or absolute in seen_urls
+                    ):
+                        continue
+                    seen_urls.add(absolute)
+                    resource_links.append((label or Path(parsed.path).name, absolute))
+
+    lines = list(dict.fromkeys(
+        re.sub(r"\s+", " ", line).strip()
+        for line in soup.get_text("\n").splitlines()
+        if line.strip()
+    ))
+    lines.extend(f"{label}: {url}" for label, url in resource_links)
+    evidence = "\n".join(lines).strip()
+
+    # Empty Docling output plus interactive controls is normally a login/search
+    # shell. A genuine resource directory remains eligible through its links.
+    if (soup.select_one("form, input, textarea, select") and not resource_links) or (
+        len(evidence) < 200 and not resource_links
+    ):
+        return []
+
+    document = _make_document(
+        evidence,
+        base_metadata=base_metadata,
+        section_index=0,
+        structural_kind="fallback",
+        locator={"type": "web_document", "url": base_url},
+        extra_metadata={"parser_version": "html-fallback-v1"},
+    )
+    return [document] if document else []
+
+
 def _load_html_event_records(
     path: Path,
     base_metadata: dict[str, Any],
@@ -1104,5 +1164,8 @@ def load_file(
             if faq_documents:
                 return faq_documents
     if extension in DOCLING_EXTENSIONS:
-        return _load_docling(path, base_metadata, ocr_languages)
+        documents = _load_docling(path, base_metadata, ocr_languages)
+        if documents or extension not in {".html", ".htm"}:
+            return documents
+        return _load_html_fallback(path, base_metadata)
     raise ValueError(f"No reader configured for {extension}")

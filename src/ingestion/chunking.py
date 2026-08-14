@@ -18,7 +18,6 @@ from .tokenizer import DEFAULT_MAX_TOKENS, get_embedding_tokenizer
 
 MAX_TOKENS = int(os.getenv("CHUNK_SIZE", str(DEFAULT_MAX_TOKENS)))
 FALLBACK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "64"))
-CHUNKER_VERSION = "hkpl-structure-v3"
 
 
 def get_text(document: Document) -> str:
@@ -252,6 +251,7 @@ def chunk_documents(
     """Build exact-evidence nodes with stable provenance and retrieval text."""
     tokenizer = tokenizer or get_embedding_tokenizer(max_tokens)
     nodes: list[BaseNode] = []
+    seen_chunk_ids: set[str] = set()
 
     for document in documents:
         metadata = dict(document.metadata or {})
@@ -286,7 +286,6 @@ def chunk_documents(
             "locator": locator,
             "branch_ids": _text_list(metadata.get("branch_ids")),
             "parser_version": metadata.get("parser_version") or "deterministic-v2",
-            "chunker_version": CHUNKER_VERSION,
             "parent_record_id": parent_record_id,
             "classification_source": metadata.get("classification_source") or (
                 "fallback" if selected_type == "auto" else "librarian"
@@ -320,6 +319,9 @@ def chunk_documents(
                 ),
             }
             chunk_id = _chunk_id(part_metadata, locator, part_number, evidence_part)
+            if chunk_id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk_id)
             part_metadata.update({"chunk_id": chunk_id, "chunk_index": part_number - 1})
             excluded_keys = list(part_metadata)
             nodes.append(TextNode(

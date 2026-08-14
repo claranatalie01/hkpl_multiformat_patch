@@ -6,18 +6,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.preview_ingestion import (
-    CHUNK_TABLE,
-    DOCUMENT_TABLE,
-    postgres_json,
-    postgres_text,
-    run_preview,
+from scripts.crawl_hkpl_site import (
+    decode_response_text,
+    discover_links,
+    extract_main_html,
+    flush_pending,
 )
-from scripts.crawl_hkpl_site import extract_main_html
 
 import openpyxl
 from llama_index.core import Document
 
+import src.ingestion.service as ingestion_service
 from src.ingestion.chunking import build_search_text, chunk_documents
 from src.ingestion.classification import (
     MAX_BATCH_ITEMS,
@@ -88,16 +87,6 @@ def source_document(
 
 
 class DocumentTypeTests(unittest.TestCase):
-    def test_preview_tables_are_isolated_from_live_corpus(self):
-        self.assertEqual(DOCUMENT_TABLE, "ingestion_preview_documents")
-        self.assertEqual(CHUNK_TABLE, "ingestion_preview_chunks")
-        self.assertNotIn(DOCUMENT_TABLE, {"knowledge_documents", "data_hkpl_knowledge"})
-        self.assertNotIn(CHUNK_TABLE, {"knowledge_documents", "data_hkpl_knowledge"})
-
-    def test_preview_removes_postgres_nul_characters(self):
-        self.assertEqual(postgres_text("before\x00after"), "beforeafter")
-        self.assertEqual(postgres_json({"text": "before\x00after"}), '{"text": "beforeafter"}')
-
     def test_physical_table_precedes_admin_faq_hint(self) -> None:
         metadata = {"document_type": "faq", "structural_kind": "table_row"}
         self.assertEqual(resolve_record_kind(metadata), "table")
@@ -112,76 +101,44 @@ class DocumentTypeTests(unittest.TestCase):
         self.assertEqual(resolve_record_kind({"document_type": "directory"}), "record")
 
 
-class PreviewRunTests(unittest.TestCase):
-    def test_bad_classifier_batch_does_not_abort_later_batches(self) -> None:
-        records = [{
-            "document_id": str(index),
-            "original_file_name": f"{index}.txt",
-            "stored_file_name": f"{index}.txt",
-            "source_type": "crawler",
-        } for index in range(MAX_BATCH_ITEMS + 1)]
-        decisions = {str(MAX_BATCH_ITEMS): {"document_type": "prose"}}
-        failures = {str(index): "bad JSON" for index in range(MAX_BATCH_ITEMS)}
-
-        with tempfile.TemporaryDirectory() as directory:
-            for record in records:
-                (Path(directory) / record["stored_file_name"]).write_text("text")
-            with (
-                patch("scripts.preview_ingestion.UPLOAD_DIR", Path(directory)),
-                patch("scripts.preview_ingestion.ensure_preview_schema"),
-                patch("scripts.preview_ingestion.list_documents", return_value=records),
-                patch("scripts.preview_ingestion.extract_for_classification", return_value=("text", [])),
-                patch("scripts.preview_ingestion.save_document_preview") as save,
-                patch("scripts.preview_ingestion.preview_record") as preview,
-                patch(
-                    "scripts.preview_ingestion.classify_batch_items_resilient_sync",
-                    side_effect=[({}, failures), (decisions, {})],
-                ),
-            ):
-                run_preview(
-                    run_id="run", limit=None, crawler_only=True, classify_only=False
-                )
-
-        self.assertEqual(preview.call_count, 1)
-        self.assertTrue(any(
-            call.kwargs.get("status") == "failed"
-            and "Classification failed" in call.kwargs.get("error_message", "")
-            for call in save.call_args_list
-        ))
-
-    def test_preview_records_fallback_source_and_error(self) -> None:
+class IngestionHandoffTests(unittest.TestCase):
+    def test_registered_document_uses_configured_embedding_model(self) -> None:
         record = {
-            "document_id": "one",
-            "original_file_name": "one.txt",
-            "stored_file_name": "one.txt",
-            "source_type": "crawler",
+            "document_id": "doc-1",
+            "original_file_name": "source.html",
+            "document_type": "prose",
+            "version": 1,
         }
-        decision = {
-            "one": {
-                "document_type": "prose",
-                "classification_source": "fallback",
-                "classification_error": "malformed JSON",
-            }
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            (Path(directory) / "one.txt").write_text("text")
-            with (
-                patch("scripts.preview_ingestion.UPLOAD_DIR", Path(directory)),
-                patch("scripts.preview_ingestion.ensure_preview_schema"),
-                patch("scripts.preview_ingestion.list_documents", return_value=[record]),
-                patch("scripts.preview_ingestion.extract_for_classification", return_value=("text", [])),
-                patch("scripts.preview_ingestion.save_document_preview"),
-                patch("scripts.preview_ingestion.preview_record") as preview,
-                patch(
-                    "scripts.preview_ingestion.classify_batch_items_resilient_sync",
-                    return_value=(decision, {}),
-                ),
-            ):
-                run_preview(
-                    run_id="run", limit=None, crawler_only=True, classify_only=False
-                )
+        documents = [source_document("Official library information.")]
+        nodes = [object()]
+        storage_context = object()
+        with (
+            patch.object(ingestion_service, "ensure_corpus_writable"),
+            patch.object(ingestion_service, "ensure_registry_schema"),
+            patch.object(ingestion_service, "get_document", return_value=record),
+            patch.object(ingestion_service, "_load_record", return_value=documents),
+            patch.object(ingestion_service, "chunk_documents", return_value=nodes),
+            patch.object(
+                ingestion_service.StorageContext,
+                "from_defaults",
+                return_value=storage_context,
+            ),
+            patch.object(ingestion_service, "VectorStoreIndex") as vector_index,
+            patch.object(ingestion_service, "delete_old_versions", return_value=0),
+            patch.object(ingestion_service, "update_status"),
+        ):
+            result = ingestion_service.process_registered_document("doc-1")
 
-        self.assertEqual(preview.call_args.args[-2:], ("fallback", "malformed JSON"))
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(vector_index.call_args.args[0], nodes)
+        self.assertIs(
+            vector_index.call_args.kwargs["embed_model"],
+            ingestion_service.embed_model,
+        )
+        self.assertIs(
+            vector_index.call_args.kwargs["storage_context"],
+            storage_context,
+        )
 
 
 class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
@@ -260,7 +217,7 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
                 raise ValueError("bad item JSON")
             return '{"items":[{"id":"0","type":"prose"}]}'
 
-        decisions, failures = await classify_batch_items_resilient(
+        decisions = await classify_batch_items_resilient(
             [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}],
             llm_call=fake_llm,
         )
@@ -269,20 +226,18 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decisions["b"]["document_type"], "prose")
         self.assertEqual(decisions["b"]["classification_source"], "fallback")
         self.assertEqual(decisions["b"]["classification_error"], "bad item JSON")
-        self.assertEqual(failures, {})
         self.assertEqual(calls, 3)
 
     async def test_llm_decision_precedes_faq_fallback(self) -> None:
         async def fake_llm(*_: object, **__: object) -> str:
             return '{"items":[{"id":"0","type":"prose"}]}'
 
-        decisions, failures = await classify_batch_items_resilient([{
+        decisions = await classify_batch_items_resilient([{
             "id": "faq-page",
             "text": "Q: First?\nA: One\nQ: Second?\nA: Two",
         }], llm_call=fake_llm)
 
         self.assertEqual(decisions, {"faq-page": {"document_type": "prose"}})
-        self.assertEqual(failures, {})
 
     def test_classifier_sample_keeps_head_and_tail(self) -> None:
         sample = classification_sample("HEAD" + ("x" * 2000) + "TAIL", limit=100)
@@ -382,6 +337,20 @@ class ChunkConstructionTests(unittest.TestCase):
         nodes = chunk_documents(documents, tokenizer=CharacterTokenizer(), max_tokens=512)
         self.assertEqual(len(nodes), 2)
         self.assertNotEqual(nodes[0].node_id, nodes[1].node_id)
+
+    def test_identical_stable_chunk_ids_are_deduplicated(self) -> None:
+        documents = [
+            source_document("Same official wording"),
+            source_document("Same official wording"),
+        ]
+
+        nodes = chunk_documents(
+            documents,
+            tokenizer=CharacterTokenizer(),
+            max_tokens=512,
+        )
+
+        self.assertEqual(len(nodes), 1)
 
     def test_equal_text_and_locator_in_distinct_sections_get_distinct_ids(self) -> None:
         documents = [
@@ -553,6 +522,53 @@ class DeterministicReaderTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "failed"):
                     self._load(path)
 
+    def test_empty_docling_html_uses_text_fallback_but_form_shell_stays_empty(self) -> None:
+        recommended_html = """
+        <div id="content">
+          <div class="left-menu">
+            <a href="javascript:void(0)"
+               onclick="window.pdf_download='/en/common/attachments/earth.pdf'">
+              About the Earth
+            </a>
+            <div style="display:none">
+              <h2>Introduction</h2>
+              <p>The Earth has mountains, oceans, deserts, and diverse wildlife.</p>
+            </div>
+          </div>
+          <div class="inner-body"><div id="load_booklist"></div></div>
+        </div>
+        """
+        form_shell = """
+        <div id="content"><form action="/patron/login">
+          <label for="password">Password</label>
+          <input id="password" type="password"><button>Submit</button>
+        </form></div>
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            recommended_path = Path(directory) / "recommended.html"
+            recommended_path.write_text(recommended_html, encoding="utf-8")
+            shell_path = Path(directory) / "shell.html"
+            shell_path.write_text(form_shell, encoding="utf-8")
+            with patch("src.ingestion.readers._load_docling", return_value=[]):
+                recommended = self._load(
+                    recommended_path,
+                    source_url="https://www.hkpl.gov.hk/en/kids/recommended/reading.html",
+                )
+                shell = self._load(
+                    shell_path,
+                    source_url="https://www.hkpl.gov.hk/en/change_my_password.html",
+                )
+
+        self.assertEqual(len(recommended), 1)
+        self.assertIn("About the Earth", recommended[0].text)
+        self.assertIn("mountains, oceans, deserts", recommended[0].text)
+        self.assertIn(
+            "https://www.hkpl.gov.hk/en/common/attachments/earth.pdf",
+            recommended[0].text,
+        )
+        self.assertEqual(shell, [])
+
     def test_forms_landing_page_keeps_link_records(self) -> None:
         html = """
         <table><tr><th>Form No.</th><th>Form Name</th></tr>
@@ -613,6 +629,99 @@ class DeterministicReaderTests(unittest.TestCase):
 
 
 class MainContentSelectionTests(unittest.TestCase):
+    @patch("scripts.crawl_hkpl_site.save_hash")
+    @patch("scripts.crawl_hkpl_site.ingest_path_sync")
+    @patch("scripts.crawl_hkpl_site.classify_batch_items_resilient_sync")
+    @patch("scripts.crawl_hkpl_site.extracted_classifier_text")
+    def test_crawler_batch_runs_full_ingestion_handoff(
+        self,
+        extract_text,
+        classify,
+        ingest,
+        save_hash,
+    ) -> None:
+        extract_text.return_value = "Official facts"
+        classify.return_value = {
+            "https://www.hkpl.gov.hk/en/page.html": {
+                "document_type": "prose",
+                "classification_source": "fallback",
+            }
+        }
+        ingest.return_value = {"status": "completed"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "page.html"
+            path.write_text("<main>Official facts</main>", encoding="utf-8")
+            pending = [{
+                "path": path,
+                "url": "https://www.hkpl.gov.hk/en/page.html",
+                "title": "Official page",
+                "extension": ".html",
+                "mime_type": "text/html",
+                "content_hash": "hash-1",
+                "is_pdf": False,
+                "replace_document_id": "existing-id",
+            }]
+            stats = {
+                "failed": 0,
+                "indexed": 0,
+                "discovery_only": 0,
+                "html_indexed": 0,
+                "pdf_indexed": 0,
+            }
+
+            flush_pending(pending, stats)
+
+        self.assertEqual(pending, [])
+        self.assertEqual(stats["indexed"], 1)
+        self.assertEqual(stats["html_indexed"], 1)
+        self.assertEqual(
+            ingest.call_args.kwargs["classification_source"],
+            "fallback",
+        )
+        self.assertEqual(ingest.call_args.kwargs["document_type"], "prose")
+        self.assertEqual(
+            ingest.call_args.kwargs["replace_document_id"],
+            "existing-id",
+        )
+        save_hash.assert_called_once_with(
+            "https://www.hkpl.gov.hk/en/page.html",
+            "hash-1",
+        )
+
+    def test_decodes_utf8_response_bytes_instead_of_mojibake_text(self) -> None:
+        expected = "香港公共圖書館"
+
+        class Response:
+            content = f"<p>{expected}</p>".encode("utf-8")
+            text = content.decode("latin-1")
+            headers = {"content-type": "text/html; charset=iso-8859-1"}
+
+        self.assertNotIn(expected, Response.text)
+        self.assertIn(expected, decode_response_text(Response()))
+
+    def test_discovers_allowed_pdf_urls_in_attributes(self) -> None:
+        html = """
+        <a href="/en/ordinary.html">Ordinary page</a>
+        <a href="javascript:void(0)"
+           onclick="download('/en/common/attachments/onclick.pdf')">PDF</a>
+        <button data-download-url="/en/common/attachments/data.pdf">PDF</button>
+        <button data-download-url="https://example.com/external.pdf">External</button>
+        <button data-download-url="/patron/private.pdf">Private</button>
+        <button data-download-url="/en/assets/app.js">Script</button>
+        """
+
+        links = discover_links(
+            "https://www.hkpl.gov.hk/en/kids/recommended/reading.html",
+            html,
+            include_query_urls=False,
+        )
+
+        self.assertEqual(links, [
+            "https://www.hkpl.gov.hk/en/common/attachments/data.pdf",
+            "https://www.hkpl.gov.hk/en/common/attachments/onclick.pdf",
+            "https://www.hkpl.gov.hk/en/ordinary.html",
+        ])
+
     def test_prefers_substantive_main_content_over_large_link_sidebar(self) -> None:
         html = """
         <html><head><title>FAQ</title></head><body><div id="content">

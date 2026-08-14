@@ -242,7 +242,7 @@ def process_registered_document(
             classification_documents = _load_record(record, document_type="auto")
             if not classification_documents:
                 raise ValueError("No readable content was extracted for classification.")
-            classified, classification_failures = classify_batch_items_resilient_sync([{
+            classified = classify_batch_items_resilient_sync([{
                 "id": document_id,
                 "title": record.get("source_title") or record["original_file_name"],
                 "source_url": record.get("source_url") or "",
@@ -252,8 +252,6 @@ def process_registered_document(
                     for document in classification_documents
                 ),
             }])
-            if document_id in classification_failures:
-                raise ValueError(classification_failures[document_id])
             classification = classified[document_id]
             decision = classification["document_type"]
             classification_source = classification.get("classification_source", "llm")
@@ -377,7 +375,6 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
     items: list[dict] = []
     persisted_labels: dict[str, str] = {}
     unlabelled_ids: set[str] = set()
-    classification_failures: dict[str, str] = {}
     classification_sources: dict[str, str] = {}
 
     try:
@@ -408,7 +405,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
                 ),
             })
 
-        classified, classification_failures = classify_batch_items_resilient_sync(items)
+        classified = classify_batch_items_resilient_sync(items)
         classification_sources = {
             item_id: decision.get("classification_source", "llm")
             for item_id, decision in classified.items()
@@ -420,7 +417,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
                 for item_id, decision in classified.items()
             },
         }
-        if set(decisions).union(classification_failures) != set(document_ids):
+        if set(decisions) != set(document_ids):
             raise ValueError("Batch classification did not produce one decision per document.")
     except Exception as error:
         for record in records:
@@ -434,13 +431,6 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
         raise
 
     for document_id in unlabelled_ids:
-        if document_id in classification_failures:
-            update_status(
-                document_id,
-                "failed",
-                error_message=classification_failures[document_id][:2000],
-            )
-            continue
         set_document_type(
             document_id,
             decisions[document_id],
@@ -449,13 +439,6 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
 
     results: list[dict] = []
     for document_id in document_ids:
-        if document_id in classification_failures:
-            results.append({
-                "document_id": document_id,
-                "status": "failed",
-                "error": classification_failures[document_id][:2000],
-            })
-            continue
         try:
             results.append(process_registered_document(document_id))
         except Exception as error:

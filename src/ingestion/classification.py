@@ -37,12 +37,12 @@ def classification_sample(text: str, limit: int = SAMPLE_CHARACTERS) -> str:
 
 
 def deterministic_fallback_type(item: dict[str, Any]) -> str:
-    """Conservatively label one item only after its LLM retries fail."""
+    """Conservatively label one item only after its LLM retries fail.
+
+    The fallback deliberately avoids URL, filename, and site-template rules.
+    Those guesses age badly and can silently discard future useful sources.
+    """
     text = str(item.get("text") or "")
-    title = str(item.get("title") or "")
-    url = str(item.get("source_url") or item.get("url") or "").lower()
-    file_type = str(item.get("file_type") or "").lower().lstrip(".")
-    combined = f"{title}\n{text}"
 
     marker_prefix = r"^[\s>*#_-]*"
     questions = len(re.findall(
@@ -59,23 +59,6 @@ def deterministic_fallback_type(item: dict[str, Any]) -> str:
     ))
     if min(questions, answers) >= 2:
         return "faq"
-
-    if file_type == "pdf" and (
-        "/forms/" in url
-        or re.search(r"(?i)\b(?:application|reservation|donation)\s+form\b", combined)
-        or re.search(r"(?i)\b(?:LCS\s*\d+[A-Za-z]?|ISBNform|Donation_Record)\b", title)
-        or re.search(r"申請表|申请表|表格|填寫下列|填写下列", combined)
-    ):
-        return "skip"
-
-    if re.search(r"/extension-activities/(?:event|sub-event)/\d+", url):
-        return "record"
-    if re.search(r"/locations/(?!opening-hours|mobile-libraries|libraries)[^/]+/[^/]+\.html$", url):
-        return "record"
-    if "/library-notices/" in url and not url.endswith("library-notices-list.html"):
-        return "record"
-    if re.search(r"/(?:login|sitemap)\.html$", url):
-        return "skip"
     return "prose"
 
 
@@ -200,7 +183,7 @@ async def classify_batch_items_resilient(
     items: list[dict[str, Any]],
     *,
     llm_call: Callable[..., Awaitable[str]] = http_llm,
-) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+) -> dict[str, dict[str, str]]:
     """Retry a rejected batch by halves without failing its valid siblings."""
     if len(items) > MAX_BATCH_ITEMS:
         raise ValueError(f"Batch classification is limited to {MAX_BATCH_ITEMS} items per call.")
@@ -209,7 +192,6 @@ async def classify_batch_items_resilient(
         raise ValueError("Batch classifier input IDs must be unique.")
 
     decisions: dict[str, dict[str, str]] = {}
-    failures: dict[str, str] = {}
 
     async def classify(subset: list[dict[str, Any]]) -> None:
         try:
@@ -234,14 +216,10 @@ async def classify_batch_items_resilient(
 
     if items:
         await classify(items)
-    return decisions, failures
-
-
-def classify_batch_items_sync(items: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
-    return asyncio.run(classify_batch_items(items))
+    return decisions
 
 
 def classify_batch_items_resilient_sync(
     items: list[dict[str, Any]],
-) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+) -> dict[str, dict[str, str]]:
     return asyncio.run(classify_batch_items_resilient(items))
