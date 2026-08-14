@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Generate reviewable evaluation questions from existing HKPL vector chunks.
+"""Generate reviewable evaluation questions from HKPL vector or preview chunks.
 
-Eligible primary-corpus chunks are read from ``data_hkpl_knowledge`` and sent
-to the answer model to propose questions, accepted answers, exact evidence, and
-source IDs. Progress is checkpointed; output remains a candidate until reviewed
-and promoted. This script does not create document embeddings.
+By default, eligible primary-corpus chunks are read from
+``data_hkpl_knowledge``. Passing ``--preview-run-id`` instead reads the
+non-embedded candidates in ``ingestion_preview_chunks`` for one explicit
+preview run. Chunks are sent to the answer model to propose questions, accepted
+answers, exact evidence, and source IDs. Progress is checkpointed; output
+remains a candidate until reviewed and promoted. This script does not create
+document embeddings.
 """
 
 import argparse
@@ -108,7 +111,7 @@ def infer_domain(title: str, text_value: str) -> str:
     return "general"
 
 
-def load_chunks(
+def load_vector_chunks(
     *,
     excluded_chunk_ids: set[str] | None = None,
     limit: int | None = None,
@@ -176,6 +179,104 @@ def load_chunks(
     return chunks[:limit] if limit is not None else chunks
 
 
+def load_preview_chunks(
+    preview_run_id: str,
+    *,
+    excluded_chunk_ids: set[str] | None = None,
+    limit: int | None = None,
+    max_chunks_per_document: int | None = MAX_CHUNKS_PER_DOCUMENT,
+) -> list[dict]:
+    """Load exact evidence from one completed, non-embedded preview run.
+
+    Preview rows deliberately use ``evidence_text`` rather than ``search_text``.
+    The latter may prepend titles or headings for retrieval, while evaluation
+    snippets must remain exact quotations from the underlying evidence.
+    """
+    with engine.connect() as connection:
+        run_summary = connection.execute(
+            text("""
+                SELECT
+                    COUNT(*) AS documents,
+                    COUNT(*) FILTER (WHERE status = 'completed') AS completed
+                FROM ingestion_preview_documents
+                WHERE run_id = :run_id
+            """),
+            {"run_id": preview_run_id},
+        ).mappings().one()
+        if int(run_summary["documents"]) == 0:
+            raise ValueError(
+                f"Preview run {preview_run_id!r} was not found in "
+                "ingestion_preview_documents."
+            )
+        if int(run_summary["completed"]) == 0:
+            raise ValueError(
+                f"Preview run {preview_run_id!r} has no completed documents."
+            )
+
+        rows = connection.execute(
+            text("""
+                WITH ranked_chunks AS (
+                    SELECT
+                        c.document_id,
+                        c.chunk_id,
+                        d.source_title,
+                        d.source_url,
+                        d.file_name,
+                        COALESCE(c.structure_path->>-1, '') AS section_heading,
+                        c.evidence_text AS text,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY c.document_id
+                            ORDER BY c.ordinal, c.chunk_id
+                        ) AS rn
+                    FROM ingestion_preview_chunks c
+                    JOIN ingestion_preview_documents d
+                      ON d.run_id = c.run_id
+                     AND d.document_id = c.document_id
+                    WHERE c.run_id = :run_id
+                      AND d.status = 'completed'
+                      AND c.evidence_text IS NOT NULL
+                      AND LENGTH(TRIM(c.evidence_text)) >= :min_chars
+                )
+                SELECT *
+                FROM ranked_chunks
+                WHERE (
+                    :max_chunks_per_document IS NULL
+                    OR rn <= :max_chunks_per_document
+                )
+                ORDER BY document_id, rn, chunk_id
+            """),
+            {
+                "run_id": preview_run_id,
+                "min_chars": MIN_CHUNK_CHARS,
+                "max_chunks_per_document": max_chunks_per_document,
+            },
+        ).fetchall()
+
+    chunks = []
+    for row in rows:
+        item = dict(row._mapping)
+        chunks.append({
+            "document_id": str(item.get("document_id") or ""),
+            "chunk_id": str(item.get("chunk_id") or ""),
+            "source_title": (
+                item.get("source_title")
+                or item.get("file_name")
+                or "HKPL preview"
+            ),
+            "source_url": item.get("source_url") or "",
+            "file_name": item.get("file_name") or "",
+            "section_heading": item.get("section_heading") or "",
+            "text": str(item["text"])[:MAX_CHUNK_CHARS],
+        })
+
+    excluded_chunk_ids = excluded_chunk_ids or set()
+    chunks = [
+        chunk for chunk in chunks
+        if chunk["chunk_id"] not in excluded_chunk_ids
+    ]
+    return chunks[:limit] if limit is not None else chunks
+
+
 def load_existing_rows(output_file: Path) -> list[dict]:
     if not output_file.is_file():
         raise FileNotFoundError(
@@ -224,6 +325,7 @@ def save_progress(
     all_chunks: bool,
     limit_chunks: int | None,
     target_questions: int | None,
+    preview_run_id: str | None,
 ) -> None:
     path = progress_file(output_file)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -233,6 +335,7 @@ def save_progress(
                 "all_chunks": all_chunks,
                 "limit_chunks": limit_chunks,
                 "target_questions": target_questions,
+                "preview_run_id": preview_run_id,
                 "processed_chunk_ids": sorted(processed_chunk_ids),
             },
             indent=2,
@@ -250,6 +353,7 @@ def load_progress(
     all_chunks: bool,
     limit_chunks: int | None,
     target_questions: int | None,
+    preview_run_id: str | None,
 ) -> set[str]:
     path = progress_file(output_file)
     if not path.is_file():
@@ -271,6 +375,11 @@ def load_progress(
         raise ValueError(
             "Resume options differ from the original run: "
             "--target-questions mismatch."
+        )
+    if payload.get("preview_run_id") != preview_run_id:
+        raise ValueError(
+            "Resume options differ from the original run: "
+            "--preview-run-id mismatch."
         )
     chunk_ids = payload.get("processed_chunk_ids")
     if not isinstance(chunk_ids, list) or not all(
@@ -322,11 +431,24 @@ def parse_args() -> argparse.Namespace:
             "This is slower and still requires human label review."
         ),
     )
+    parser.add_argument(
+        "--preview-run-id",
+        default=None,
+        help=(
+            "Read chunks from this exact ingestion preview run instead of "
+            "data_hkpl_knowledge. Always use a separate --output file."
+        ),
+    )
     args = parser.parse_args()
     if args.limit_chunks is not None and args.limit_chunks < 1:
         parser.error("--limit-chunks must be positive")
     if args.target_questions is not None and args.target_questions < 1:
         parser.error("--target-questions must be positive")
+    if args.preview_run_id and args.output.resolve() == OUTPUT_FILE.resolve():
+        parser.error(
+            "--preview-run-id requires a separate --output path so the active "
+            "evaluation_dataset.csv cannot be overwritten"
+        )
     return args
 
 
@@ -594,6 +716,7 @@ async def main() -> None:
             all_chunks=args.all_chunks,
             limit_chunks=args.limit_chunks,
             target_questions=args.target_questions,
+            preview_run_id=args.preview_run_id,
         )
         if args.resume
         else set()
@@ -612,9 +735,24 @@ async def main() -> None:
         if args.limit_chunks is not None
         else None
     )
-    context_chunks = load_chunks(
-        max_chunks_per_document=(None if args.all_chunks else MAX_CHUNKS_PER_DOCUMENT),
-    )
+    if args.preview_run_id:
+        context_chunks = load_preview_chunks(
+            args.preview_run_id,
+            max_chunks_per_document=(
+                None if args.all_chunks else MAX_CHUNKS_PER_DOCUMENT
+            ),
+        )
+        source_description = (
+            "ingestion_preview_chunks "
+            f"for run {args.preview_run_id!r}"
+        )
+    else:
+        context_chunks = load_vector_chunks(
+            max_chunks_per_document=(
+                None if args.all_chunks else MAX_CHUNKS_PER_DOCUMENT
+            ),
+        )
+        source_description = "data_hkpl_knowledge"
     chunks_by_document: dict[str, list[dict]] = {}
     for candidate in context_chunks:
         chunks_by_document.setdefault(candidate["document_id"], []).append(candidate)
@@ -625,8 +763,7 @@ async def main() -> None:
     if remaining_limit is not None:
         chunks = chunks[:remaining_limit]
     print(
-        f"Loaded {len(chunks)} new HKPL chunks from data_hkpl_knowledge; "
-        "distractor corpora were excluded."
+        f"Loaded {len(chunks)} new HKPL chunks from {source_description}."
     )
     print(
         "Selection: primary HKPL chunks with at least "
@@ -647,6 +784,7 @@ async def main() -> None:
             all_chunks=args.all_chunks,
             limit_chunks=args.limit_chunks,
             target_questions=args.target_questions,
+            preview_run_id=args.preview_run_id,
         )
         print(f"Initialized candidate checkpoint: {output_file}")
 
@@ -689,6 +827,7 @@ async def main() -> None:
                 all_chunks=args.all_chunks,
                 limit_chunks=args.limit_chunks,
                 target_questions=args.target_questions,
+                preview_run_id=args.preview_run_id,
             )
             print(
                 f"  Generated {len(rows)} question(s); checkpoint rows="
@@ -726,6 +865,7 @@ async def main() -> None:
             all_chunks=args.all_chunks,
             limit_chunks=args.limit_chunks,
             target_questions=args.target_questions,
+            preview_run_id=args.preview_run_id,
         )
 
     all_rows = target_rows or [*existing_rows, *generated_rows]
