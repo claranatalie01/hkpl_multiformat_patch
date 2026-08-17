@@ -677,7 +677,10 @@ def audit_knowledge_chunks() -> bool:
                            OR COALESCE(metadata_->>'chunker_version', '') = ''
                            OR COALESCE(metadata_->>'search_text', '') = ''
                            OR COALESCE(metadata_->>'token_count', '') = ''
-                           OR COALESCE(metadata_->'locator', '{{}}'::jsonb) = '{{}}'::jsonb
+                           OR COALESCE(
+                               (metadata_->'locator')::jsonb,
+                               '{{}}'::jsonb
+                           ) = '{{}}'::jsonb
                            OR COALESCE(metadata_->>'document_version', '') = ''
                     ) AS missing_metadata
                 FROM {table_name}
@@ -764,7 +767,7 @@ def audit_knowledge_chunks() -> bool:
             text(f"""
                 SELECT
                     metadata_->>'source_version_id' AS source_version_id,
-                    metadata_->'locator' AS locator,
+                    (metadata_->'locator')::jsonb AS locator,
                     metadata_->>'part_number' AS part_number,
                     COUNT(*) AS chunks
                 FROM {table_name}
