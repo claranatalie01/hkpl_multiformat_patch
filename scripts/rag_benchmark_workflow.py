@@ -26,7 +26,7 @@ from src.infrastructure.vector_store import VECTOR_TABLE
 SCRIPTS = PROJECT_ROOT / "scripts"
 DEFAULT_CANDIDATE = PROJECT_ROOT / "data" / "evaluation_dataset.candidate.csv"
 DEFAULT_ACTIVE = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
-CANDIDATE_TABLE = "evaluation_dataset_candidate"
+CANDIDATE_TABLE = "evaluation_dataset_100"
 
 
 def run_script(name: str, *arguments: str, env: dict[str, str] | None = None) -> None:
