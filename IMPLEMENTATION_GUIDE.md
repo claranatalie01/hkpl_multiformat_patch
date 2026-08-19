@@ -233,7 +233,7 @@ docker compose run --rm langgraph-agent \
 ```
 
 The candidate is written to `data/evaluation_dataset.candidate.csv` and loaded
-into `evaluation_dataset_candidate`. Review all ambiguous, multi-part, and
+into `evaluation_dataset_100`. Review all ambiguous, multi-part, and
 time-sensitive labels before promotion.
 
 If generation completed but candidate import or evidence validation failed,

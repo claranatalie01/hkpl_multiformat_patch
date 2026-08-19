@@ -767,7 +767,7 @@ def audit_knowledge_chunks() -> bool:
             text(f"""
                 SELECT
                     metadata_->>'source_version_id' AS source_version_id,
-                    metadata_->'locator' AS locator,
+                    (metadata_->'locator')::jsonb AS locator,
                     metadata_->>'part_number' AS part_number,
                     COUNT(*) AS chunks
                 FROM {table_name}

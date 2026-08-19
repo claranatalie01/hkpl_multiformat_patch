@@ -126,6 +126,28 @@ Retrieved context:
 Verdict:
 """
 
+STRICT_RELEVANCY_TEMPLATE = """
+Determine whether the generated response directly answers the question and is
+supported by the retrieved context.
+
+Rules:
+- Evidence may be combined from multiple passages in the context.
+- Answer YES when the response directly addresses every requested item and the
+  supporting information exists anywhere in the combined context.
+- Answer NO when the response does not answer the question, misses a requested
+  item, contradicts the context, or depends on unsupported information.
+- Irrelevant additional context must not cause a correct response to fail.
+- Return only YES or NO.
+
+Question and generated response:
+{query_str}
+
+Combined retrieved context:
+{context_str}
+
+Verdict:
+"""
+
 
 class QwenEvaluationLLM(CustomLLM):
     enable_thinking: bool = False
@@ -1043,7 +1065,7 @@ async def evaluate_row(
             lambda: evaluators[2].aevaluate(
                 query=question,
                 response=answer,
-                contexts=contexts,
+                contexts=[context],
             ),
         )
         evaluator_failed = (
@@ -1706,7 +1728,10 @@ async def main() -> None:
             llm=judge,
             eval_template=STRICT_FAITHFULNESS_TEMPLATE,
         ),
-        RelevancyEvaluator(llm=judge),
+        RelevancyEvaluator(
+            llm=judge,
+            eval_template=STRICT_RELEVANCY_TEMPLATE,
+        ),
     )
     results = []
     for position, row in enumerate(rows, start=1):
