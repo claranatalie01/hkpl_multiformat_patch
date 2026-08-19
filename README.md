@@ -58,7 +58,7 @@ vector insertion before the crawler continues.
 | --- | --- |
 | [`src/infrastructure/db.py`](src/infrastructure/db.py) | Creates the SQLAlchemy connection for registry, memory, and maintenance SQL. |
 | [`src/infrastructure/embedding.py`](src/infrastructure/embedding.py) | Adapts the local embedding HTTP endpoint to LlamaIndex. |
-| [`src/infrastructure/vector_store.py`](src/infrastructure/vector_store.py) | Configures the `hkpl_knowledge` LlamaIndex PGVectorStore with 1,024 dimensions. |
+| [`src/infrastructure/vector_store.py`](src/infrastructure/vector_store.py) | Configures the 1,024-dimensional PGVectorStore and its full-text/trigram indexes. |
 
 ### Ingestion modules
 
@@ -84,7 +84,7 @@ vector insertion before the crawler continues.
 | [`src/graph.py`](src/graph.py) | Defines LangGraph node connections and routing. |
 | [`src/state.py`](src/state.py) | Defines information passed between workflow nodes. |
 | [`src/nodes.py`](src/nodes.py) | Implements safety, intent, rewriting, retrieval, answering, citations, and saving. |
-| [`src/retrieval.py`](src/retrieval.py) | Embeds questions, searches pgvector, and reranks candidates. |
+| [`src/retrieval.py`](src/retrieval.py) | Fuses dense, full-text, and trigram candidates before reranking. |
 | [`src/llm_client.py`](src/llm_client.py) | Calls the generative answer model and normalizes token usage. |
 | [`src/memory.py`](src/memory.py) | Loads and saves recent conversation history. |
 | [`src/compliance.py`](src/compliance.py) | Stores and applies prohibited-keyword rules. |
@@ -130,6 +130,11 @@ docker compose run --rm langgraph-agent \
 The generator may inspect more than 100 chunks because rejected or duplicate
 questions do not count toward the 100-row target.
 The existing `data/evaluation_dataset.csv` is not changed by this command.
+
+Hybrid retrieval requires a vector table created with its generated full-text
+column. Set `VECTOR_TABLE` to a fresh output name before reingesting; an older
+dense-only table is rejected with a rebuild message rather than upgraded
+partially in place.
 
 Each accepted anchor consumes every chunk listed in its
 `source_chunk_ids_json`. Those sibling evidence chunks are checkpointed and

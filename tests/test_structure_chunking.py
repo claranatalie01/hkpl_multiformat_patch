@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.crawl_hkpl_site import (
@@ -14,6 +15,8 @@ from scripts.crawl_hkpl_site import (
 )
 
 import openpyxl
+from docling_core.types.doc import DoclingDocument, TableCell, TableData
+from docling_core.types.doc.labels import DocItemLabel
 from llama_index.core import Document
 
 import src.ingestion.service as ingestion_service
@@ -30,6 +33,8 @@ from src.ingestion.document_types import (
     validate_document_type,
 )
 from src.ingestion.readers import (
+    _load_docling,
+    _docling_table_documents,
     extract_faq_pairs,
     extract_html_record_metadata,
     load_file,
@@ -86,6 +91,32 @@ def source_document(
     return Document(text=evidence_text, metadata=base)
 
 
+def docling_table(
+    values: list[list[str]],
+    *,
+    header_rows: int = 1,
+) -> tuple[DoclingDocument, object]:
+    cells = [
+        TableCell(
+            start_row_offset_idx=row,
+            end_row_offset_idx=row + 1,
+            start_col_offset_idx=column,
+            end_col_offset_idx=column + 1,
+            text=value,
+            column_header=row < header_rows,
+        )
+        for row, values_row in enumerate(values)
+        for column, value in enumerate(values_row)
+    ]
+    document = DoclingDocument(name="table-fixture")
+    table = document.add_table(TableData(
+        table_cells=cells,
+        num_rows=len(values),
+        num_cols=len(values[0]),
+    ))
+    return document, table
+
+
 class DocumentTypeTests(unittest.TestCase):
     def test_physical_table_precedes_admin_faq_hint(self) -> None:
         metadata = {"document_type": "faq", "structural_kind": "table_row"}
@@ -118,6 +149,7 @@ class IngestionHandoffTests(unittest.TestCase):
             patch.object(ingestion_service, "get_document", return_value=record),
             patch.object(ingestion_service, "_load_record", return_value=documents),
             patch.object(ingestion_service, "chunk_documents", return_value=nodes),
+            patch.object(ingestion_service, "ensure_hybrid_search_schema"),
             patch.object(
                 ingestion_service.StorageContext,
                 "from_defaults",
@@ -308,6 +340,11 @@ Q.1: Fourth?\nA.1: Four
 
 
 class ChunkConstructionTests(unittest.TestCase):
+    def test_search_text_does_not_repeat_leading_source_title(self) -> None:
+        evidence = "HKPL Collections\n\nAdult Fiction\n\nRank | Title\n\n1 | Book"
+        search = build_search_text({"source_title": "HKPL Collections"}, evidence)
+        self.assertEqual(search, evidence)
+
     def test_exact_evidence_and_normalized_search_text_are_separate(self) -> None:
         evidence = "ＡＢＣ\u00a0資料"
         document = source_document(
@@ -416,6 +453,124 @@ class ChunkConstructionTests(unittest.TestCase):
         self.assertGreater(len(nodes), 1)
         self.assertTrue(all(node.metadata["evidence_text"].startswith(header) for node in nodes))
 
+    def test_generic_docling_table_packs_complete_rows_with_repeated_context(self) -> None:
+        values = [[
+            "Rank", "BIB ID", "Title", "Author", "Call Number",
+            "Number of Loans", "Notes",
+        ]] + [
+            [
+                str(rank),
+                str(3239693 + rank),
+                f"Book {rank} " + ("Long title " * 7),
+                "Tolkien",
+                "F TOL",
+                str(840 - rank),
+                "[1]" if rank % 2 else "",
+            ]
+            for rank in range(1, 7)
+        ]
+        docling_document, table = docling_table(values)
+        metadata = dict(source_document("unused", record_kind="prose").metadata)
+        metadata["source_title"] = "Hong Kong Public Libraries – English Collections"
+
+        documents = _docling_table_documents(
+            table,
+            docling_document,
+            metadata,
+            structure_path=["Adult Lending Fiction 2025"],
+            parser_version="docling-test",
+            json_path=Path("table.json"),
+            parent_record_id="parent",
+            tokenizer=CharacterTokenizer(),
+            section_index=0,
+        )
+        nodes = chunk_documents(
+            documents,
+            tokenizer=CharacterTokenizer(),
+            max_tokens=512,
+        )
+
+        prefix = (
+            "Hong Kong Public Libraries – English Collections\n"
+            "Adult Lending Fiction 2025\n\n"
+            "Rank | BIB ID | Title | Author | Call Number | Number of Loans | Notes"
+        )
+        self.assertGreater(len(nodes), 1)
+        self.assertTrue(all(node.text.startswith(prefix) for node in nodes))
+        self.assertTrue(all(node.metadata["token_count"] <= 512 for node in nodes))
+        self.assertTrue(all(node.metadata["chunk_policy"] == "table_rows" for node in nodes))
+        combined = "\n".join(node.metadata["evidence_text"] for node in nodes)
+        for rank in range(1, 7):
+            row = " | ".join(" ".join(value.split()) for value in values[rank]).rstrip()
+            self.assertEqual(combined.count(row), 1)
+        self.assertEqual(
+            [(node.metadata["row_start"], node.metadata["row_end"]) for node in nodes],
+            [(1, 2), (3, 4), (5, 6)],
+        )
+
+    def test_single_oversized_docling_row_is_the_only_row_split(self) -> None:
+        values = [["Rank", "Title"], ["1", "A" * 900], ["2", "Short title"]]
+        docling_document, table = docling_table(values)
+        metadata = dict(source_document("unused", record_kind="prose").metadata)
+        metadata["source_title"] = "HKPL Collections"
+        documents = _docling_table_documents(
+            table,
+            docling_document,
+            metadata,
+            structure_path=["Adult Fiction"],
+            parser_version="docling-test",
+            json_path=Path("table.json"),
+            parent_record_id="parent",
+            tokenizer=CharacterTokenizer(),
+            section_index=0,
+        )
+
+        nodes = chunk_documents(
+            documents,
+            tokenizer=CharacterTokenizer(),
+            max_tokens=512,
+        )
+
+        oversized = [node for node in nodes if node.metadata["row_start"] == 1]
+        second_row = [node for node in nodes if node.metadata["row_start"] == 2]
+        self.assertGreater(len(oversized), 1)
+        self.assertEqual(len(second_row), 1)
+        self.assertTrue(all(node.metadata["chunk_overlap"] == 0 for node in oversized))
+        self.assertTrue(all(node.metadata["chunk_policy"] == "table_rows" for node in nodes))
+        self.assertTrue(all(
+            node.metadata["evidence_text"].startswith(
+                "HKPL Collections\nAdult Fiction\n\nRank | Title"
+            )
+            for node in nodes
+        ))
+
+    def test_docling_table_preserves_multilevel_headers_unicode_and_literal_pipes(self) -> None:
+        docling_document, table = docling_table([
+            ["Catalogue", "Catalogue"],
+            ["BIB ID", "Title"],
+            ["0", "臺北人 | 白先勇"],
+        ], header_rows=2)
+        metadata = dict(source_document("unused", record_kind="prose").metadata)
+        metadata["source_title"] = "HKPL"
+
+        documents = _docling_table_documents(
+            table,
+            docling_document,
+            metadata,
+            structure_path=["Chinese Collections"],
+            parser_version="docling-test",
+            json_path=Path("table.json"),
+            parent_record_id="parent",
+            tokenizer=CharacterTokenizer(),
+            section_index=0,
+        )
+
+        self.assertEqual(len(documents), 1)
+        self.assertIn(
+            "Catalogue / BIB ID | Catalogue / Title\n\n0 | 臺北人 \\| 白先勇",
+            documents[0].text,
+        )
+
     def test_oversized_context_is_removed_from_search_not_metadata(self) -> None:
         title = "Very long official source title " * 8
         header = "Very long repeated record header " * 8
@@ -480,6 +635,60 @@ class DeterministicReaderTests(unittest.TestCase):
         self.assertEqual(len(documents), 2)
         self.assertTrue(all(doc.metadata["record_kind"] == "table" for doc in documents))
         self.assertEqual(documents[0].metadata["locator"]["row"], 2)
+        self.assertEqual(
+            documents[1].text,
+            "service: Printing\ndescription: Self-service printing",
+        )
+        self.assertEqual(documents[1].metadata["table_header"], "service | description")
+        self.assertEqual(documents[1].metadata["structural_kind"], "table_row")
+
+    def test_docling_table_replaces_flattened_text_and_preserves_trailing_prose(self) -> None:
+        docling_document, table = docling_table([
+            ["Rank", "Title", "Loans"],
+            ["1", "The Hobbit", "719"],
+        ])
+        note = docling_document.add_text(
+            label=DocItemLabel.TEXT,
+            text="Notes: loan totals for 2025",
+        )
+        metadata = dict(source_document("unused", record_kind="prose").metadata)
+        metadata["source_title"] = "HKPL Collections"
+
+        class FakeHybridChunker:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def chunk(self, **_: object):
+                yield SimpleNamespace(
+                    text="1, Rank = 1. 1, Title = The Hobbit. Notes: loan totals for 2025",
+                    meta=SimpleNamespace(
+                        headings=["Adult Fiction 2025"],
+                        doc_items=[table, note],
+                    ),
+                )
+
+        with (
+            patch(
+                "src.ingestion.readers._load_or_convert_docling",
+                return_value=(docling_document, Path("table.json")),
+            ),
+            patch(
+                "src.ingestion.readers.get_embedding_tokenizer",
+                return_value=CharacterTokenizer(),
+            ),
+            patch(
+                "docling_core.transforms.chunker.hybrid_chunker.HybridChunker",
+                FakeHybridChunker,
+            ),
+        ):
+            documents = _load_docling(Path("table.html"), metadata, "eng")
+
+        table_documents = [doc for doc in documents if doc.metadata.get("table_ref")]
+        prose_documents = [doc for doc in documents if not doc.metadata.get("table_ref")]
+        self.assertEqual(len(table_documents), 1)
+        self.assertIn("Rank | Title | Loans\n\n1 | The Hobbit | 719", table_documents[0].text)
+        self.assertNotIn("Rank =", table_documents[0].text)
+        self.assertEqual([doc.text for doc in prose_documents], ["Notes: loan totals for 2025"])
 
     def test_json_records_preserve_supplied_branch_ids(self) -> None:
         documents = self._load(

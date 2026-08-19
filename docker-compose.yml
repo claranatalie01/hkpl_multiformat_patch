@@ -149,7 +149,7 @@ services:
       LLM_CONTEXT_WINDOW: "32768"
       LLM_MAX_TOKENS: "16000"
 
-      VECTOR_TABLE: hkpl_knowledge
+      VECTOR_TABLE: ${VECTOR_TABLE:-hkpl_knowledge}
       KNOWLEDGE_CORPUS_READ_ONLY: "true"
       EVALUATION_DATASET_TABLE: evaluation_dataset
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv

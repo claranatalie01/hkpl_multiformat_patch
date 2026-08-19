@@ -8,7 +8,11 @@ from sqlalchemy import text
 
 from ..infrastructure.embedding import embed_model
 from ..infrastructure.db import engine
-from ..infrastructure.vector_store import VECTOR_TABLE, vector_store
+from ..infrastructure.vector_store import (
+    VECTOR_TABLE,
+    ensure_hybrid_search_schema,
+    vector_store,
+)
 from .chunking import chunk_documents
 from .classification import (
     classify_batch_items_resilient_sync,
@@ -303,6 +307,7 @@ def process_registered_document(
             "embedding",
         )
 
+        ensure_hybrid_search_schema()
         storage_context = (
             StorageContext.from_defaults(
                 vector_store=vector_store

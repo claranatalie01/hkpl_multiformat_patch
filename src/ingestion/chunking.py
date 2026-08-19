@@ -43,19 +43,21 @@ def _text_list(value: Any) -> list[str]:
 def build_search_text(metadata: dict[str, Any], evidence_text: str) -> str:
     """Build retrieval text from useful source context only."""
     components: list[str] = []
+    normalized_evidence = normalize_search_text(evidence_text)
 
     def add(value: str | None) -> None:
         value = normalize_search_text(value or "")
         if value and value not in components:
             components.append(value)
 
-    add(str(metadata.get("source_title") or ""))
+    source_title = normalize_search_text(str(metadata.get("source_title") or ""))
+    if not (source_title and normalized_evidence.startswith(source_title)):
+        add(source_title)
     for heading in _text_list(metadata.get("structure_path")):
         add(heading)
     for alias in _text_list(metadata.get("search_aliases")):
         add(alias)
     header = normalize_search_text(str(metadata.get("record_header") or ""))
-    normalized_evidence = normalize_search_text(evidence_text)
     if header and not normalized_evidence.startswith(header):
         add(header)
     add(evidence_text)
@@ -131,6 +133,12 @@ def _split_evidence(
         or ""
     ).strip()
     search_metadata = dict(metadata)
+    atomic_table_row = bool(
+        metadata.get("table_ref")
+        and str(metadata.get("record_kind") or "") == "table"
+        and metadata.get("row_start") == metadata.get("row_end")
+    )
+    fallback_overlap = 0 if atomic_table_row else FALLBACK_OVERLAP
 
     def available_tokens() -> int:
         probe = "\n\n".join(part for part in (repeat_context, "x") if part)
@@ -146,13 +154,13 @@ def _split_evidence(
         ("record_header", ""),
         ("source_title", ""),
     ):
-        if available_tokens() > FALLBACK_OVERLAP:
+        if available_tokens() > fallback_overlap:
             break
         search_metadata[key] = empty_value
-    if available_tokens() <= FALLBACK_OVERLAP:
+    if available_tokens() <= fallback_overlap:
         repeat_context = ""
     available = available_tokens()
-    if available <= FALLBACK_OVERLAP:
+    if available <= fallback_overlap:
         raise ValueError("Chunk context leaves no room for evidence text.")
 
     body = evidence_text
@@ -212,7 +220,7 @@ def _split_evidence(
             parts.append(evidence_part)
         if end == len(offsets):
             break
-        start = max(start + 1, end - FALLBACK_OVERLAP)
+        start = end if atomic_table_row else max(start + 1, end - FALLBACK_OVERLAP)
     return parts, search_metadata, True
 
 
@@ -307,14 +315,26 @@ def chunk_documents(
                 **metadata,
                 "evidence_text": evidence_part,
                 "search_text": search_text,
-                "chunk_policy": "oversized_leaf" if len(parts) > 1 else policy,
+                "chunk_policy": (
+                    policy
+                    if record_kind == "table" and metadata.get("table_ref")
+                    else "oversized_leaf" if len(parts) > 1 else policy
+                ),
                 "part_number": part_number,
                 "part_count": len(parts),
                 "token_count": token_count,
                 "chunk_size": max_tokens,
                 "chunk_overlap": (
                     FALLBACK_OVERLAP
-                    if used_token_fallback and len(parts) > 1
+                    if (
+                        used_token_fallback
+                        and len(parts) > 1
+                        and not (
+                            record_kind == "table"
+                            and metadata.get("table_ref")
+                            and metadata.get("row_start") == metadata.get("row_end")
+                        )
+                    )
                     else 0
                 ),
             }

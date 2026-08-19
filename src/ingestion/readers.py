@@ -723,13 +723,183 @@ def _docling_locator(doc_items: list[Any], structure_path: list[str]) -> dict[st
     return locator
 
 
-def _table_header_text(table_text: str) -> str:
-    lines = [line for line in table_text.splitlines() if line.strip()]
-    if not lines:
-        return ""
-    if len(lines) > 1 and re.fullmatch(r"[\s|:+-]+", lines[1]):
-        return "\n".join(lines[:2])
-    return lines[0]
+def _clean_table_cell(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return re.sub(r"\s+", " ", text).strip().replace("|", r"\|")
+
+
+def _docling_table_headers(table: Any) -> list[str]:
+    header_rows: list[list[Any]] = []
+    for row in table.data.grid:
+        if not any(getattr(cell, "column_header", False) for cell in row):
+            break
+        header_rows.append(row)
+
+    if not header_rows:
+        return []
+
+    headers: list[str] = []
+    for column in range(table.data.num_cols):
+        parts: list[str] = []
+        for row in header_rows:
+            if column >= len(row):
+                continue
+            value = _clean_table_cell(getattr(row[column], "text", ""))
+            if value and value not in parts:
+                parts.append(value)
+        headers.append(" / ".join(parts) or f"Column {column + 1}")
+    return headers
+
+
+def _docling_table_links(
+    table: Any,
+    docling_document: Any,
+    headers: list[str],
+    row_number: int,
+) -> list[dict[str, Any]]:
+    header_rows = 0
+    for row in table.data.grid:
+        if not any(getattr(cell, "column_header", False) for cell in row):
+            break
+        header_rows += 1
+    grid_index = header_rows + row_number - 1
+    if grid_index >= len(table.data.grid):
+        return []
+
+    links: list[dict[str, Any]] = []
+    for column, cell in enumerate(table.data.grid[grid_index]):
+        ref = getattr(cell, "ref", None)
+        if ref is None:
+            continue
+        try:
+            target = ref.resolve(docling_document)
+        except (AttributeError, KeyError, ValueError):
+            continue
+        hyperlink = getattr(target, "hyperlink", None)
+        if hyperlink:
+            links.append({
+                "row": row_number,
+                "column": headers[column] if column < len(headers) else column + 1,
+                "url": str(hyperlink),
+            })
+    return links
+
+
+def _docling_table_documents(
+    table: Any,
+    docling_document: Any,
+    base_metadata: dict[str, Any],
+    *,
+    structure_path: list[str],
+    parser_version: str,
+    json_path: Path,
+    parent_record_id: str,
+    tokenizer: Any,
+    section_index: int,
+) -> list[Document]:
+    dataframe = table.export_to_dataframe(doc=docling_document).fillna("")
+    if dataframe.empty:
+        return []
+
+    headers = _docling_table_headers(table)
+    if len(headers) != len(dataframe.columns):
+        headers = [
+            _clean_table_cell(column) or f"Column {index + 1}"
+            for index, column in enumerate(dataframe.columns)
+        ]
+    header = " | ".join(headers)
+    source_title = _clean_table_cell(base_metadata.get("source_title"))
+    try:
+        caption = _clean_table_cell(table.caption_text(docling_document))
+    except (AttributeError, KeyError, ValueError):
+        caption = ""
+    table_title = next(
+        (
+            value
+            for value in (
+                caption,
+                *(_clean_table_cell(item) for item in reversed(structure_path)),
+            )
+            if value and value.casefold() != source_title.casefold()
+        ),
+        "",
+    )
+    context_lines = [source_title]
+    if table_title:
+        context_lines.append(table_title)
+    repeat_context = "\n".join(part for part in context_lines if part)
+    repeat_context = f"{repeat_context}\n\n{header}" if repeat_context else header
+    table_ref = str(getattr(table, "self_ref", ""))
+
+    rows = [
+        " | ".join(_clean_table_cell(value) for value in row)
+        for row in dataframe.itertuples(index=False, name=None)
+    ]
+    documents: list[Document] = []
+
+    def emit(start: int, end: int) -> None:
+        row_text = "\n".join(rows[start - 1:end])
+        evidence_text = f"{repeat_context}\n\n{row_text}"
+        locator = _docling_locator([table], structure_path)
+        locator.update({
+            "table_ref": table_ref,
+            "row_start": start,
+            "row_end": end,
+        })
+        structural_kind = "table_row" if start == end else "table"
+        links = [
+            link
+            for row_number in range(start, end + 1)
+            for link in _docling_table_links(
+                table,
+                docling_document,
+                headers,
+                row_number,
+            )
+        ]
+        metadata = {
+            **base_metadata,
+            "section_index": section_index + len(documents),
+            "structural_kind": structural_kind,
+            "structure_path": [],
+            "table_structure_path": structure_path,
+            "locator": locator,
+            "parser_version": parser_version,
+            "docling_json_path": str(json_path),
+            "docling_item_refs": [table_ref],
+            "parent_record_id": parent_record_id,
+            "record_kind": "table",
+            "chunk_policy": "table_rows",
+            "table_ref": table_ref,
+            "table_title": table_title,
+            "table_header": header,
+            "repeat_context": repeat_context,
+            "row_start": start,
+            "row_end": end,
+            "cell_links": links,
+            "evidence_text": evidence_text,
+        }
+        if locator.get("page"):
+            metadata["page_number"] = locator["page"]
+        if table_title:
+            metadata["section_heading"] = table_title
+        metadata["search_text"] = build_search_text(metadata, evidence_text)
+        document = Document(text=evidence_text, metadata=metadata)
+        document.id_ = f"{base_metadata['source_version_id']}:table:{table_ref}:{start}-{end}"
+        documents.append(document)
+
+    start = 1
+    for row_number in range(1, len(rows) + 1):
+        candidate = f"{repeat_context}\n\n" + "\n".join(rows[start - 1:row_number])
+        metadata = {**base_metadata, "structure_path": []}
+        if tokenizer.count_tokens(build_search_text(metadata, candidate)) <= DEFAULT_MAX_TOKENS:
+            continue
+        if row_number > start:
+            emit(start, row_number - 1)
+            start = row_number
+    if start <= len(rows):
+        emit(start, len(rows))
+    return documents
 
 
 def _load_html_form_directory(
@@ -998,18 +1168,59 @@ def _load_docling(
         omit_header_on_overflow=False,
     )
     documents: list[Document] = []
-    for chunk_index, chunk in enumerate(chunker.chunk(dl_doc=docling_document)):
+    seen_table_refs: set[str] = set()
+    seen_mixed_item_refs: set[str] = set()
+    section_index = 0
+    for chunk in chunker.chunk(dl_doc=docling_document):
         evidence_text = str(chunk.text or "").strip()
         if not evidence_text:
             continue
         structure_path = [str(value) for value in (chunk.meta.headings or []) if value]
         doc_items = list(chunk.meta.doc_items or [])
-        is_table = any(isinstance(item, TableItem) for item in doc_items)
-        structural_kind = "table" if is_table else "hierarchical_leaf"
+        table_items = [item for item in doc_items if isinstance(item, TableItem)]
+        for table in table_items:
+            table_ref = str(getattr(table, "self_ref", ""))
+            if table_ref in seen_table_refs:
+                continue
+            seen_table_refs.add(table_ref)
+            table_documents = _docling_table_documents(
+                table,
+                docling_document,
+                base_metadata,
+                structure_path=structure_path,
+                parser_version=parser_version,
+                json_path=json_path,
+                parent_record_id=source_parent_id,
+                tokenizer=tokenizer,
+                section_index=section_index,
+            )
+            documents.extend(table_documents)
+            section_index += len(table_documents)
+
+        if table_items:
+            non_table_text: list[str] = []
+            for item in doc_items:
+                if isinstance(item, TableItem):
+                    continue
+                item_ref = str(getattr(item, "self_ref", ""))
+                if item_ref and item_ref in seen_mixed_item_refs:
+                    continue
+                text = str(getattr(item, "text", "") or "").strip()
+                if not text:
+                    continue
+                if item_ref:
+                    seen_mixed_item_refs.add(item_ref)
+                non_table_text.append(text)
+            evidence_text = "\n\n".join(dict.fromkeys(non_table_text))
+            doc_items = [item for item in doc_items if not isinstance(item, TableItem)]
+            if not evidence_text:
+                continue
+
+        structural_kind = "hierarchical_leaf"
         locator = _docling_locator(doc_items, structure_path)
         metadata = {
             **base_metadata,
-            "section_index": chunk_index,
+            "section_index": section_index,
             "structural_kind": structural_kind,
             "structure_path": structure_path,
             "locator": locator,
@@ -1031,12 +1242,6 @@ def _load_docling(
             })
             if record_header and not evidence_text.startswith(record_header):
                 evidence_text = f"{record_header}\n{evidence_text}"
-        if is_table:
-            table_header = _table_header_text(evidence_text)
-            metadata.update({
-                "table_header": table_header,
-                "repeat_context": table_header,
-            })
         metadata.update({
             "record_kind": record_kind,
             "chunk_policy": chunk_policy_for(
@@ -1052,8 +1257,9 @@ def _load_docling(
         metadata["search_text"] = build_search_text(metadata, evidence_text)
 
         document = Document(text=evidence_text, metadata=metadata)
-        document.id_ = f"{base_metadata['source_version_id']}:docling:{chunk_index}"
+        document.id_ = f"{base_metadata['source_version_id']}:docling:{section_index}"
         documents.append(document)
+        section_index += 1
     return documents
 
 

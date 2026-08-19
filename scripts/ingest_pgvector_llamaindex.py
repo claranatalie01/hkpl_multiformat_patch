@@ -37,6 +37,7 @@ from src.infrastructure.embedding import (
 from src.infrastructure.vector_store import (
     EMBED_DIM,
     VECTOR_TABLE,
+    ensure_hybrid_search_schema,
     vector_store,
 )
 from src.infrastructure.db import engine
@@ -646,6 +647,7 @@ def rebuild_registered_documents(documents: list[dict]) -> tuple[int, list[str]]
 
 
 def audit_knowledge_chunks() -> bool:
+    ensure_hybrid_search_schema()
     table_name = f"data_{VECTOR_TABLE}"
     with engine.connect() as connection:
         summary = connection.execute(
