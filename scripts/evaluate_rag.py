@@ -127,22 +127,22 @@ Verdict:
 """
 
 STRICT_RELEVANCY_TEMPLATE = """
-Determine whether the generated response directly answers the question and is
-supported by the retrieved context.
+Determine only whether the generated response directly addresses the user's
+question.
 
 Rules:
-- Evidence may be combined from multiple passages in the context.
-- Answer YES when the response directly addresses every requested item and the
-  supporting information exists anywhere in the combined context.
-- Answer NO when the response does not answer the question, misses a requested
-  item, contradicts the context, or depends on unsupported information.
-- Irrelevant additional context must not cause a correct response to fail.
+- Answer YES when the response directly answers every item requested.
+- Answer NO when the response is off-topic, avoids the question, or fails to
+  address a requested item.
+- Additional relevant information must not cause the response to fail.
+- Do not judge factual accuracy or whether claims are supported by the context.
+  Correctness and faithfulness are evaluated separately.
 - Return only YES or NO.
 
 Question and generated response:
 {query_str}
 
-Combined retrieved context:
+Retrieved context, provided only to clarify the subject:
 {context_str}
 
 Verdict:
@@ -804,17 +804,17 @@ def diagnose(
             "Expected evidence reached the LLM, but the answer was partial, "
             "ambiguous, or incorrect.",
         )
+    if correctness >= 4.0 and faithfulness < 0.5:
+        return (
+            "ungrounded_answer",
+            "The answer addresses the question, but at least one factual claim "
+            "is not supported by the retrieved context.",
+        )
     if correctness >= 4.0 and relevancy < 0.5:
         return (
             "irrelevant_answer",
             "The answer may contain correct facts but does not adequately "
-            "address the question.",
-        )
-    if correctness >= 4.0 and faithfulness < 0.5:
-        return (
-            "ungrounded_answer",
-            "The answer may be factually correct, but at least one claim is "
-            "not supported by the retrieved context.",
+            "address every item requested by the question.",
         )
     return (
         "working_correctly",
