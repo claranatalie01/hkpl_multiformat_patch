@@ -102,6 +102,7 @@ vector insertion before the crawler continues.
 | [`scripts/normalize_evaluation_schema.py`](scripts/normalize_evaluation_schema.py) | Normalizes evaluation CSV structure. |
 | [`scripts/hotpotqa_benchmark.py`](scripts/hotpotqa_benchmark.py) | Adds HotpotQA retrieval distractors. |
 | [`scripts/webz_news_benchmark.py`](scripts/webz_news_benchmark.py) | Adds external news retrieval distractors. |
+| [`intent_classifier/evaluate_safety_guards.py`](intent_classifier/evaluate_safety_guards.py) | Compares GLiGuard and Qwen3Guard-Gen-0.6B on WildGuardTest prompt harmfulness with complete row/error accounting. |
 
 Evaluation rows support both single-chunk and multi-chunk evidence. The legacy
 `expected_context_snippet` and `source_chunk_id` columns identify the primary
@@ -140,6 +141,70 @@ eligible for other facts. The generator also accepts at most one LLM candidate
 per anchor even if the model returns extra JSON objects;
 deduplication remains as a final safety check for repeated content across
 different source documents.
+
+### Safety input-guard benchmark
+
+Use WildGuardTest's `prompt_harm_label` task to compare the two small input
+guards. Do not mix its response-harmfulness or refusal tasks into this result.
+WildGuardTest is gated: first accept the terms on the
+[dataset page](https://huggingface.co/datasets/allenai/wildguardmix), then log in
+interactively. Do not put a token directly in a command or commit it to the
+repository.
+
+```bash
+uv run hf auth login
+```
+
+Download and audit the dataset before loading any model:
+
+```bash
+uv run python intent_classifier/evaluate_safety_guards.py \
+  --audit-dataset-only \
+  --output-dir data/safety_evaluation/wildguardtest_dataset_audit
+```
+
+The Hugging Face library caches the downloaded dataset outside the repository,
+so subsequent benchmark runs reuse it. The audit command writes the row counts
+and excluded-row reasons into the selected output directory.
+
+Start with a smoke test:
+
+```bash
+uv run python intent_classifier/evaluate_safety_guards.py \
+  --limit 20 \
+  --output-dir data/safety_evaluation/wildguardtest_smoke
+```
+
+Then run the complete comparison on a CUDA machine:
+
+```bash
+uv run python intent_classifier/evaluate_safety_guards.py \
+  --device cuda \
+  --output-dir data/safety_evaluation/wildguardtest
+```
+
+The script loads models one after the other to limit GPU memory usage. It uses
+GLiGuard's published combined prompt rule: `unsafe` from `prompt_safety`, or
+any non-benign toxicity/jailbreak label, makes the final result unsafe. One
+Qwen inference produces two reported policies: `qwen3guard_strict` maps
+`Controversial` to unsafe, while `qwen3guard_loose` maps it to safe.
+
+Outputs are:
+
+| File | Meaning |
+| --- | --- |
+| `dataset_accounting.json` | Counts all source, scored, missing-label, unsupported-label, empty, and deliberately limited rows. |
+| `excluded_rows.jsonl` | Identifies every dataset row not sent to a model and gives the reason. |
+| `predictions.jsonl` | Full raw, parsed, predicted, timing, and error data for reproducibility. |
+| `predictions.csv` | Review-friendly prediction table. |
+| `summary.json` | Confusion matrices, accuracy, unsafe precision/recall/F1, FPR/FNR, coverage, errors, and latency. |
+
+The official dataset has 1,725 examples, but prompt harmfulness has an agreed
+gold label for 1,699. The other 26 should appear as `missing_gold_label`; they
+must not be counted as model parsing failures. Model failures are retained in
+the prediction files and mapped to unsafe in the fail-closed all-row metrics.
+The summary also includes successful-only metrics so a model cannot appear
+better merely because failures were omitted.
 
 ### Observability modules
 
