@@ -42,13 +42,83 @@ async def voice_to_text_node(state: LibraryBotState) -> dict:
 # GLiGuard safety classifier
 # ----------------------------------------------------------------------
 safety_model = None
+safety_model_device = None
+
+
+def get_safety_device() -> str:
+    """Return and validate the configured PyTorch device for GLiGuard.
+
+    The deployed Compose profile defaults to ``cuda:0`` inside the agent
+    container. ``NVIDIA_VISIBLE_DEVICES`` determines which physical GPU that
+    container-local index represents. CPU remains an explicit development
+    override; the runtime never silently falls back from a requested GPU.
+    """
+
+    import torch
+
+    device = os.getenv("SAFETY_DEVICE", "cuda:0").strip().lower()
+    if device == "cuda":
+        device = "cuda:0"
+    if device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"SAFETY_DEVICE={device!r}, but CUDA is unavailable to the agent process"
+            )
+        try:
+            index = int(device.split(":", maxsplit=1)[1])
+        except (IndexError, ValueError) as error:
+            raise RuntimeError(
+                "SAFETY_DEVICE must use a CUDA index such as 'cuda:0'"
+            ) from error
+        if index < 0 or index >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"SAFETY_DEVICE={device!r}, but only {torch.cuda.device_count()} "
+                "CUDA device(s) are visible"
+            )
+    elif device != "cpu" and not device.startswith("mps"):
+        raise RuntimeError(
+            "SAFETY_DEVICE must be 'cuda:N', 'mps', or the explicit development "
+            "override 'cpu'"
+        )
+    return device
+
 
 def get_safety_model():
-    global safety_model
+    """Load GLiGuard once and keep it resident on the configured device."""
+
+    global safety_model, safety_model_device
     if safety_model is None:
-        safety_model = GLiNER2.from_pretrained("fastino/gliguard-LLMGuardrails-300M")
-        safety_model.to("cpu")
+        device = get_safety_device()
+        loaded_model = GLiNER2.from_pretrained(
+            "fastino/gliguard-LLMGuardrails-300M"
+        )
+        loaded_model.to(device)
+        # Publish the singleton only after the CUDA transfer succeeds. An OOM
+        # must not leave a CPU-resident partial singleton for the next request.
+        safety_model = loaded_model
+        safety_model_device = device
+        logger.info("GLiGuard safety model loaded on %s", device)
     return safety_model
+
+
+def _safety_guard_unavailable_response(error: Exception) -> dict:
+    """Fail closed when the required safety model or GPU is unavailable."""
+
+    logger.exception("GLiGuard safety classifier unavailable: %s", error)
+    return {
+        "messages": [
+            AIMessage(
+                content=(
+                    "The safety service is temporarily unavailable, so I cannot "
+                    "process this request right now. Please try again later."
+                )
+            )
+        ],
+        "is_output_safe": True,
+        "end_conversation": True,
+    }
+
+
 def _history_to_text(history: list) -> str:
     parts = []
     for turn in history[-8:]:
@@ -118,7 +188,10 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
             "is_output_safe": True,
             "end_conversation": True,
         }
-    model = get_safety_model()
+    try:
+        model = get_safety_model()
+    except Exception as error:
+        return _safety_guard_unavailable_response(error)
 
     toxicity_labels = [
         "violence_and_weapons", "non_violent_crime", "sexual_content",
@@ -242,13 +315,8 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
                 "is_output_safe": True,
                 "end_conversation": False,
             }
-    except Exception as e:
-        logger.error(f"GLiGuard classification error: {e}")
-        is_unsafe = False
-        detected_categories = []
-        hard_hits = []
-        soft_hits = []
-        blocking_hits = []
+    except Exception as error:
+        return _safety_guard_unavailable_response(error)
 
     log_entry = {
         "timestamp": datetime.now().isoformat(),

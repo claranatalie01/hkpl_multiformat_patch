@@ -123,6 +123,7 @@ services:
       context: .
       dockerfile: Dockerfile.agent
     container_name: hkpl_agent
+    runtime: nvidia
     ports:
       - "8001:8001"
     volumes:
@@ -136,6 +137,10 @@ services:
       - ./models/docling:/app/models/docling:ro
       - ./models/qwen3-embedding:/app/models/qwen3-embedding:ro
     environment:
+      # Expose one physical GPU to the agent. It appears as cuda:0 inside the
+      # container even when SAFETY_GPU_ID selects a different host GPU.
+      NVIDIA_VISIBLE_DEVICES: ${SAFETY_GPU_ID:-0}
+      SAFETY_DEVICE: ${SAFETY_DEVICE:-cuda:0}
       DB_URL: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/hkpl_vector_db
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       POSTGRES_DB: hkpl_vector_db
