@@ -65,6 +65,11 @@ SUMMARY_PATH = Path(
 )
 LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
 EVALUATION_MAX_TOKENS = int(os.getenv("EVALUATION_MAX_TOKENS", "2048"))
+# Keep answer generation concise without constraining the separate evaluator
+# calls, which may need more tokens to explain their scoring decisions.
+EVALUATION_ANSWER_MAX_TOKENS = int(
+    os.getenv("EVALUATION_ANSWER_MAX_TOKENS", "512")
+)
 DEFAULT_REASONING_BUDGET = 1000
 RETRIEVER_HIT_CUTOFF = 10
 RERANKER_HIT_CUTOFF = 5
@@ -639,10 +644,22 @@ async def generate_answer(
 ) -> tuple[str, dict]:
     prompt = f"""You are a retrieval-grounded question answering assistant.
 
-Answer the question using only the retrieved context. Combine evidence from
-multiple sources when required. Do not invent information. If the retrieved
-context does not contain enough evidence, say: "I don't have that information
-in my knowledge base."
+Answer the question using only the retrieved context.
+
+Rules:
+- Output only the final answer. Do not reveal analysis, reasoning,
+  reconsideration, or self-correction.
+- Be concise. Normally answer in one to three sentences; use a short list only
+  when the question requests multiple items.
+- For a yes/no question, begin with "Yes" or "No" and give the decisive
+  supporting fact. Never include contradictory yes and no conclusions.
+- When the question identifies a specific branch, service point, venue, or
+  date, prioritize evidence explicitly naming that location and date over a
+  broader introductory statement or overall date range.
+- Combine evidence from multiple sources when required, but do not invent
+  information.
+- If the context does not contain enough evidence, say exactly: "I don't have
+  that information in my knowledge base."
 
 Retrieved context:
 {context}
@@ -657,7 +674,7 @@ Answer:
         llm_response = await http_llm_with_usage(
             prompt,
             temperature=0.0,
-            max_tokens=EVALUATION_MAX_TOKENS,
+            max_tokens=EVALUATION_ANSWER_MAX_TOKENS,
             enable_thinking=enable_thinking,
             thinking_budget_tokens=thinking_budget_tokens,
         )
@@ -695,7 +712,7 @@ Answer:
             prompt=prompt,
             response=answer,
             temperature=0.0,
-            max_tokens=EVALUATION_MAX_TOKENS,
+            max_tokens=EVALUATION_ANSWER_MAX_TOKENS,
             usage=usage,
         )
         span.set_attribute(

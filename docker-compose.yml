@@ -187,6 +187,8 @@ services:
       PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"
       RAG_EVALUATION_RESULTS_PATH: /app/data/rag_evaluation/results.csv
       RAG_EVALUATION_SUMMARY_PATH: /app/data/rag_evaluation/summary.json
+      # Answer generation is intentionally shorter than evaluator-judge output.
+      EVALUATION_ANSWER_MAX_TOKENS: "512"
       EVALUATION_MAX_TOKENS: "2048"
       LLM_TOKENIZER_URL: http://llm:8080/tokenize
       EMBEDDING_TOKENIZER_URL: http://embedding:8080/tokenize
