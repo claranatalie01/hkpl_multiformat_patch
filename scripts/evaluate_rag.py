@@ -653,16 +653,17 @@ Rules:
   when the question requests multiple items.
 - For a yes/no question, begin with "Yes" or "No" and give the decisive
   supporting fact. Never include contradictory yes and no conclusions.
-- When the question identifies a specific branch, service point, venue, or
-  date, prioritize evidence explicitly naming that location and date over a
-  broader introductory statement or overall date range.
-- For a maintenance notice that gives an overall maintenance period followed
-  by location-specific suspension dates, the matching location row defines
-  when service at that location is suspended. Do not infer that every service
-  point is suspended on every day in the overall maintenance period.
-- For a question about whether a specific location is suspended on a specific
-  date, silently locate the row naming that location and compare the requested
-  date with the dates in that row before writing the final answer.
+- Identify every constraint and relationship expressed by the question. Base
+  the answer on evidence that satisfies those constraints together, not on
+  separate passages that each match only part of the request.
+- Resolve apparent conflicts by specificity: evidence matching more of the
+  question's constraints takes precedence over evidence describing a broader
+  group, scope, heading, or range.
+- Do not infer that a fact about a group applies to each member, or that a fact
+  about one member applies to the group. For a binary question, answer "Yes"
+  only when the exact requested relationship is directly supported.
+- Before answering, silently identify the most specific supporting evidence
+  and verify the conclusion against every requested constraint.
 - Combine evidence from multiple sources when required, but do not invent
   information.
 - If the context does not contain enough evidence, say exactly: "I don't have
