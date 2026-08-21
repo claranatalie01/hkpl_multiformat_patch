@@ -90,6 +90,15 @@ vector insertion before the crawler continues.
 | [`src/compliance.py`](src/compliance.py) | Stores and applies prohibited-keyword rules. |
 | [`src/corpus.py`](src/corpus.py) | Distinguishes primary HKPL vectors from benchmark distractors. |
 
+The runtime GLiGuard input-safety classifier uses the GPU selected by
+`SAFETY_GPU_ID` and is moved to container-local `SAFETY_DEVICE=cuda:0` when it
+is first needed. The `langgraph-agent` container therefore requires the NVIDIA
+Container Toolkit. A requested CUDA device never silently falls back to CPU;
+if CUDA or sufficient GPU memory is unavailable, the safety stage fails closed
+and does not continue to RAG generation. GPU 0 is also used by the embedding
+and reranker services in the PoC profile, so its combined memory usage must be
+checked with `nvidia-smi` before enabling the agent guard there.
+
 ### Evaluation and benchmark scripts
 
 | File | Individual responsibility |

@@ -124,7 +124,7 @@ every chunk suitable for a benchmark question.
 | Active CSV | `data/evaluation_dataset.csv` | Reviewed, portable benchmark source |
 | Active PostgreSQL table | `evaluation_dataset` | Runtime copy used by evaluation |
 | Candidate CSV | `data/evaluation_dataset.candidate.csv` | Generated rows awaiting review |
-| Candidate PostgreSQL table | `evaluation_dataset_candidate` | Validation copy of the candidate |
+| Candidate PostgreSQL table | `evaluation_dataset_100` | Validation copy of the 100-row candidate |
 
 The active CSV and table should contain the same 528 questions before running
 the current benchmark.
