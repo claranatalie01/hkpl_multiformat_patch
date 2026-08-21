@@ -677,12 +677,20 @@ Question:
 
 Answer:
 """
+    # llama.cpp counts hidden reasoning and visible answer tokens against the
+    # same ``max_tokens`` completion budget. Reserve the requested thinking
+    # allowance in addition to the visible-answer allowance so reasoning mode
+    # cannot consume the space needed to finish the answer.
+    request_max_tokens = EVALUATION_ANSWER_MAX_TOKENS
+    if enable_thinking:
+        request_max_tokens += thinking_budget_tokens
+
     with tracer.start_as_current_span("LLM") as span:
         started = time.perf_counter()
         llm_response = await http_llm_with_usage(
             prompt,
             temperature=0.0,
-            max_tokens=EVALUATION_ANSWER_MAX_TOKENS,
+            max_tokens=request_max_tokens,
             enable_thinking=enable_thinking,
             thinking_budget_tokens=thinking_budget_tokens,
         )
@@ -720,7 +728,7 @@ Answer:
             prompt=prompt,
             response=answer,
             temperature=0.0,
-            max_tokens=EVALUATION_ANSWER_MAX_TOKENS,
+            max_tokens=request_max_tokens,
             usage=usage,
         )
         span.set_attribute(
