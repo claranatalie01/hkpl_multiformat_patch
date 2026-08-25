@@ -133,7 +133,7 @@ services:
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./storage:/app/storage
-      - ./models/docling:/app/models/docling:ro
+      - ${DOCLING_HOST_MODELS:-./models/docling}:/app/models/docling:ro
       - ./models/qwen3-embedding:/app/models/qwen3-embedding:ro
     environment:
       DB_URL: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/hkpl_vector_db
