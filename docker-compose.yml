@@ -155,7 +155,7 @@ services:
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
       EMBED_DIM: "1024"
       SIMILARITY_TOP_K: "10"
-      RERANK_TOP_N: "5"
+      RERANK_TOP_N: "${RERANK_TOP_N:-8}"
       RERANKER_THRESHOLD: "0.30"
       UPLOAD_DIR: /app/uploads
       MAX_UPLOAD_BYTES: "26214400"
