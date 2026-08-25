@@ -12,6 +12,8 @@ from scripts.crawl_hkpl_site import (
     discover_links,
     extract_main_html,
     flush_pending,
+    is_allowed_url,
+    language_for_url,
 )
 
 import openpyxl
@@ -838,6 +840,33 @@ class DeterministicReaderTests(unittest.TestCase):
 
 
 class MainContentSelectionTests(unittest.TestCase):
+    def test_crawler_accepts_all_hkpl_language_paths(self) -> None:
+        for language in ("en", "tc", "sc"):
+            with self.subTest(language=language):
+                self.assertTrue(
+                    is_allowed_url(
+                        f"https://www.hkpl.gov.hk/{language}/index.html"
+                    )
+                )
+
+        self.assertFalse(
+            is_allowed_url("https://www.hkpl.gov.hk/fr/index.html")
+        )
+
+    def test_crawler_derives_language_from_url(self) -> None:
+        self.assertEqual(
+            language_for_url("https://www.hkpl.gov.hk/en/index.html"), "en"
+        )
+        self.assertEqual(
+            language_for_url("https://www.hkpl.gov.hk/tc/index.html"), "zh-Hant"
+        )
+        self.assertEqual(
+            language_for_url("https://www.hkpl.gov.hk/sc/index.html"), "zh-Hans"
+        )
+        self.assertIsNone(
+            language_for_url("https://www.hkpl.gov.hk/common/guide.pdf")
+        )
+
     @patch("scripts.crawl_hkpl_site.save_hash")
     @patch("scripts.crawl_hkpl_site.ingest_path_sync")
     @patch("scripts.crawl_hkpl_site.classify_batch_items_resilient_sync")
@@ -888,6 +917,7 @@ class MainContentSelectionTests(unittest.TestCase):
             "fallback",
         )
         self.assertEqual(ingest.call_args.kwargs["document_type"], "prose")
+        self.assertEqual(ingest.call_args.kwargs["language"], "en")
         self.assertEqual(
             ingest.call_args.kwargs["replace_document_id"],
             "existing-id",

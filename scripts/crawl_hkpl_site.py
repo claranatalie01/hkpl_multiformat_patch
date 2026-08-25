@@ -100,7 +100,7 @@ def is_allowed_url(url: str, *, include_query_urls: bool = False) -> bool:
         return False
 
     is_pdf = path.endswith(".pdf")
-    if not is_pdf and not path.startswith("/en/"):
+    if not is_pdf and not path.startswith(("/en/", "/tc/", "/sc/")):
         return False
 
     blocked_paths = (
@@ -121,6 +121,17 @@ def is_allowed_url(url: str, *, include_query_urls: bool = False) -> bool:
         return False
 
     return True
+
+
+def language_for_url(url: str) -> str | None:
+    path = urlparse(url).path.lower()
+    if path.startswith("/en/"):
+        return "en"
+    if path.startswith("/tc/"):
+        return "zh-Hant"
+    if path.startswith("/sc/"):
+        return "zh-Hans"
+    return None
 
 
 def clean_text(text: str) -> str:
@@ -240,6 +251,7 @@ def extracted_classifier_text(path: Path, item: dict) -> str:
         source_title=item["title"],
         source_url=item["url"],
         source_type="crawler",
+        language=language_for_url(item["url"]),
         source_kind="crawler",
         document_type="auto",
         classification_source="llm",
@@ -295,7 +307,7 @@ def flush_pending(
                 source_type="crawler",
                 access_level="public",
                 category="HKPL Website",
-                language="en",
+                language=language_for_url(item["url"]),
                 source_kind="crawler",
                 document_type=decisions[item["url"]]["document_type"],
                 classification_source=decisions[item["url"]].get(
@@ -383,7 +395,7 @@ def robots_policy() -> RobotFileParser:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Crawl public English HKPL pages and fully ingest new or changed sources."
+            "Crawl public HKPL pages and fully ingest new or changed sources."
         )
     )
     parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES)
