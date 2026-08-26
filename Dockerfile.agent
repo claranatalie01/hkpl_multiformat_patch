@@ -7,6 +7,7 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl \
+        libgl1 \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-chi-tra \

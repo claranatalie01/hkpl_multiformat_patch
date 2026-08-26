@@ -37,6 +37,7 @@ from src.infrastructure.embedding import (
 from src.infrastructure.vector_store import (
     EMBED_DIM,
     VECTOR_TABLE,
+    ensure_hybrid_search_schema,
     vector_store,
 )
 from src.infrastructure.db import engine
@@ -55,8 +56,6 @@ from src.ingestion.service import (
     reindex_registered_document,
 )
 from src.ingestion.write_guard import ensure_corpus_writable
-
-
 EVALUATION_DATASET_TABLE = os.getenv(
     "EVALUATION_DATASET_TABLE",
     "evaluation_dataset",
@@ -648,6 +647,7 @@ def rebuild_registered_documents(documents: list[dict]) -> tuple[int, list[str]]
 
 
 def audit_knowledge_chunks() -> bool:
+    ensure_hybrid_search_schema()
     table_name = f"data_{VECTOR_TABLE}"
     with engine.connect() as connection:
         summary = connection.execute(
@@ -674,7 +674,6 @@ def audit_knowledge_chunks() -> bool:
                            OR COALESCE(metadata_->>'chunk_policy', '') = ''
                            OR COALESCE(metadata_->>'parent_record_id', '') = ''
                            OR COALESCE(metadata_->>'parser_version', '') = ''
-                           OR COALESCE(metadata_->>'chunker_version', '') = ''
                            OR COALESCE(metadata_->>'search_text', '') = ''
                            OR COALESCE(metadata_->>'token_count', '') = ''
                            OR COALESCE(
@@ -912,7 +911,9 @@ def audit_knowledge_chunks() -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ingest FAQ knowledge and/or synchronize the evaluation dataset.",
+        description=(
+            "Ingest FAQ or registered knowledge and synchronize evaluation data."
+        ),
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(

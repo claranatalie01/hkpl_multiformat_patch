@@ -1,6 +1,7 @@
 -- Database-level prerequisite for LlamaIndex's vector table. The application
 -- configures and creates/manages data_hkpl_knowledge through PGVectorStore.
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Ordinary application tables below track documents and operational state;
 -- they are distinct from the LlamaIndex-managed vector-chunk table.

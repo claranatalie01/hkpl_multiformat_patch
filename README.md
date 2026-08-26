@@ -7,9 +7,10 @@ documents, extracts structured evidence, creates searchable chunks, generates
 reranks evidence, generates grounded answers, and records evaluation traces in
 Phoenix.
 
-This README is the single human-facing operational guide. `AGENTS.md` is kept
-separately because coding agents use it as repository-level architecture and
-safety instructions.
+This README is the primary human-facing operational guide. The shorter
+`ingestion_runbook.md` is a quick ingestion/evaluation checklist, while
+`AGENTS.md` contains repository-level architecture and safety instructions for
+coding agents.
 
 ## Quick command map
 
@@ -116,7 +117,11 @@ Important defaults are defined in `docker-compose.yml`:
 | `CHUNK_SIZE` | `512` | Maximum embedding tokens per chunk |
 | `CHUNK_OVERLAP` | `64` | Overlap only for oversized structural leaves |
 | `SIMILARITY_TOP_K` | `10` | Vector candidates |
-| `RERANK_TOP_N` | `5` | Final reranked contexts |
+| `DENSE_TOP_K` | `30` | Dense-vector candidates used by hybrid retrieval |
+| `LEXICAL_TOP_K` | `30` | Full-text/trigram candidates used by hybrid retrieval |
+| `FUSION_TOP_K` | `20` | Candidates retained after reciprocal-rank fusion |
+| `RRF_K` | `60` | Reciprocal-rank-fusion constant |
+| `RERANK_TOP_N` | `8` | Final reranked contexts |
 | `MAX_CONTEXT_TOKENS` | `12000` | Answer context budget |
 | `EVALUATION_ANSWER_MAX_TOKENS` | `512` | Visible-answer allowance |
 | `EVALUATION_MAX_TOKENS` | `2048` | Evaluator-judge completion limit |
@@ -564,15 +569,17 @@ Evaluation questions must be generated only after the corpus is finalized and
 audited. Candidate rows require human semantic review even when automated
 validation passes.
 
-### Current source-table limitation
+### Select the candidate source
 
-`scripts/generate_evaluation_dataset.py` currently contains a literal
-`FROM data_hkpl_knowledge` query for normal vector generation. Setting
-`VECTOR_TABLE=hkpl_knowledge_hybrid` changes audit, validation, retrieval, and
-evaluation targets, but it does not change that generator query. Do not claim
-that a candidate came from the hybrid table unless this generator is first
-refactored to use the selected `VECTOR_TABLE`, or the explicit preview mode is
-used.
+`scripts/generate_evaluation_dataset.py` reads normal embedded candidates from
+the physical `data_<VECTOR_TABLE>` table. For example,
+`VECTOR_TABLE=hkpl_knowledge_hybrid` selects
+`data_hkpl_knowledge_hybrid`. Passing `--preview-run-id` instead selects one
+explicit non-embedded ingestion preview and requires a separate output file.
+
+Hybrid retrieval requires a vector table created with its generated full-text
+column. Use a fresh `VECTOR_TABLE` and reingest when enabling hybrid retrieval;
+an older dense-only table is rejected rather than partially upgraded in place.
 
 ### Check corpus status
 
@@ -976,7 +983,7 @@ website.
 | `postgres-init/init.sql` | Enables pgvector and initializes ordinary tables on a clean volume |
 | `src/infrastructure/db.py` | SQLAlchemy database connection |
 | `src/infrastructure/embedding.py` | LlamaIndex adapter for the embedding endpoint |
-| `src/infrastructure/vector_store.py` | LlamaIndex PostgreSQL vector collection and dimension |
+| `src/infrastructure/vector_store.py` | PGVectorStore configuration plus full-text and trigram indexes |
 
 ### Ingestion
 
@@ -1003,7 +1010,7 @@ website.
 | `src/graph.py` | LangGraph workflow edges and routes |
 | `src/state.py` | Typed graph state |
 | `src/nodes.py` | Safety, query processing, context, answer, citations, memory |
-| `src/retrieval.py` | Query embedding, vector retrieval, reranking, diagnostics |
+| `src/retrieval.py` | Dense/lexical retrieval, rank fusion, reranking, and diagnostics |
 | `src/llm_client.py` | Local answer-model client and usage normalization |
 | `src/corpus.py` | Primary/distractor metadata maintenance |
 | `src/memory.py` | Conversation history |

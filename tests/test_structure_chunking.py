@@ -4,19 +4,39 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from scripts.crawl_hkpl_site import (
+    decode_response_text,
+    discover_links,
+    extract_main_html,
+    flush_pending,
+    is_allowed_url,
+    language_for_url,
+)
+
 import openpyxl
+from docling_core.types.doc import DoclingDocument, TableCell, TableData
+from docling_core.types.doc.labels import DocItemLabel
 from llama_index.core import Document
 
+import src.ingestion.service as ingestion_service
 from src.ingestion.chunking import build_search_text, chunk_documents
-from src.ingestion.classification import MAX_BATCH_ITEMS, classify_batch_items
+from src.ingestion.classification import (
+    MAX_BATCH_ITEMS,
+    classification_sample,
+    classify_batch_items,
+    classify_batch_items_resilient,
+)
 from src.ingestion.document_types import (
     chunk_policy_for,
     resolve_record_kind,
     validate_document_type,
 )
 from src.ingestion.readers import (
+    _load_docling,
+    _docling_table_documents,
     extract_faq_pairs,
     extract_html_record_metadata,
     load_file,
@@ -73,6 +93,32 @@ def source_document(
     return Document(text=evidence_text, metadata=base)
 
 
+def docling_table(
+    values: list[list[str]],
+    *,
+    header_rows: int = 1,
+) -> tuple[DoclingDocument, object]:
+    cells = [
+        TableCell(
+            start_row_offset_idx=row,
+            end_row_offset_idx=row + 1,
+            start_col_offset_idx=column,
+            end_col_offset_idx=column + 1,
+            text=value,
+            column_header=row < header_rows,
+        )
+        for row, values_row in enumerate(values)
+        for column, value in enumerate(values_row)
+    ]
+    document = DoclingDocument(name="table-fixture")
+    table = document.add_table(TableData(
+        table_cells=cells,
+        num_rows=len(values),
+        num_cols=len(values[0]),
+    ))
+    return document, table
+
+
 class DocumentTypeTests(unittest.TestCase):
     def test_physical_table_precedes_admin_faq_hint(self) -> None:
         metadata = {"document_type": "faq", "structural_kind": "table_row"}
@@ -88,6 +134,47 @@ class DocumentTypeTests(unittest.TestCase):
         self.assertEqual(resolve_record_kind({"document_type": "directory"}), "record")
 
 
+class IngestionHandoffTests(unittest.TestCase):
+    def test_registered_document_uses_configured_embedding_model(self) -> None:
+        record = {
+            "document_id": "doc-1",
+            "original_file_name": "source.html",
+            "document_type": "prose",
+            "version": 1,
+        }
+        documents = [source_document("Official library information.")]
+        nodes = [object()]
+        storage_context = object()
+        with (
+            patch.object(ingestion_service, "ensure_corpus_writable"),
+            patch.object(ingestion_service, "ensure_registry_schema"),
+            patch.object(ingestion_service, "get_document", return_value=record),
+            patch.object(ingestion_service, "_load_record", return_value=documents),
+            patch.object(ingestion_service, "chunk_documents", return_value=nodes),
+            patch.object(ingestion_service, "ensure_hybrid_search_schema"),
+            patch.object(
+                ingestion_service.StorageContext,
+                "from_defaults",
+                return_value=storage_context,
+            ),
+            patch.object(ingestion_service, "VectorStoreIndex") as vector_index,
+            patch.object(ingestion_service, "delete_old_versions", return_value=0),
+            patch.object(ingestion_service, "update_status"),
+        ):
+            result = ingestion_service.process_registered_document("doc-1")
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(vector_index.call_args.args[0], nodes)
+        self.assertIs(
+            vector_index.call_args.kwargs["embed_model"],
+            ingestion_service.embed_model,
+        )
+        self.assertIs(
+            vector_index.call_args.kwargs["storage_context"],
+            storage_context,
+        )
+
+
 class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
     async def test_uses_one_compact_generation_call(self) -> None:
         calls: list[tuple[str, dict]] = []
@@ -95,8 +182,8 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
         async def fake_llm(prompt: str, **kwargs: object) -> str:
             calls.append((prompt, kwargs))
             return json.dumps({"items": [
-                {"id": "a", "type": "faq"},
-                {"id": "b", "type": "skip"},
+                {"id": "0", "type": "faq"},
+                {"id": "1", "type": "skip"},
             ]})
 
         result = await classify_batch_items([
@@ -111,17 +198,24 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         prompt, options = calls[0]
         self.assertIn("faq|record|prose|skip", prompt)
-        self.assertIn("Physical tables are handled before this call", prompt)
+        self.assertIn("factual tables, directories", prompt)
+        self.assertIn("Keep service/guidance pages", prompt)
         self.assertEqual(options["temperature"], 0.0)
         self.assertFalse(options["enable_thinking"])
+        self.assertEqual(options["response_format"]["type"], "json_schema")
+        self.assertTrue(options["response_format"]["json_schema"]["strict"])
+        id_schema = options["response_format"]["json_schema"]["schema"][
+            "properties"
+        ]["items"]["items"]["properties"]["id"]
+        self.assertEqual(id_schema["enum"], ["0", "1"])
 
     async def test_rejects_partial_or_invalid_output(self) -> None:
         items = [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}]
         invalid_outputs = (
-            '{"items":[{"id":"a","type":"prose"}]}',
-            '{"items":[{"id":"a","type":"prose"},{"id":"x","type":"faq"}]}',
-            '{"items":[{"id":"a","type":"prose"},{"id":"a","type":"faq"}]}',
-            '{"items":[{"id":"a","type":"event"},{"id":"b","type":"prose"}]}',
+            '{"items":[{"id":"0","type":"prose"}]}',
+            '{"items":[{"id":"0","type":"prose"},{"id":"x","type":"faq"}]}',
+            '{"items":[{"id":"0","type":"prose"},{"id":"0","type":"faq"}]}',
+            '{"items":[{"id":"0","type":"event"},{"id":"1","type":"prose"}]}',
         )
         for raw in invalid_outputs:
             async def fake_llm(*_: object, output: str = raw, **__: object) -> str:
@@ -144,6 +238,46 @@ class BatchClassificationTests(unittest.IsolatedAsyncioTestCase):
                 llm_call=fake_llm,
             )
         self.assertFalse(called)
+
+    async def test_failed_batch_isolated_to_rejected_item(self) -> None:
+        calls = 0
+
+        async def fake_llm(prompt: str, **_: object) -> str:
+            nonlocal calls
+            calls += 1
+            if '"text":"one"' in prompt and '"text":"two"' in prompt:
+                raise ValueError("bad batch JSON")
+            if '"text":"two"' in prompt:
+                raise ValueError("bad item JSON")
+            return '{"items":[{"id":"0","type":"prose"}]}'
+
+        decisions = await classify_batch_items_resilient(
+            [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}],
+            llm_call=fake_llm,
+        )
+
+        self.assertEqual(decisions["a"], {"document_type": "prose"})
+        self.assertEqual(decisions["b"]["document_type"], "prose")
+        self.assertEqual(decisions["b"]["classification_source"], "fallback")
+        self.assertEqual(decisions["b"]["classification_error"], "bad item JSON")
+        self.assertEqual(calls, 3)
+
+    async def test_llm_decision_precedes_faq_fallback(self) -> None:
+        async def fake_llm(*_: object, **__: object) -> str:
+            return '{"items":[{"id":"0","type":"prose"}]}'
+
+        decisions = await classify_batch_items_resilient([{
+            "id": "faq-page",
+            "text": "Q: First?\nA: One\nQ: Second?\nA: Two",
+        }], llm_call=fake_llm)
+
+        self.assertEqual(decisions, {"faq-page": {"document_type": "prose"}})
+
+    def test_classifier_sample_keeps_head_and_tail(self) -> None:
+        sample = classification_sample("HEAD" + ("x" * 2000) + "TAIL", limit=100)
+        self.assertTrue(sample.startswith("HEAD"))
+        self.assertTrue(sample.endswith("TAIL"))
+        self.assertIn("middle omitted", sample)
 
 
 class FaqAdapterTests(unittest.TestCase):
@@ -208,6 +342,11 @@ Q.1: Fourth?\nA.1: Four
 
 
 class ChunkConstructionTests(unittest.TestCase):
+    def test_search_text_does_not_repeat_leading_source_title(self) -> None:
+        evidence = "HKPL Collections\n\nAdult Fiction\n\nRank | Title\n\n1 | Book"
+        search = build_search_text({"source_title": "HKPL Collections"}, evidence)
+        self.assertEqual(search, evidence)
+
     def test_exact_evidence_and_normalized_search_text_are_separate(self) -> None:
         evidence = "ＡＢＣ\u00a0資料"
         document = source_document(
@@ -237,6 +376,48 @@ class ChunkConstructionTests(unittest.TestCase):
         nodes = chunk_documents(documents, tokenizer=CharacterTokenizer(), max_tokens=512)
         self.assertEqual(len(nodes), 2)
         self.assertNotEqual(nodes[0].node_id, nodes[1].node_id)
+
+    def test_identical_stable_chunk_ids_are_deduplicated(self) -> None:
+        documents = [
+            source_document("Same official wording"),
+            source_document("Same official wording"),
+        ]
+
+        nodes = chunk_documents(
+            documents,
+            tokenizer=CharacterTokenizer(),
+            max_tokens=512,
+        )
+
+        self.assertEqual(len(nodes), 1)
+
+    def test_equal_text_and_locator_in_distinct_sections_get_distinct_ids(self) -> None:
+        documents = [
+            source_document("Same wording", section_index=1),
+            source_document("Same wording", section_index=2),
+        ]
+        nodes = chunk_documents(documents, tokenizer=CharacterTokenizer(), max_tokens=512)
+        self.assertNotEqual(nodes[0].node_id, nodes[1].node_id)
+        self.assertNotEqual(
+            nodes[0].metadata["parent_record_id"],
+            nodes[1].metadata["parent_record_id"],
+        )
+
+    def test_oversized_prose_prefers_semantic_boundaries_without_overlap(self) -> None:
+        document = source_document(
+            "First paragraph ends here.\n\n"
+            "Second paragraph also ends cleanly.\n\n"
+            "Third paragraph finishes naturally.",
+            source_title="T",
+        )
+        nodes = chunk_documents(
+            [document], tokenizer=CharacterTokenizer(70), max_tokens=70
+        )
+        self.assertGreater(len(nodes), 1)
+        self.assertTrue(all(node.metadata["chunk_overlap"] == 0 for node in nodes))
+        self.assertTrue(all(
+            node.metadata["evidence_text"].endswith(".") for node in nodes
+        ))
 
     def test_oversized_faq_repeats_question_and_respects_cap(self) -> None:
         question = "How do I renew a book?"
@@ -273,6 +454,145 @@ class ChunkConstructionTests(unittest.TestCase):
         )
         self.assertGreater(len(nodes), 1)
         self.assertTrue(all(node.metadata["evidence_text"].startswith(header) for node in nodes))
+
+    def test_generic_docling_table_packs_complete_rows_with_repeated_context(self) -> None:
+        values = [[
+            "Rank", "BIB ID", "Title", "Author", "Call Number",
+            "Number of Loans", "Notes",
+        ]] + [
+            [
+                str(rank),
+                str(3239693 + rank),
+                f"Book {rank} " + ("Long title " * 7),
+                "Tolkien",
+                "F TOL",
+                str(840 - rank),
+                "[1]" if rank % 2 else "",
+            ]
+            for rank in range(1, 7)
+        ]
+        docling_document, table = docling_table(values)
+        metadata = dict(source_document("unused", record_kind="prose").metadata)
+        metadata["source_title"] = "Hong Kong Public Libraries – English Collections"
+
+        documents = _docling_table_documents(
+            table,
+            docling_document,
+            metadata,
+            structure_path=["Adult Lending Fiction 2025"],
+            parser_version="docling-test",
+            json_path=Path("table.json"),
+            parent_record_id="parent",
+            tokenizer=CharacterTokenizer(),
+            section_index=0,
+        )
+        nodes = chunk_documents(
+            documents,
+            tokenizer=CharacterTokenizer(),
+            max_tokens=512,
+        )
+
+        prefix = (
+            "Hong Kong Public Libraries – English Collections\n"
+            "Adult Lending Fiction 2025\n\n"
+            "Rank | BIB ID | Title | Author | Call Number | Number of Loans | Notes"
+        )
+        self.assertGreater(len(nodes), 1)
+        self.assertTrue(all(node.text.startswith(prefix) for node in nodes))
+        self.assertTrue(all(node.metadata["token_count"] <= 512 for node in nodes))
+        self.assertTrue(all(node.metadata["chunk_policy"] == "table_rows" for node in nodes))
+        combined = "\n".join(node.metadata["evidence_text"] for node in nodes)
+        for rank in range(1, 7):
+            row = " | ".join(" ".join(value.split()) for value in values[rank]).rstrip()
+            self.assertEqual(combined.count(row), 1)
+        self.assertEqual(
+            [(node.metadata["row_start"], node.metadata["row_end"]) for node in nodes],
+            [(1, 2), (3, 4), (5, 6)],
+        )
+
+    def test_single_oversized_docling_row_is_the_only_row_split(self) -> None:
+        values = [["Rank", "Title"], ["1", "A" * 900], ["2", "Short title"]]
+        docling_document, table = docling_table(values)
+        metadata = dict(source_document("unused", record_kind="prose").metadata)
+        metadata["source_title"] = "HKPL Collections"
+        documents = _docling_table_documents(
+            table,
+            docling_document,
+            metadata,
+            structure_path=["Adult Fiction"],
+            parser_version="docling-test",
+            json_path=Path("table.json"),
+            parent_record_id="parent",
+            tokenizer=CharacterTokenizer(),
+            section_index=0,
+        )
+
+        nodes = chunk_documents(
+            documents,
+            tokenizer=CharacterTokenizer(),
+            max_tokens=512,
+        )
+
+        oversized = [node for node in nodes if node.metadata["row_start"] == 1]
+        second_row = [node for node in nodes if node.metadata["row_start"] == 2]
+        self.assertGreater(len(oversized), 1)
+        self.assertEqual(len(second_row), 1)
+        self.assertTrue(all(node.metadata["chunk_overlap"] == 0 for node in oversized))
+        self.assertTrue(all(node.metadata["chunk_policy"] == "table_rows" for node in nodes))
+        self.assertTrue(all(
+            node.metadata["evidence_text"].startswith(
+                "HKPL Collections\nAdult Fiction\n\nRank | Title"
+            )
+            for node in nodes
+        ))
+
+    def test_docling_table_preserves_multilevel_headers_unicode_and_literal_pipes(self) -> None:
+        docling_document, table = docling_table([
+            ["Catalogue", "Catalogue"],
+            ["BIB ID", "Title"],
+            ["0", "臺北人 | 白先勇"],
+        ], header_rows=2)
+        metadata = dict(source_document("unused", record_kind="prose").metadata)
+        metadata["source_title"] = "HKPL"
+
+        documents = _docling_table_documents(
+            table,
+            docling_document,
+            metadata,
+            structure_path=["Chinese Collections"],
+            parser_version="docling-test",
+            json_path=Path("table.json"),
+            parent_record_id="parent",
+            tokenizer=CharacterTokenizer(),
+            section_index=0,
+        )
+
+        self.assertEqual(len(documents), 1)
+        self.assertIn(
+            "Catalogue / BIB ID | Catalogue / Title\n\n0 | 臺北人 \\| 白先勇",
+            documents[0].text,
+        )
+
+    def test_oversized_context_is_removed_from_search_not_metadata(self) -> None:
+        title = "Very long official source title " * 8
+        header = "Very long repeated record header " * 8
+        document = source_document(
+            f"{header}\n" + ("evidence " * 80),
+            record_kind="record",
+            source_title=title,
+            record_header=header,
+            repeat_context=header,
+            structure_path=["Very long heading " * 8],
+        )
+
+        nodes = chunk_documents(
+            [document], tokenizer=CharacterTokenizer(160), max_tokens=160
+        )
+
+        self.assertGreater(len(nodes), 1)
+        self.assertTrue(all(node.metadata["token_count"] <= 160 for node in nodes))
+        self.assertTrue(all(node.metadata["source_title"] == title for node in nodes))
+        self.assertTrue(all(node.metadata["record_header"] == header for node in nodes))
 
     def test_search_text_whitelist(self) -> None:
         search = build_search_text({
@@ -317,6 +637,60 @@ class DeterministicReaderTests(unittest.TestCase):
         self.assertEqual(len(documents), 2)
         self.assertTrue(all(doc.metadata["record_kind"] == "table" for doc in documents))
         self.assertEqual(documents[0].metadata["locator"]["row"], 2)
+        self.assertEqual(
+            documents[1].text,
+            "service: Printing\ndescription: Self-service printing",
+        )
+        self.assertEqual(documents[1].metadata["table_header"], "service | description")
+        self.assertEqual(documents[1].metadata["structural_kind"], "table_row")
+
+    def test_docling_table_replaces_flattened_text_and_preserves_trailing_prose(self) -> None:
+        docling_document, table = docling_table([
+            ["Rank", "Title", "Loans"],
+            ["1", "The Hobbit", "719"],
+        ])
+        note = docling_document.add_text(
+            label=DocItemLabel.TEXT,
+            text="Notes: loan totals for 2025",
+        )
+        metadata = dict(source_document("unused", record_kind="prose").metadata)
+        metadata["source_title"] = "HKPL Collections"
+
+        class FakeHybridChunker:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def chunk(self, **_: object):
+                yield SimpleNamespace(
+                    text="1, Rank = 1. 1, Title = The Hobbit. Notes: loan totals for 2025",
+                    meta=SimpleNamespace(
+                        headings=["Adult Fiction 2025"],
+                        doc_items=[table, note],
+                    ),
+                )
+
+        with (
+            patch(
+                "src.ingestion.readers._load_or_convert_docling",
+                return_value=(docling_document, Path("table.json")),
+            ),
+            patch(
+                "src.ingestion.readers.get_embedding_tokenizer",
+                return_value=CharacterTokenizer(),
+            ),
+            patch(
+                "docling_core.transforms.chunker.hybrid_chunker.HybridChunker",
+                FakeHybridChunker,
+            ),
+        ):
+            documents = _load_docling(Path("table.html"), metadata, "eng")
+
+        table_documents = [doc for doc in documents if doc.metadata.get("table_ref")]
+        prose_documents = [doc for doc in documents if not doc.metadata.get("table_ref")]
+        self.assertEqual(len(table_documents), 1)
+        self.assertIn("Rank | Title | Loans\n\n1 | The Hobbit | 719", table_documents[0].text)
+        self.assertNotIn("Rank =", table_documents[0].text)
+        self.assertEqual([doc.text for doc in prose_documents], ["Notes: loan totals for 2025"])
 
     def test_json_records_preserve_supplied_branch_ids(self) -> None:
         documents = self._load(
@@ -358,6 +732,257 @@ class DeterministicReaderTests(unittest.TestCase):
             with patch("src.ingestion.readers._load_docling", side_effect=RuntimeError("failed")):
                 with self.assertRaisesRegex(RuntimeError, "failed"):
                     self._load(path)
+
+    def test_empty_docling_html_uses_text_fallback_but_form_shell_stays_empty(self) -> None:
+        recommended_html = """
+        <div id="content">
+          <div class="left-menu">
+            <a href="javascript:void(0)"
+               onclick="window.pdf_download='/en/common/attachments/earth.pdf'">
+              About the Earth
+            </a>
+            <div style="display:none">
+              <h2>Introduction</h2>
+              <p>The Earth has mountains, oceans, deserts, and diverse wildlife.</p>
+            </div>
+          </div>
+          <div class="inner-body"><div id="load_booklist"></div></div>
+        </div>
+        """
+        form_shell = """
+        <div id="content"><form action="/patron/login">
+          <label for="password">Password</label>
+          <input id="password" type="password"><button>Submit</button>
+        </form></div>
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            recommended_path = Path(directory) / "recommended.html"
+            recommended_path.write_text(recommended_html, encoding="utf-8")
+            shell_path = Path(directory) / "shell.html"
+            shell_path.write_text(form_shell, encoding="utf-8")
+            with patch("src.ingestion.readers._load_docling", return_value=[]):
+                recommended = self._load(
+                    recommended_path,
+                    source_url="https://www.hkpl.gov.hk/en/kids/recommended/reading.html",
+                )
+                shell = self._load(
+                    shell_path,
+                    source_url="https://www.hkpl.gov.hk/en/change_my_password.html",
+                )
+
+        self.assertEqual(len(recommended), 1)
+        self.assertIn("About the Earth", recommended[0].text)
+        self.assertIn("mountains, oceans, deserts", recommended[0].text)
+        self.assertIn(
+            "https://www.hkpl.gov.hk/en/common/attachments/earth.pdf",
+            recommended[0].text,
+        )
+        self.assertEqual(shell, [])
+
+    def test_forms_landing_page_keeps_link_records(self) -> None:
+        html = """
+        <table><tr><th>Form No.</th><th>Form Name</th></tr>
+        <tr><td>LCS 050</td><td><a href="/forms/LCS050.pdf">Application</a></td></tr>
+        </table>
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "forms.html"
+            path.write_text(html, encoding="utf-8")
+            documents = self._load(
+                path,
+                document_type="prose",
+                source_url="https://www.hkpl.gov.hk/en/about-us/forms.html",
+            )
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0].metadata["record_kind"], "table")
+        self.assertIn("https://www.hkpl.gov.hk/forms/LCS050.pdf", documents[0].text)
+
+    def test_event_page_keeps_field_rows_together(self) -> None:
+        html = """
+        <div class="main_content"><table>
+          <tr><th>Date &amp; Time:</th><td>30 August 2026, 2:30 p.m.</td></tr>
+          <tr><th>Venue:</th><td>Ping Shan Tin Shui Wai Public Library</td></tr>
+          <tr><th>Description:</th><td>A useful public talk.</td></tr>
+        </table></div>
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "event.html"
+            path.write_text(html, encoding="utf-8")
+            documents = self._load(
+                path,
+                document_type="record",
+                source_url="https://www.hkpl.gov.hk/en/extension-activities/event/123/example",
+            )
+        self.assertEqual(len(documents), 1)
+        self.assertIn("Date & Time: 30 August 2026", documents[0].text)
+        self.assertIn("Venue: Ping Shan", documents[0].text)
+
+    def test_hours_table_expands_rowspans_and_repeats_header(self) -> None:
+        html = """
+        <div class="main_content"><table>
+          <tr><th>Day</th><th>Session</th><th>Location</th></tr>
+          <tr><td rowspan="2">Monday</td><td>AM</td><td>Central</td></tr>
+          <tr><td>PM</td><td>Kowloon</td></tr>
+        </table></div>
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hours.html"
+            path.write_text(html, encoding="utf-8")
+            documents = self._load(
+                path,
+                document_type="prose",
+                source_url="https://www.hkpl.gov.hk/en/locations/opening-hours-03.html",
+            )
+        self.assertEqual(len(documents), 2)
+        self.assertIn("Monday | PM | Kowloon", documents[1].text)
+        self.assertTrue(all("Day | Session | Location" in doc.text for doc in documents))
+
+
+class MainContentSelectionTests(unittest.TestCase):
+    def test_crawler_accepts_all_hkpl_language_paths(self) -> None:
+        for language in ("en", "tc", "sc"):
+            with self.subTest(language=language):
+                self.assertTrue(
+                    is_allowed_url(
+                        f"https://www.hkpl.gov.hk/{language}/index.html"
+                    )
+                )
+
+        self.assertFalse(
+            is_allowed_url("https://www.hkpl.gov.hk/fr/index.html")
+        )
+
+    def test_crawler_derives_language_from_url(self) -> None:
+        self.assertEqual(
+            language_for_url("https://www.hkpl.gov.hk/en/index.html"), "en"
+        )
+        self.assertEqual(
+            language_for_url("https://www.hkpl.gov.hk/tc/index.html"), "zh-Hant"
+        )
+        self.assertEqual(
+            language_for_url("https://www.hkpl.gov.hk/sc/index.html"), "zh-Hans"
+        )
+        self.assertIsNone(
+            language_for_url("https://www.hkpl.gov.hk/common/guide.pdf")
+        )
+
+    @patch("scripts.crawl_hkpl_site.save_hash")
+    @patch("scripts.crawl_hkpl_site.ingest_path_sync")
+    @patch("scripts.crawl_hkpl_site.classify_batch_items_resilient_sync")
+    @patch("scripts.crawl_hkpl_site.extracted_classifier_text")
+    def test_crawler_batch_runs_full_ingestion_handoff(
+        self,
+        extract_text,
+        classify,
+        ingest,
+        save_hash,
+    ) -> None:
+        extract_text.return_value = "Official facts"
+        classify.return_value = {
+            "https://www.hkpl.gov.hk/en/page.html": {
+                "document_type": "prose",
+                "classification_source": "fallback",
+            }
+        }
+        ingest.return_value = {"status": "completed"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "page.html"
+            path.write_text("<main>Official facts</main>", encoding="utf-8")
+            pending = [{
+                "path": path,
+                "url": "https://www.hkpl.gov.hk/en/page.html",
+                "title": "Official page",
+                "extension": ".html",
+                "mime_type": "text/html",
+                "content_hash": "hash-1",
+                "is_pdf": False,
+                "replace_document_id": "existing-id",
+            }]
+            stats = {
+                "failed": 0,
+                "indexed": 0,
+                "discovery_only": 0,
+                "html_indexed": 0,
+                "pdf_indexed": 0,
+            }
+
+            flush_pending(pending, stats)
+
+        self.assertEqual(pending, [])
+        self.assertEqual(stats["indexed"], 1)
+        self.assertEqual(stats["html_indexed"], 1)
+        self.assertEqual(
+            ingest.call_args.kwargs["classification_source"],
+            "fallback",
+        )
+        self.assertEqual(ingest.call_args.kwargs["document_type"], "prose")
+        self.assertEqual(ingest.call_args.kwargs["language"], "en")
+        self.assertEqual(
+            ingest.call_args.kwargs["replace_document_id"],
+            "existing-id",
+        )
+        save_hash.assert_called_once_with(
+            "https://www.hkpl.gov.hk/en/page.html",
+            "hash-1",
+        )
+
+    def test_decodes_utf8_response_bytes_instead_of_mojibake_text(self) -> None:
+        expected = "香港公共圖書館"
+
+        class Response:
+            content = f"<p>{expected}</p>".encode("utf-8")
+            text = content.decode("latin-1")
+            headers = {"content-type": "text/html; charset=iso-8859-1"}
+
+        self.assertNotIn(expected, Response.text)
+        self.assertIn(expected, decode_response_text(Response()))
+
+    def test_discovers_allowed_pdf_urls_in_attributes(self) -> None:
+        html = """
+        <a href="/en/ordinary.html">Ordinary page</a>
+        <a href="javascript:void(0)"
+           onclick="download('/en/common/attachments/onclick.pdf')">PDF</a>
+        <button data-download-url="/en/common/attachments/data.pdf">PDF</button>
+        <button data-download-url="https://example.com/external.pdf">External</button>
+        <button data-download-url="/patron/private.pdf">Private</button>
+        <button data-download-url="/en/assets/app.js">Script</button>
+        """
+
+        links = discover_links(
+            "https://www.hkpl.gov.hk/en/kids/recommended/reading.html",
+            html,
+            include_query_urls=False,
+        )
+
+        self.assertEqual(links, [
+            "https://www.hkpl.gov.hk/en/common/attachments/data.pdf",
+            "https://www.hkpl.gov.hk/en/common/attachments/onclick.pdf",
+            "https://www.hkpl.gov.hk/en/ordinary.html",
+        ])
+
+    def test_prefers_substantive_main_content_over_large_link_sidebar(self) -> None:
+        html = """
+        <html><head><title>FAQ</title></head><body><div id="content">
+          <div class="left_nav">{links}</div>
+          <div class="main_content"><h1>Useful FAQ</h1><p>{body}</p></div>
+        </div></body></html>
+        """.format(
+            links=" ".join(f'<a href="/{i}">Menu {i}</a>' for i in range(100)),
+            body="Useful factual answer. " * 15,
+        )
+        _, extracted = extract_main_html(html)
+        self.assertIn("Useful factual answer", extracted)
+        self.assertNotIn("Menu 99", extracted)
+
+    def test_falls_back_to_outer_content_when_inner_container_is_empty(self) -> None:
+        html = """
+        <html><head><title>Kids reading</title></head><body><div id="content">
+          <div class="left-menu"><p>{body}</p></div><div class="inner-body"></div>
+        </div></body></html>
+        """.format(body="Recommended reading content. " * 12)
+        _, extracted = extract_main_html(html)
+        self.assertIn("Recommended reading content", extracted)
 
 
 class RecordMetadataTests(unittest.TestCase):

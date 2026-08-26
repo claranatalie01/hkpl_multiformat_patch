@@ -8,9 +8,15 @@ from sqlalchemy import text
 
 from ..infrastructure.embedding import embed_model
 from ..infrastructure.db import engine
-from ..infrastructure.vector_store import VECTOR_TABLE, vector_store
+from ..infrastructure.vector_store import (
+    VECTOR_TABLE,
+    ensure_hybrid_search_schema,
+    vector_store,
+)
 from .chunking import chunk_documents
-from .classification import classify_batch_items_sync
+from .classification import (
+    classify_batch_items_resilient_sync,
+)
 from .document_types import normalize_document_type, validate_document_type
 from .readers import (
     SUPPORTED_EXTENSIONS,
@@ -235,6 +241,31 @@ def process_registered_document(
         )
 
     try:
+        if normalize_document_type(record.get("document_type")) == "auto":
+            update_status(document_id, "extracting")
+            classification_documents = _load_record(record, document_type="auto")
+            if not classification_documents:
+                raise ValueError("No readable content was extracted for classification.")
+            classified = classify_batch_items_resilient_sync([{
+                "id": document_id,
+                "title": record.get("source_title") or record["original_file_name"],
+                "source_url": record.get("source_url") or "",
+                "file_type": record.get("file_type") or "",
+                "text": "\n\n".join(
+                    str(document.metadata.get("evidence_text") or document.get_content())
+                    for document in classification_documents
+                ),
+            }])
+            classification = classified[document_id]
+            decision = classification["document_type"]
+            classification_source = classification.get("classification_source", "llm")
+            set_document_type(document_id, decision, classification_source)
+            record = {
+                **record,
+                "document_type": decision,
+                "classification_source": classification_source,
+            }
+
         if normalize_document_type(record.get("document_type")) == "skip":
             removed_old_chunks = delete_document_chunks(document_id)
             update_status(document_id, "completed", chunk_count=0, error_message=None)
@@ -276,6 +307,7 @@ def process_registered_document(
             "embedding",
         )
 
+        ensure_hybrid_search_schema()
         storage_context = (
             StorageContext.from_defaults(
                 vector_store=vector_store
@@ -347,8 +379,8 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
     records: list[dict] = []
     items: list[dict] = []
     persisted_labels: dict[str, str] = {}
-    structural_labels: dict[str, str] = {}
     unlabelled_ids: set[str] = set()
+    classification_sources: dict[str, str] = {}
 
     try:
         for document_id in document_ids:
@@ -367,17 +399,10 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
             if not documents:
                 raise ValueError(f"No readable content was extracted for {document_id}.")
 
-            if all(
-                str(document.metadata.get("structural_kind") or "")
-                in {"table", "table_row"}
-                for document in documents
-            ):
-                structural_labels[document_id] = "table"
-                continue
-
             items.append({
                 "id": document_id,
                 "title": record.get("source_title") or record["original_file_name"],
+                "source_url": record.get("source_url") or "",
                 "file_type": record.get("file_type") or "",
                 "text": "\n\n".join(
                     str(document.metadata.get("evidence_text") or document.get_content())
@@ -385,10 +410,13 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
                 ),
             })
 
-        classified = classify_batch_items_sync(items)
+        classified = classify_batch_items_resilient_sync(items)
+        classification_sources = {
+            item_id: decision.get("classification_source", "llm")
+            for item_id, decision in classified.items()
+        }
         decisions = {
             **persisted_labels,
-            **structural_labels,
             **{
                 item_id: decision["document_type"]
                 for item_id, decision in classified.items()
@@ -411,7 +439,7 @@ def process_registered_batch(document_ids: list[str]) -> list[dict]:
         set_document_type(
             document_id,
             decisions[document_id],
-            "structure" if document_id in structural_labels else "llm",
+            classification_sources.get(document_id, "llm"),
         )
 
     results: list[dict] = []
