@@ -9,7 +9,7 @@ from sqlalchemy import text
 from ..infrastructure.embedding import embed_model
 from ..infrastructure.db import engine
 from ..infrastructure.vector_store import (
-    VECTOR_TABLE,
+    VECTOR_TABLE_NAME,
     ensure_hybrid_search_schema,
     vector_store,
 )
@@ -47,7 +47,7 @@ OCR_LANGUAGES = os.getenv(
     "OCR_LANGUAGES",
     "eng+chi_tra+chi_sim",
 )
-KNOWLEDGE_TABLE = f"data_{VECTOR_TABLE}"
+KNOWLEDGE_TABLE = VECTOR_TABLE_NAME
 
 
 def _load_record(record: dict, *, document_type: str | None = None):

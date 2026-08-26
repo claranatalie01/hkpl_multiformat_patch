@@ -21,16 +21,10 @@ class LibraryBotState(TypedDict):
     session_id: str
     conversation_history: List[ConversationTurn]
 
-    input_type: Literal["text", "voice"]
-    stt_confidence: float
-
     intent: str
     request_type: Literal[
-        "sensitive_reject",
         "normal_info",
-        "tool_use",
         "rag_search",
-        "mcp_tool",
     ]
 
     original_query: str

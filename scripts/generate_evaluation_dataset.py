@@ -20,8 +20,15 @@ from sqlalchemy import text
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.evaluation.schema import (
+    EVALUATION_DATASET_COLUMNS,
+    has_supported_evaluation_columns,
+    normalize_evaluation_text as normalize_text,
+    parse_json_string_array,
+    serialize_string_array,
+)
 from src.infrastructure.db import engine
-from src.infrastructure.vector_store import VECTOR_TABLE
+from src.infrastructure.vector_store import VECTOR_TABLE_NAME
 from src.llm_client import http_llm
 
 
@@ -31,30 +38,6 @@ MIN_CHUNK_CHARS = 120
 MAX_CHUNK_CHARS = 1800
 QUESTIONS_PER_CHUNK = 1
 MAX_CHUNKS_PER_DOCUMENT = 8
-FIELDNAMES = [
-    "domain",
-    "query",
-    "expected_answer_text",
-    "expected_context_snippet",
-    "expected_context_snippets_json",
-    "accepted_answers_json",
-    "source_title",
-    "source_url",
-    "source_document_id",
-    "source_chunk_id",
-    "source_chunk_ids_json",
-]
-LEGACY_FIELDNAMES = [
-    column for column in FIELDNAMES
-    if column not in {"expected_context_snippets_json", "source_chunk_ids_json"}
-]
-
-
-def normalize_text(value: str) -> str:
-    value = value.lower().strip()
-    value = re.sub(r"\s+", " ", value)
-    value = re.sub(r"[\"'“”‘’]", "", value)
-    return value
 
 
 def clean_json_response(raw: str):
@@ -72,20 +55,14 @@ def row_source_chunk_ids(row: dict) -> list[str]:
     have only ``source_chunk_id``. Invalid optional JSON falls back to the
     singular ID so resume checkpoints remain safe and backward compatible.
     """
-    raw_ids = row.get("source_chunk_ids_json")
-    try:
-        values = json.loads(raw_ids) if raw_ids else []
-    except (json.JSONDecodeError, TypeError):
-        values = []
-    chunk_ids = [
-        str(value).strip()
-        for value in values
-        if isinstance(value, str) and value.strip()
-    ]
     primary_id = str(row.get("source_chunk_id") or "").strip()
-    if not chunk_ids and primary_id:
-        chunk_ids = [primary_id]
-    return list(dict.fromkeys(chunk_ids))
+    return parse_json_string_array(
+        row.get("source_chunk_ids_json"),
+        field_name="source_chunk_ids_json",
+        fallback=[primary_id],
+        strict=False,
+        deduplicate=True,
+    )
 
 
 def infer_domain(title: str, text_value: str) -> str:
@@ -107,12 +84,6 @@ def infer_domain(title: str, text_value: str) -> str:
         return "hkcl_information"
 
     return "general"
-
-
-def vector_table_name() -> str:
-    if not re.fullmatch(r"[a-z_][a-z0-9_]*", VECTOR_TABLE):
-        raise ValueError(f"Unsafe VECTOR_TABLE name: {VECTOR_TABLE!r}")
-    return f"data_{VECTOR_TABLE}"
 
 
 def load_vector_chunks(
@@ -162,7 +133,7 @@ def load_vector_chunks(
                     OR rn <= :max_chunks_per_document
                 )
                 ORDER BY rn, document_id, chunk_id
-            """.format(vector_table=vector_table_name())),
+            """.format(vector_table=VECTOR_TABLE_NAME)),
             {
                 "min_chars": MIN_CHUNK_CHARS,
                 "max_chunks_per_document": max_chunks_per_document,
@@ -301,21 +272,21 @@ def load_existing_rows(output_file: Path) -> list[dict]:
     with output_file.open("r", newline="", encoding="utf-8-sig") as file:
         reader = csv.DictReader(file)
         actual_columns = list(reader.fieldnames or [])
-        if actual_columns not in (FIELDNAMES, LEGACY_FIELDNAMES):
+        if not has_supported_evaluation_columns(actual_columns):
             raise ValueError(
                 f"Cannot resume candidate with columns {actual_columns}; "
-                f"expected {FIELDNAMES}."
+                f"expected {list(EVALUATION_DATASET_COLUMNS)}."
             )
         rows = [dict(row) for row in reader if row.get("query")]
     for row in rows:
         row.setdefault("accepted_answers_json", "[]")
         row.setdefault(
             "expected_context_snippets_json",
-            json.dumps([row["expected_context_snippet"]], ensure_ascii=False),
+            serialize_string_array([row["expected_context_snippet"]]),
         )
         row.setdefault(
             "source_chunk_ids_json",
-            json.dumps([row["source_chunk_id"]], ensure_ascii=False),
+            serialize_string_array([row["source_chunk_id"]]),
         )
     return rows
 
@@ -326,7 +297,11 @@ def save_rows(output_file: Path, rows: list[dict]) -> None:
     # The BOM keeps Traditional Chinese readable when reviewers open the CSV
     # directly in Excel; readers already accept utf-8-sig.
     with temporary.open("w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=FIELDNAMES, lineterminator="\n")
+        writer = csv.DictWriter(
+            file,
+            fieldnames=EVALUATION_DATASET_COLUMNS,
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
     temporary.replace(output_file)
@@ -740,13 +715,13 @@ Text:
                 "query": query,
                 "expected_answer_text": answer,
                 "expected_context_snippet": snippets[0],
-                "expected_context_snippets_json": json.dumps(snippets, ensure_ascii=False),
+                "expected_context_snippets_json": serialize_string_array(snippets),
                 "accepted_answers_json": "[]",
                 "source_title": chunk["source_title"],
                 "source_url": chunk["source_url"],
                 "source_document_id": chunk["document_id"],
                 "source_chunk_id": chunk_ids[0],
-                "source_chunk_ids_json": json.dumps(chunk_ids, ensure_ascii=False),
+                "source_chunk_ids_json": serialize_string_array(chunk_ids),
             }
         )
 
@@ -871,7 +846,7 @@ async def main() -> None:
                 None if args.all_chunks else MAX_CHUNKS_PER_DOCUMENT
             ),
         )
-        source_description = vector_table_name()
+        source_description = VECTOR_TABLE_NAME
     chunks_by_document: dict[str, list[dict]] = {}
     for candidate in context_chunks:
         chunks_by_document.setdefault(candidate["document_id"], []).append(candidate)

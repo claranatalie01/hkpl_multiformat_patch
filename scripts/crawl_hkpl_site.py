@@ -24,6 +24,7 @@ from src.ingestion.classification import (
     MAX_BATCH_ITEMS,
     classify_batch_items_resilient_sync,
 )
+from src.ingestion.html_utils import normalize_html_text
 from src.ingestion.registry import find_active_web_document_by_source_url
 from src.ingestion.readers import load_file
 from src.ingestion.service import UPLOAD_DIR, ingest_path_sync
@@ -134,10 +135,6 @@ def language_for_url(url: str) -> str | None:
     return None
 
 
-def clean_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()
-
-
 def decode_response_text(response: requests.Response) -> str:
     """Decode HTML bytes using document declarations and byte detection."""
     decoded = UnicodeDammit(response.content, is_html=True).unicode_markup
@@ -149,10 +146,10 @@ def decode_response_text(response: requests.Response) -> str:
 
 def extract_title(soup: BeautifulSoup, url: str) -> str:
     if soup.title:
-        return clean_text(soup.title.get_text(" ", strip=True))
+        return normalize_html_text(soup.title.get_text(" ", strip=True))
     h1 = soup.find("h1")
     if h1:
-        return clean_text(h1.get_text(" ", strip=True))
+        return normalize_html_text(h1.get_text(" ", strip=True))
     return url
 
 
@@ -189,14 +186,17 @@ def extract_main_html(html: str, *, allow_low_content: bool = False) -> tuple[st
     best = None
     for selector in candidates:
         found = soup.select_one(selector)
-        if found and len(clean_text(found.get_text(" ", strip=True))) >= 100:
+        if (
+            found
+            and len(normalize_html_text(found.get_text(" ", strip=True))) >= 100
+        ):
             best = found
             break
 
     if best is None:
         best = soup.body or soup
 
-    extracted_text = clean_text(best.get_text(" ", strip=True))
+    extracted_text = normalize_html_text(best.get_text(" ", strip=True))
 
     # Generic content-quality filter.
     # This avoids indexing empty/login/search/navigation pages
@@ -211,7 +211,7 @@ def extract_main_html(html: str, *, allow_low_content: bool = False) -> tuple[st
 
 def page_hash(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
-    text = clean_text(soup.get_text(" ", strip=True))
+    text = normalize_html_text(soup.get_text(" ", strip=True))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

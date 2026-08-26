@@ -1,3 +1,12 @@
+"""Classify extracted HKPL sources for structure-aware ingestion.
+
+The ingestion service and bulk crawler use this module to assign each source a
+validated ``faq``, ``record``, ``prose``, or ``skip`` label before reader and
+chunking policies are selected. Classification is batched through the private
+LLM, with schema validation, recursive retry isolation, and a conservative
+deterministic fallback when a source cannot be classified reliably.
+"""
+
 from __future__ import annotations
 
 import asyncio

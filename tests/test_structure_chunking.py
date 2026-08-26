@@ -1,3 +1,11 @@
+"""Exercise the structure-aware HKPL crawling and ingestion pipeline.
+
+This integration-oriented unit suite checks source classification, main-content
+selection, deterministic readers, FAQ and table adaptation, record metadata,
+stable chunk construction, and the handoff from registered documents to the
+configured embedding-backed vector store.
+"""
+
 from __future__ import annotations
 
 import json

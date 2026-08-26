@@ -1,3 +1,11 @@
+"""Provide the pinned embedding tokenizer used by extraction and chunking.
+
+Readers and chunk builders share this cached factory so their token budgets
+match the Qwen embedding model. It prefers the repository's local model files
+and permits a remote download only when development configuration explicitly
+opts in, preserving reproducible and offline-safe production behavior.
+"""
+
 from __future__ import annotations
 
 import os

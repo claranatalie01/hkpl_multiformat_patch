@@ -106,8 +106,6 @@ def build_initial_state(
     question: str,
     session_id: str,
     conversation_history: list,
-    input_type: str = "text",
-    stt_confidence: float = 1.0,
     request_type: str = "normal_info",
     current_library: dict | None = None,
     user_memory: dict | None = None,
@@ -118,8 +116,6 @@ def build_initial_state(
         "conversation_history": conversation_history,
         "original_query": question,
         "rewritten_query": question,
-        "input_type": input_type,
-        "stt_confidence": stt_confidence,
         "intent": "",
         "request_type": request_type,
         "retrieved_chunks": [],
@@ -321,8 +317,6 @@ async def index_url(
 class UserRequest(BaseModel):
     input_string: str
     session_id: str
-    is_voice: bool = False
-    stt_confidence: float = 1.0
     library_code: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -491,8 +485,6 @@ async def chat_stream(
         question=payload.input_string,
         session_id=payload.session_id,
         conversation_history=history,
-        input_type="voice" if payload.is_voice else "text",
-        stt_confidence=payload.stt_confidence,
         current_library=current_library,
         user_memory=payload.user_memory,
     )

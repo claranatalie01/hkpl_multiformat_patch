@@ -107,36 +107,6 @@ def set_document_list_attributes(
         )
 
 
-def node_document_payload(
-    *,
-    rank: int,
-    text: str,
-    score: float,
-    document_id: str = "",
-    chunk_id: str = "",
-    source_title: str = "",
-    source_url: str = "",
-) -> dict:
-    return {
-        "rank": rank,
-        "document_id": document_id,
-        "chunk_id": chunk_id,
-        "source_title": source_title,
-        "source_url": source_url,
-        "score": float(score or 0.0),
-        "text": text,
-        "text_preview": text[:700],
-    }
-
-
-def set_documents_attribute(
-    span,
-    key: str,
-    documents: list[dict],
-) -> None:
-    set_json_attribute(span, key, documents)
-
-
 def set_llm_attributes(
     *,
     span,

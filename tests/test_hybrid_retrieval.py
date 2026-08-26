@@ -1,3 +1,10 @@
+"""Verify hybrid-retrieval configuration and reciprocal-rank fusion behavior.
+
+These focused unit tests protect the vector store's lexical-search settings,
+exact-term extraction, stable candidate deduplication, and cross-pool ranking
+used by ``src.retrieval`` before reranking and context construction.
+"""
+
 from __future__ import annotations
 
 import unittest

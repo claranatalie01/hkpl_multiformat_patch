@@ -1,3 +1,11 @@
+"""Test safe, reproducible preparation of the RAG evaluation dataset.
+
+The tests cover conservative ingestion-classifier fallback behavior plus the
+question generator's provenance validation, multilingual deduplication, CSV
+encoding, and resumable checkpoint safeguards before candidate rows are loaded
+into the benchmark database.
+"""
+
 from __future__ import annotations
 
 import io

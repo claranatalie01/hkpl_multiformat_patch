@@ -7,7 +7,6 @@ physical ``data_<VECTOR_TABLE>`` table when the vector store is used.
 """
 
 import os
-import re
 import threading
 
 from dotenv import load_dotenv
@@ -15,18 +14,19 @@ from llama_index.vector_stores.postgres import PGVectorStore
 from sqlalchemy import text
 
 from .db import engine
+from .table_names import physical_vector_table_name, sql_identifier
 
 
 load_dotenv()
 
 DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
-VECTOR_TABLE = os.getenv("VECTOR_TABLE", "hkpl_knowledge").strip().lower()
+VECTOR_TABLE = sql_identifier(
+    os.getenv("VECTOR_TABLE", "hkpl_knowledge").strip().lower(),
+    setting="VECTOR_TABLE",
+)
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))
 TEXT_SEARCH_CONFIG = os.getenv("TEXT_SEARCH_CONFIG", "english")
-VECTOR_TABLE_NAME = f"data_{VECTOR_TABLE}"
-
-if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", VECTOR_TABLE_NAME):
-    raise ValueError(f"Unsafe vector table name: {VECTOR_TABLE_NAME!r}")
+VECTOR_TABLE_NAME = physical_vector_table_name(VECTOR_TABLE)
 
 # This object is shared by ingestion (writes) and retrieval (similarity reads),
 # ensuring both sides use the same collection and embedding dimension.

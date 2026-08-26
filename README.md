@@ -7,10 +7,10 @@ documents, extracts structured evidence, creates searchable chunks, generates
 reranks evidence, generates grounded answers, and records evaluation traces in
 Phoenix.
 
-This README is the primary human-facing operational guide. The shorter
-`ingestion_runbook.md` is a quick ingestion/evaluation checklist, while
-`AGENTS.md` contains repository-level architecture and safety instructions for
-coding agents.
+This README is the single human-facing operational guide. `AGENTS.md` contains
+repository-level architecture and safety instructions for coding agents and is
+kept separately because it controls repository maintenance rather than runtime
+operation.
 
 ## Quick command map
 
@@ -710,6 +710,18 @@ Open Phoenix at:
 ```text
 http://SERVER_HOST:6006
 ```
+
+For a diagnostic run before distractor corpora are loaded, evaluate the HKPL
+corpus directly:
+
+```bash
+docker compose run --rm langgraph-agent \
+  python scripts/evaluate_rag.py \
+  --allow-missing-distractors
+```
+
+Official benchmark runs should use the workflow command below so corpus and
+evaluation-reference validation run first.
 
 ### Full 128-row hybrid evaluation
 
