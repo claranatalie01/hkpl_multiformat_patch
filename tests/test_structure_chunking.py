@@ -317,7 +317,10 @@ class FaqAdapterTests(unittest.TestCase):
         self.assertEqual(pairs[0].answer, "Use a library card.")
 
     def test_aria_accordion(self) -> None:
-        html = '<button aria-controls="answer-1">Opening hours?</button><div id="answer-1">See the branch page.</div>'
+        html = (
+            '<button aria-controls="answer-1">Opening hours?</button>'
+            '<div id="answer-1">See the branch page.</div>'
+        )
         pairs = extract_faq_pairs(html)
         self.assertEqual((pairs[0].question, pairs[0].answer), (
             "Opening hours?", "See the branch page."

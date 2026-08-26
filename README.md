@@ -123,8 +123,11 @@ Important defaults are defined in `docker-compose.yml`:
 | `RRF_K` | `60` | Reciprocal-rank-fusion constant |
 | `RERANK_TOP_N` | `8` | Final reranked contexts |
 | `MAX_CONTEXT_TOKENS` | `12000` | Answer context budget |
+| `ANSWER_MAX_TOKENS` | `512` | Live visible-answer allowance |
 | `EVALUATION_ANSWER_MAX_TOKENS` | `512` | Visible-answer allowance |
 | `EVALUATION_MAX_TOKENS` | `2048` | Evaluator-judge completion limit |
+| `EVALUATION_CANDIDATE_TABLE` | `evaluation_dataset_100` | Temporary generated-label table |
+| `EVALUATION_ACTIVE_TABLE` | `evaluation_dataset` | Reviewed table populated by promotion |
 | `KNOWLEDGE_CORPUS_READ_ONLY` | `true` | Application-level write guard |
 
 LlamaIndex automatically creates/uses a physical table named
@@ -416,7 +419,7 @@ Core tables commonly present in the current PoC:
 | `data_hkpl_knowledge` | Default LlamaIndex chunk/vector table |
 | `data_hkpl_knowledge_hybrid` | Alternate hybrid chunk/vector table when created |
 | `evaluation_dataset` | Active evaluation questions |
-| `evaluation_dataset_100` | Workflow candidate validation table |
+| `evaluation_dataset_100` | Default workflow candidate table; configurable with `EVALUATION_CANDIDATE_TABLE` |
 | `conversation_history` | Chat history used by the current application |
 | `knowledge_corpus_control` | Shared corpus read-only state |
 | `prohibited_keywords` | Deterministic safety terms |
@@ -525,9 +528,10 @@ The current evaluation retrieval path is:
 ```text
 Question
 → Qwen query embedding
-→ pgvector cosine-distance search, top 10
-→ Qwen cross-encoder reranking, top 5
-→ context packing
+→ dense pgvector + lexical/trigram candidate retrieval, top 30 per pool
+→ reciprocal-rank fusion, top 20
+→ Qwen cross-encoder reranking, top 8
+→ exact evidence-text context packing
 → Qwen3.5 answer generation
 ```
 
@@ -535,7 +539,9 @@ Cosine distance is converted to similarity by the vector-store integration;
 higher similarity indicates a smaller angle between query and chunk vectors.
 The reranker examines query/document pairs and can change the vector-search
 order. `build_context` concatenates selected reranked evidence; it does not use
-an LLM to write new evidence.
+an LLM to write new evidence. Live and evaluation answer generation share the
+prompt and source formatting in `src/answering.py`; evaluation separately keeps
+its distractor inclusion, metric calculation, judge calls, and Phoenix traces.
 
 ## Prompt ownership
 
@@ -550,8 +556,8 @@ manually pasted into containers.
 | Chunking | `src/ingestion/chunking.py` | No LLM prompt; deterministic structure and tokenizer rules |
 | Embedding | `src/infrastructure/embedding.py` | No generative prompt; sends chunk/search text to the embedding endpoint |
 | Evaluation dataset generation | `scripts/generate_evaluation_dataset.py` | Requests one grounded question, complete answer, exact evidence snippets, and parallel chunk IDs from anchor and sibling evidence |
-| Live answer | `src/nodes.py` | Requires evidence-only, concise, final answers with no exposed analysis |
-| Evaluation answer | `scripts/evaluate_rag.py` | Uses the retrieved context and general constraint/specificity rules; no question-specific expected answer is included |
+| Live answer | `src/answering.py`, called by `src/nodes.py` | Requires evidence-only, concise, final answers with no exposed analysis |
+| Evaluation answer | `src/answering.py`, called by `scripts/evaluate_rag.py` | Uses the same general constraint/specificity rules; no question-specific expected answer is included |
 | Correctness judge | `scripts/evaluate_rag.py` | Compares generated answer with accepted reference answers on a 1–5 scale |
 | Faithfulness judge | `scripts/evaluate_rag.py` | Checks whether every answer claim is supported by combined context |
 | Relevancy judge | `scripts/evaluate_rag.py` | Checks whether the response directly answers every requested item |
@@ -627,7 +633,8 @@ docker compose run --rm \
   --resume
 ```
 
-The workflow loads candidate rows into `evaluation_dataset_100`. Review every
+The workflow loads candidate rows into the table selected by
+`EVALUATION_CANDIDATE_TABLE` (`evaluation_dataset_100` by default). Review every
 row manually, especially dates, recurring events, branches, venues, lists,
 multi-chunk answers, and time-sensitive facts.
 
@@ -996,6 +1003,7 @@ website.
 | `src/infrastructure/db.py` | SQLAlchemy database connection |
 | `src/infrastructure/embedding.py` | LlamaIndex adapter for the embedding endpoint |
 | `src/infrastructure/vector_store.py` | PGVectorStore configuration plus full-text and trigram indexes |
+| `src/infrastructure/table_names.py` | Shared validation for configurable SQL table/trigger identifiers |
 
 ### Ingestion
 
@@ -1013,6 +1021,7 @@ website.
 | `src/ingestion/chunking.py` | Structure-aware, tokenizer-bounded nodes and IDs |
 | `src/ingestion/write_guard.py` | Application-level corpus write protection |
 | `src/ingestion/webpage.py` | Single admin-URL acquisition path |
+| `src/ingestion/html_utils.py` | Shared deterministic whitespace normalization for webpage acquisition |
 
 ### RAG and application
 
@@ -1022,6 +1031,7 @@ website.
 | `src/graph.py` | LangGraph workflow edges and routes |
 | `src/state.py` | Typed graph state |
 | `src/nodes.py` | Safety, query processing, context, answer, citations, memory |
+| `src/answering.py` | Shared grounded-answer prompt, source formatting, and completion budgeting |
 | `src/retrieval.py` | Dense/lexical retrieval, rank fusion, reranking, and diagnostics |
 | `src/llm_client.py` | Local answer-model client and usage normalization |
 | `src/corpus.py` | Primary/distractor metadata maintenance |
@@ -1036,6 +1046,7 @@ website.
 | `scripts/validate_evaluation_dataset.py` | Schema and evidence-reference validation |
 | `scripts/evaluate_rag.py` | Retrieval, reranking, answer, judge metrics, diagnoses, traces |
 | `scripts/rag_benchmark_workflow.py` | Guarded status/audit/generate/validate/promote/evaluate workflow |
+| `src/evaluation/schema.py` | Canonical CSV columns, JSON arrays, and evidence/chunk-ID validation |
 | `scripts/normalize_evaluation_schema.py` | Evaluation CSV schema normalization |
 | `scripts/migrate_evaluation_benchmark.py` | Evidence-label migration after corpus changes |
 | `scripts/hotpotqa_benchmark.py` | HotpotQA distractor preparation |

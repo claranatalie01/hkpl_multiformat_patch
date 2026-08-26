@@ -22,6 +22,7 @@ from src.infrastructure.table_names import (
     physical_vector_table_name,
     sql_identifier,
 )
+from src.ingestion.html_utils import normalize_html_text
 
 
 class AnsweringTests(unittest.TestCase):
@@ -71,6 +72,16 @@ class TableNameTests(unittest.TestCase):
                 configured_table_name("TEST_TABLE", "evaluation_dataset"),
                 "evaluation_dataset_128",
             )
+
+
+class HtmlUtilityTests(unittest.TestCase):
+    """Keep bulk and single-page acquisition normalization identical."""
+
+    def test_html_whitespace_is_collapsed(self) -> None:
+        self.assertEqual(
+            normalize_html_text("  Hong\nKong\tPublic   Libraries  "),
+            "Hong Kong Public Libraries",
+        )
 
 
 if __name__ == "__main__":

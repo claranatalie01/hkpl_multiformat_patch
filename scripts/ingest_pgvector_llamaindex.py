@@ -436,7 +436,6 @@ def load_faq_documents(
     return documents
 
 
-
 def delete_existing_faq_chunks() -> int:
     filters = MetadataFilters(
         filters=[

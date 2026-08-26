@@ -246,7 +246,10 @@ def extracted_classifier_text(path: Path, item: dict) -> str:
     """Extract source content before asking the 9B model for a label."""
     documents = load_file(
         path,
-        document_id=f"crawler-classification-{hashlib.sha256(item['url'].encode()).hexdigest()[:16]}",
+        document_id=(
+            "crawler-classification-"
+            + hashlib.sha256(item["url"].encode()).hexdigest()[:16]
+        ),
         original_file_name=path.name,
         source_title=item["title"],
         source_url=item["url"],

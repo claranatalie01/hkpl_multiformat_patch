@@ -603,7 +603,8 @@ def _docling_converter(ocr_languages: str):
     artifacts_path = Path(os.getenv("DOCLING_ARTIFACTS_PATH", "/app/models/docling"))
     if not artifacts_path.exists():
         raise RuntimeError(
-            f"Docling artifacts are not available at {artifacts_path}; ingestion cannot continue offline."
+            f"Docling artifacts are not available at {artifacts_path}; "
+            "ingestion cannot continue offline."
         )
 
     pipeline_options = PdfPipelineOptions(

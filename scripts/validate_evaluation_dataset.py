@@ -448,8 +448,18 @@ def main() -> None:
     print(f"Evaluation table      : {EVALUATION_DATASET_TABLE}")
     print(f"Knowledge table       : {KNOWLEDGE_TABLE}")
     print(f"Evaluation rows       : {total}")
-    print(f"Expected chunk found  : {chunk_found}/{total} ({chunk_found / total:.2%})" if total else "Expected chunk found  : 0/0")
-    print(f"Snippet text found    : {snippet_found}/{total} ({snippet_found / total:.2%})" if total else "Snippet text found    : 0/0")
+    print(
+        f"Expected chunk found  : {chunk_found}/{total} "
+        f"({chunk_found / total:.2%})"
+        if total
+        else "Expected chunk found  : 0/0"
+    )
+    print(
+        f"Snippet text found    : {snippet_found}/{total} "
+        f"({snippet_found / total:.2%})"
+        if total
+        else "Snippet text found    : 0/0"
+    )
     print(
         f"Answer verbatim found : {answer_found}/{total} "
         f"({answer_found / total:.2%}) [informational]"

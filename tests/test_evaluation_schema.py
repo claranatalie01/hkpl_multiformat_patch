@@ -8,6 +8,7 @@ from src.evaluation.schema import (
     EVALUATION_DATASET_COLUMNS,
     LEGACY_EVALUATION_DATASET_COLUMNS,
     has_supported_evaluation_columns,
+    normalize_evaluation_text,
     parse_accepted_answers,
     parse_json_string_array,
     parse_parallel_evidence,
@@ -61,6 +62,12 @@ class JsonStringArrayTests(unittest.TestCase):
 
     def test_serializer_preserves_non_ascii_text(self) -> None:
         self.assertEqual(serialize_string_array(["圖書館"]), '["圖書館"]')
+
+    def test_comparison_normalization_handles_case_quotes_and_spacing(self) -> None:
+        self.assertEqual(
+            normalize_evaluation_text('  “Library”   HOURS  '),
+            "library hours",
+        )
 
     def test_accepted_answers_include_primary_and_unique_aliases(self) -> None:
         self.assertEqual(

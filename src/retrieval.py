@@ -345,16 +345,33 @@ class HTTPReranker:
                 return []
 
             documents = [node.node.get_content() for node in nodes]
-            set_json_attribute(span, "reranker.input_doc_lengths", [len(doc) for doc in documents])
+            set_json_attribute(
+                span,
+                "reranker.input_doc_lengths",
+                [len(doc) for doc in documents],
+            )
             reranker_pair_texts = [f"{query}\n\n{document}" for document in documents]
-            reranker_input_tokens, reranker_tokens_estimated, reranker_tokenizer = await count_many_tokens(
+            (
+                reranker_input_tokens,
+                reranker_tokens_estimated,
+                reranker_tokenizer,
+            ) = await count_many_tokens(
                 reranker_pair_texts,
                 RERANKER_TOKENIZER_URL,
                 RERANKER_TOKENIZER_NAME,
             )
-            span.set_attribute("reranker.token_count.input", int(reranker_input_tokens))
-            span.set_attribute("reranker.token_count.total", int(reranker_input_tokens))
-            span.set_attribute("reranker.token_count.is_estimated", bool(reranker_tokens_estimated))
+            span.set_attribute(
+                "reranker.token_count.input",
+                int(reranker_input_tokens),
+            )
+            span.set_attribute(
+                "reranker.token_count.total",
+                int(reranker_input_tokens),
+            )
+            span.set_attribute(
+                "reranker.token_count.is_estimated",
+                bool(reranker_tokens_estimated),
+            )
             span.set_attribute("reranker.token_count.tokenizer", reranker_tokenizer)
             _reranker_token_usage.set({
                 "reranker_input_tokens": int(reranker_input_tokens),

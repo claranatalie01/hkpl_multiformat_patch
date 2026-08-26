@@ -8,11 +8,6 @@ enforcing token limits, and invoking the private generation endpoint.
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
-from typing import Any
-
-
 INSUFFICIENT_EVIDENCE_ANSWER = (
     "I don't have that information in my knowledge base."
 )
@@ -56,7 +51,6 @@ def build_grounded_answer_prompt(
     current_datetime: str = "",
     library_name: str = "",
     library_code: str = "",
-    user_context: Mapping[str, Any] | None = None,
 ) -> str:
     """Return the canonical prompt for answering from approved evidence only."""
 
@@ -68,11 +62,6 @@ def build_grounded_answer_prompt(
         if library_code:
             branch += f" (code: {library_code})"
         request_hints.append(branch + ".")
-    if user_context:
-        request_hints.append(
-            "Confirmed user context: "
-            + json.dumps(user_context, ensure_ascii=False, sort_keys=True)
-        )
     hints = "\n".join(request_hints)
     if hints:
         hints = f"\nRequest context:\n{hints}\n"

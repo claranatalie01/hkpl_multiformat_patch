@@ -319,22 +319,36 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
     if is_unsafe:
         with open("safety_intent_log.jsonl", "a") as f:
             f.write(json.dumps(log_entry) + "\n")
-        logger.warning(f"Unsafe input blocked: {user_input[:100]} | categories: {detected_categories}")
-        if any(cat in ["self_harm_and_suicide", "self_harm", "suicide"] for cat in detected_categories):
+        logger.warning(
+            "Unsafe input blocked: %s | categories: %s",
+            user_input[:100],
+            detected_categories,
+        )
+        if any(
+            cat in {"self_harm_and_suicide", "self_harm", "suicide"}
+            for cat in detected_categories
+        ):
             safe_msg = (
-                "I'm really sorry you're feeling this way. Please know that you're not alone. "
-                "If you are in distress, please reach out to the Samaritans Hong Kong 24‑hour hotline at 2896 0000, "
-                "or contact a mental health professional. Your well‑being is very important."
+                "I'm really sorry you're feeling this way. Please know that "
+                "you're not alone. If you are in distress, please reach out "
+                "to the Samaritans Hong Kong 24‑hour hotline at 2896 0000, or "
+                "contact a mental health professional. Your well‑being is very "
+                "important."
             )
         elif "political_manipulation" in detected_categories:
             safe_msg = (
-                "I'm here to help with library services, book information, and general library questions. "
-                "I can't discuss political topics. Is there something about the library I can help you with?"
+                "I'm here to help with library services, book information, and "
+                "general library questions. I can't discuss political topics. "
+                "Is there something about the library I can help you with?"
             )
-        elif any(cat in ["prompt_injection", "jailbreak_attempt", "instruction_override"] for cat in detected_categories):
+        elif any(
+            cat in {"prompt_injection", "jailbreak_attempt", "instruction_override"}
+            for cat in detected_categories
+        ):
             safe_msg = (
                 "I can only follow instructions related to library services. "
-                "Please ask a genuine question about library hours, book searches, or library policies."
+                "Please ask a genuine question about library hours, book "
+                "searches, or library policies."
             )
         elif "violence_and_weapons" in detected_categories:
             safe_msg = (
@@ -348,13 +362,14 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
             )
         else:
             safe_msg = (
-                "I'm unable to process that request. Please ask a library‑related question, such as "
+                "I'm unable to process that request. Please ask a "
+                "library‑related question, such as "
                 "library hours, book availability, or how to borrow materials."
             )
         return {
             "messages": [AIMessage(content=safe_msg)],
             "is_output_safe": True,
-            "end_conversation": True
+            "end_conversation": True,
         }
     return {}
 
@@ -371,7 +386,9 @@ Classify the user's message into exactly one of these labels:
 
 - greeting: greetings such as hello, hi, good morning
 - thanks: thank you messages
-- library_question: any question about HKPL services, library materials, e-resources, borrowing, collections, classification schemes, opening hours, reference services, accounts, apps, or library help
+- library_question: any question about HKPL services, library materials,
+  e-resources, borrowing, collections, classification schemes, opening hours,
+  reference services, accounts, apps, or library help
 - other: anything else that is safe but not a greeting or thanks
 
 Return only valid JSON:
@@ -763,7 +780,6 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
     library_name = state.get("current_library_name")
     library_code = state.get("current_library_code")
     current_time = get_current_datetime()
-    user_memory = state.get("user_memory", {})
 
     system_prompt = build_grounded_answer_prompt(
         question=question,
@@ -771,7 +787,6 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
         current_datetime=current_time,
         library_name=library_name or "",
         library_code=library_code or "",
-        user_context=user_memory,
     )
 
 
@@ -812,7 +827,18 @@ async def output_safety_filter_node(state: LibraryBotState) -> dict:
         }
     blocked_phrases = ["self-harm", "suicide", "kill yourself"]
     if any(phrase in answer.lower() for phrase in blocked_phrases):
-        return {"is_output_safe": False, "messages": [AIMessage(content="I cannot provide that answer. Please contact library staff or call the Samaritans at 2896 0000 for immediate help.")]}
+        return {
+            "is_output_safe": False,
+            "messages": [
+                AIMessage(
+                    content=(
+                        "I cannot provide that answer. Please contact library "
+                        "staff or call the Samaritans at 2896 0000 for "
+                        "immediate help."
+                    )
+                )
+            ],
+        }
     return {
         "is_output_safe": True,
         "messages": [AIMessage(content=answer)],
