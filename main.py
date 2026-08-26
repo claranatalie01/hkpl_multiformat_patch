@@ -15,11 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
-from src.compliance import (
-    list_prohibited_keywords,
-    create_prohibited_keyword,
-    set_keyword_active,
-)
+
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -30,17 +26,18 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-
-from src.ingestion.webpage import save_webpage_to_uploads
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
-from src.observability import setup_phoenix_tracing
 
-setup_phoenix_tracing()
+from src.compliance import (
+    create_prohibited_keyword,
+    list_prohibited_keywords,
+    set_keyword_active,
+)
 from src.graph import compiled_workflow
-from src.ingestion.readers import SUPPORTED_EXTENSIONS
 from src.ingestion.document_types import document_type_options, validate_document_type
+from src.ingestion.readers import SUPPORTED_EXTENSIONS
 from src.ingestion.registry import (
     ensure_registry_schema,
     find_active_web_document_by_source_url,
@@ -50,16 +47,21 @@ from src.ingestion.registry import (
 from src.ingestion.service import (
     UPLOAD_DIR,
     delete_registered_document,
-    process_registered_document,
     ingest_path_sync,
+    process_registered_document,
     register_upload,
     reindex_registered_document,
 )
+from src.ingestion.webpage import save_webpage_to_uploads
 from src.ingestion.write_guard import (
     CorpusReadOnlyError,
     ensure_corpus_writable,
 )
 from src.memory import load_conversation_history
+from src.observability import setup_phoenix_tracing
+
+
+setup_phoenix_tracing()
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,7 @@ ADMIN_API_KEY = os.getenv(
     "",
 )
 
+
 class ProhibitedKeywordRequest(BaseModel):
     keyword: str
     category: str = "general"
@@ -82,9 +85,11 @@ class ProhibitedKeywordRequest(BaseModel):
     fallback_response: str
     created_by: str = "admin"
 
+
 class KeywordStatusRequest(BaseModel):
     is_active: bool
     staff_id: str = "admin"
+
 
 class UrlIndexRequest(BaseModel):
     url: str
@@ -106,11 +111,8 @@ def build_initial_state(
     question: str,
     session_id: str,
     conversation_history: list,
-    input_type: str = "text",
-    stt_confidence: float = 1.0,
     request_type: str = "normal_info",
     current_library: dict | None = None,
-    user_memory: dict | None = None,
 ) -> dict:
     return {
         "messages": [HumanMessage(content=question)],
@@ -118,8 +120,6 @@ def build_initial_state(
         "conversation_history": conversation_history,
         "original_query": question,
         "rewritten_query": question,
-        "input_type": input_type,
-        "stt_confidence": stt_confidence,
         "intent": "",
         "request_type": request_type,
         "retrieved_chunks": [],
@@ -134,10 +134,7 @@ def build_initial_state(
         "current_library_name": (
             current_library["name"] if current_library else None
         ),
-        "user_memory": user_memory or {},
     }
-
-
 
 
 @asynccontextmanager
@@ -161,6 +158,8 @@ app = FastAPI(
     title="HKPL Agentic RAG Service",
     lifespan=lifespan,
 )
+
+
 def require_admin(
     x_admin_key: Optional[str] = Header(
         default=None,
@@ -191,6 +190,8 @@ def require_corpus_write_access() -> None:
             status_code=423,
             detail=str(error),
         ) from error
+
+
 @app.get(
     "/admin/compliance/keywords",
     dependencies=[Depends(require_admin)],
@@ -318,18 +319,11 @@ async def index_url(
 
     return result
 
+
 class UserRequest(BaseModel):
     input_string: str
     session_id: str
-    is_voice: bool = False
-    stt_confidence: float = 1.0
     library_code: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    user_memory: Optional[dict] = None
-
-
-
 
 
 def safe_filename(filename: str) -> str:
@@ -429,19 +423,6 @@ async def save_upload(
     )
 
 
-async def resolve_current_library(
-    latitude: float,
-    longitude: float,
-) -> Optional[dict]:
-    logger.warning(
-        "Coordinate-based library resolution "
-        "has not been implemented yet: %s, %s",
-        latitude,
-        longitude,
-    )
-    return None
-
-
 def format_sse(
     event: str,
     data: str,
@@ -472,17 +453,6 @@ async def chat_stream(
                 payload.library_code,
             ),
         }
-    elif (
-        payload.latitude is not None
-        and payload.longitude is not None
-    ):
-        current_library = (
-            await resolve_current_library(
-                payload.latitude,
-                payload.longitude,
-            )
-        )
-
     history = load_conversation_history(
         payload.session_id
     )
@@ -491,10 +461,7 @@ async def chat_stream(
         question=payload.input_string,
         session_id=payload.session_id,
         conversation_history=history,
-        input_type="voice" if payload.is_voice else "text",
-        stt_confidence=payload.stt_confidence,
         current_library=current_library,
-        user_memory=payload.user_memory,
     )
 
     async def event_generator():

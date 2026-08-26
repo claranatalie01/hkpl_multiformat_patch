@@ -5,8 +5,10 @@ PGVectorStore returns the nearest chunks, and the local reranker reorders and
 filters candidates. Live retrieval restricts results to primary-corpus rows.
 """
 
+import asyncio
 import logging
 import os
+import re
 import time
 from contextvars import ContextVar
 from typing import List
@@ -16,15 +18,26 @@ from opentelemetry import trace
 from opentelemetry.trace import format_span_id
 
 from llama_index.core import Settings, VectorStoreIndex
-from llama_index.core.schema import NodeWithScore
-from llama_index.core.vector_stores import MetadataFilter, MetadataFilters
+from llama_index.core.schema import NodeWithScore, TextNode
+from llama_index.core.vector_stores import (
+    MetadataFilter,
+    MetadataFilters,
+)
+from llama_index.core.vector_stores.types import VectorStoreQuery, VectorStoreQueryMode
+from sqlalchemy import text
 
 from .corpus import (
     PRIMARY_CORPUS_ROLE,
     is_distractor_metadata,
 )
 from .infrastructure.embedding import embed_model
-from .infrastructure.vector_store import VECTOR_TABLE, vector_store
+from .infrastructure.db import engine
+from .infrastructure.vector_store import (
+    VECTOR_TABLE,
+    VECTOR_TABLE_NAME,
+    ensure_hybrid_search_schema,
+    vector_store,
+)
 from src.tracing_helpers import (
     set_document_list_attributes,
     set_json_attribute,
@@ -44,8 +57,11 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("hkpl-retrieval")
 
 RERANKER_URL = os.getenv("RERANKER_URL", "http://reranker:8080/reranking")
-SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", "5"))
-RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "5"))
+DENSE_TOP_K = int(os.getenv("DENSE_TOP_K", os.getenv("SIMILARITY_TOP_K", "30")))
+LEXICAL_TOP_K = int(os.getenv("LEXICAL_TOP_K", "30"))
+FUSION_TOP_K = int(os.getenv("FUSION_TOP_K", "20"))
+RRF_K = int(os.getenv("RRF_K", "60"))
+RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "8"))
 RERANKER_TIMEOUT_SECONDS = float(os.getenv("RERANKER_TIMEOUT_SECONDS", "120"))
 RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", "Qwen3-Reranker-0.6B")
 
@@ -56,9 +72,9 @@ index = VectorStoreIndex.from_vector_store(
     embed_model=embed_model,
 )
 
-vector_retriever = index.as_retriever(similarity_top_k=SIMILARITY_TOP_K)
+vector_retriever = index.as_retriever(similarity_top_k=DENSE_TOP_K)
 live_vector_retriever = index.as_retriever(
-    similarity_top_k=SIMILARITY_TOP_K,
+    similarity_top_k=DENSE_TOP_K,
     filters=MetadataFilters(
         filters=[
             MetadataFilter(
@@ -77,11 +93,164 @@ _retrieval_trace: ContextVar[dict] = ContextVar(
     "retrieval_trace",
     default={
         "retriever_span_id": "",
+        "dense_candidates": [],
+        "text_candidates": [],
+        "trigram_candidates": [],
+        "fused_candidates": [],
         "vector_candidates_before_rerank": [],
         "final_chunks_after_rerank": [],
         "token_usage": {},
     },
 )
+
+
+_LIVE_FILTERS = MetadataFilters(
+    filters=[
+        MetadataFilter(
+            key="corpus_role",
+            value=PRIMARY_CORPUS_ROLE,
+        )
+    ]
+)
+
+_QUOTED_TERM = re.compile(
+    r'"([^"\r\n]{2,})"|“([^”\r\n]{2,})”|「([^」\r\n]{2,})」|『([^』\r\n]{2,})』'
+)
+_IDENTIFIER_TERM = re.compile(
+    r"(?<![\w-])(?=[A-Za-z0-9-]{3,}(?![\w-]))"
+    r"(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]+"
+)
+
+
+def _exact_terms(query: str) -> list[str]:
+    """Return only high-confidence literal phrases and identifiers."""
+    terms = [
+        next(value for value in match.groups() if value is not None).strip()
+        for match in _QUOTED_TERM.finditer(query)
+    ]
+    terms.extend(match.group(0) for match in _IDENTIFIER_TERM.finditer(query))
+    return list(dict.fromkeys(term.casefold() for term in terms if term.strip()))
+
+
+async def _text_search_candidates(
+    query: str,
+    *,
+    include_distractors: bool,
+) -> list[NodeWithScore]:
+    result = await vector_store.aquery(VectorStoreQuery(
+        query_str=query,
+        mode=VectorStoreQueryMode.TEXT_SEARCH,
+        similarity_top_k=LEXICAL_TOP_K,
+        sparse_top_k=LEXICAL_TOP_K,
+        filters=None if include_distractors else _LIVE_FILTERS,
+    ))
+    nodes = list(result.nodes or [])
+    similarities = list(result.similarities or [])
+    return [
+        NodeWithScore(
+            node=node,
+            score=float(similarities[index] if index < len(similarities) else 0.0),
+        )
+        for index, node in enumerate(nodes)
+    ]
+
+
+def _trigram_candidates(
+    query: str,
+    *,
+    include_distractors: bool,
+) -> list[NodeWithScore]:
+    patterns = [f"%{term}%" for term in _exact_terms(query)]
+    role_predicate = (
+        "TRUE"
+        if include_distractors
+        else "COALESCE(metadata_->>'corpus_role', 'primary') = :primary_role"
+    )
+    statement = text(f"""
+        SELECT
+            node_id,
+            text,
+            metadata_,
+            CASE
+                WHEN lower(text) LIKE ANY(CAST(:patterns AS text[])) THEN 1
+                ELSE 0
+            END AS exact_match,
+            GREATEST(
+                similarity(lower(text), lower(:query)),
+                word_similarity(lower(:query), lower(text))
+            ) AS trigram_score
+        FROM {VECTOR_TABLE_NAME}
+        WHERE {role_predicate}
+          AND (
+              lower(text) % lower(:query)
+              OR lower(:query) <% lower(text)
+              OR lower(text) LIKE ANY(CAST(:patterns AS text[]))
+          )
+        ORDER BY exact_match DESC, trigram_score DESC, node_id
+        LIMIT :limit
+    """)
+    with engine.connect() as connection:
+        rows = connection.execute(statement, {
+            "query": query,
+            "patterns": patterns,
+            "primary_role": PRIMARY_CORPUS_ROLE,
+            "limit": LEXICAL_TOP_K,
+        }).mappings().all()
+    return [
+        NodeWithScore(
+            node=TextNode(
+                id_=str(row["node_id"]),
+                text=str(row["text"]),
+                metadata=dict(row["metadata_"] or {}),
+            ),
+            score=float(row["trigram_score"] or 0.0) + float(row["exact_match"] or 0),
+        )
+        for row in rows
+    ]
+
+
+def reciprocal_rank_fuse(
+    pools: dict[str, list[NodeWithScore]],
+    *,
+    top_k: int = FUSION_TOP_K,
+    rrf_k: int = RRF_K,
+) -> list[NodeWithScore]:
+    """Fuse incomparable dense, text, and trigram scores by rank."""
+    entries: dict[str, dict] = {}
+    for pool_name, nodes in pools.items():
+        seen: set[str] = set()
+        for rank, candidate in enumerate(nodes, start=1):
+            node_id = str(candidate.node.node_id)
+            if not node_id or node_id in seen:
+                continue
+            seen.add(node_id)
+            entry = entries.setdefault(node_id, {
+                "node": candidate,
+                "score": 0.0,
+                "best_rank": rank,
+                "scores": {},
+            })
+            entry["score"] += 1.0 / (rrf_k + rank)
+            entry["best_rank"] = min(entry["best_rank"], rank)
+            entry["scores"][pool_name] = {
+                "rank": rank,
+                "score": float(candidate.score or 0.0),
+            }
+
+    ordered = sorted(
+        entries.items(),
+        key=lambda item: (-item[1]["score"], item[1]["best_rank"], item[0]),
+    )[:top_k]
+    fused: list[NodeWithScore] = []
+    for _, entry in ordered:
+        candidate = entry["node"]
+        candidate.score = float(entry["score"])
+        candidate.node.metadata["retrieval_scores"] = {
+            **entry["scores"],
+            "fused": float(entry["score"]),
+        }
+        fused.append(candidate)
+    return fused
 
 
 def node_to_trace_dict(
@@ -145,7 +314,7 @@ class HTTPReranker:
     async def arerank(self, nodes: List[NodeWithScore], query: str) -> List[NodeWithScore]:
         with tracer.start_as_current_span("Reranker") as span:
             before_rerank = [
-                node_to_trace_dict(node, i + 1, "vector_score")
+                node_to_trace_dict(node, i + 1, "fused_score")
                 for i, node in enumerate(nodes)
             ]
 
@@ -176,16 +345,33 @@ class HTTPReranker:
                 return []
 
             documents = [node.node.get_content() for node in nodes]
-            set_json_attribute(span, "reranker.input_doc_lengths", [len(doc) for doc in documents])
+            set_json_attribute(
+                span,
+                "reranker.input_doc_lengths",
+                [len(doc) for doc in documents],
+            )
             reranker_pair_texts = [f"{query}\n\n{document}" for document in documents]
-            reranker_input_tokens, reranker_tokens_estimated, reranker_tokenizer = await count_many_tokens(
+            (
+                reranker_input_tokens,
+                reranker_tokens_estimated,
+                reranker_tokenizer,
+            ) = await count_many_tokens(
                 reranker_pair_texts,
                 RERANKER_TOKENIZER_URL,
                 RERANKER_TOKENIZER_NAME,
             )
-            span.set_attribute("reranker.token_count.input", int(reranker_input_tokens))
-            span.set_attribute("reranker.token_count.total", int(reranker_input_tokens))
-            span.set_attribute("reranker.token_count.is_estimated", bool(reranker_tokens_estimated))
+            span.set_attribute(
+                "reranker.token_count.input",
+                int(reranker_input_tokens),
+            )
+            span.set_attribute(
+                "reranker.token_count.total",
+                int(reranker_input_tokens),
+            )
+            span.set_attribute(
+                "reranker.token_count.is_estimated",
+                bool(reranker_tokens_estimated),
+            )
             span.set_attribute("reranker.token_count.tokenizer", reranker_tokenizer)
             _reranker_token_usage.set({
                 "reranker_input_tokens": int(reranker_input_tokens),
@@ -205,7 +391,7 @@ class HTTPReranker:
                             body = await response.text()
                             fallback = nodes[: self.top_n]
                             after_rerank = [
-                                node_to_trace_dict(node, i + 1, "fallback_vector_score")
+                                node_to_trace_dict(node, i + 1, "fallback_fused_score")
                                 for i, node in enumerate(fallback)
                             ]
                             span.set_attribute(
@@ -244,7 +430,7 @@ class HTTPReranker:
             except Exception as error:
                 fallback = nodes[: self.top_n]
                 after_rerank = [
-                    node_to_trace_dict(node, i + 1, "fallback_vector_score")
+                    node_to_trace_dict(node, i + 1, "fallback_fused_score")
                     for i, node in enumerate(fallback)
                 ]
 
@@ -272,7 +458,7 @@ class HTTPReranker:
             if not isinstance(results, list) or not results:
                 fallback = nodes[: self.top_n]
                 after_rerank = [
-                    node_to_trace_dict(node, i + 1, "fallback_vector_score")
+                    node_to_trace_dict(node, i + 1, "fallback_fused_score")
                     for i, node in enumerate(fallback)
                 ]
 
@@ -311,7 +497,7 @@ class HTTPReranker:
             if not ranked:
                 fallback = nodes[: self.top_n]
                 after_rerank = [
-                    node_to_trace_dict(node, i + 1, "fallback_vector_score")
+                    node_to_trace_dict(node, i + 1, "fallback_fused_score")
                     for i, node in enumerate(fallback)
                 ]
 
@@ -365,7 +551,9 @@ async def retrieve_nodes(
             "RETRIEVER",
             input_value={
                 "query": query,
-                "similarity_top_k": SIMILARITY_TOP_K,
+                "dense_top_k": DENSE_TOP_K,
+                "lexical_top_k": LEXICAL_TOP_K,
+                "fusion_top_k": FUSION_TOP_K,
                 "rerank_top_n": RERANK_TOP_N,
                 "include_distractors": include_distractors,
             },
@@ -385,30 +573,59 @@ async def retrieve_nodes(
         )
         span.set_attribute("retrieval.token_count.tokenizer", query_tokenizer)
 
-        retriever = (
+        await asyncio.to_thread(ensure_hybrid_search_schema)
+        dense_retriever = (
             vector_retriever
             if include_distractors
             else live_vector_retriever
         )
-        raw_candidates = await retriever.aretrieve(query)
-        if include_distractors:
-            candidates = raw_candidates
-            filtered_distractors = 0
-        else:
-            filtered_distractors = sum(
-                1
-                for node in raw_candidates
-                if is_distractor_metadata(node.node.metadata)
-            )
-            candidates = [
-                node
-                for node in raw_candidates
-                if not is_distractor_metadata(node.node.metadata)
-            ][:SIMILARITY_TOP_K]
-        vector_latency = time.time() - start
+        dense_candidates, text_candidates, trigram_candidates = await asyncio.gather(
+            dense_retriever.aretrieve(query),
+            _text_search_candidates(
+                query,
+                include_distractors=include_distractors,
+            ),
+            asyncio.to_thread(
+                _trigram_candidates,
+                query,
+                include_distractors=include_distractors,
+            ),
+        )
+        pools = {
+            "dense": list(dense_candidates),
+            "text": list(text_candidates),
+            "trigram": list(trigram_candidates),
+        }
+        filtered_distractors = 0
+        if not include_distractors:
+            for pool_name, nodes in pools.items():
+                filtered_distractors += sum(
+                    1
+                    for node in nodes
+                    if is_distractor_metadata(node.node.metadata)
+                )
+                pools[pool_name] = [
+                    node
+                    for node in nodes
+                    if not is_distractor_metadata(node.node.metadata)
+                ]
 
+        candidates = reciprocal_rank_fuse(pools)
+        retrieval_latency = time.time() - start
+        dense_trace = [
+            node_to_trace_dict(node, i + 1, "dense_score")
+            for i, node in enumerate(pools["dense"])
+        ]
+        text_trace = [
+            node_to_trace_dict(node, i + 1, "text_score")
+            for i, node in enumerate(pools["text"])
+        ]
+        trigram_trace = [
+            node_to_trace_dict(node, i + 1, "trigram_score")
+            for i, node in enumerate(pools["trigram"])
+        ]
         vector_candidates = [
-            node_to_trace_dict(node, i + 1, "vector_score")
+            node_to_trace_dict(node, i + 1, "fused_score")
             for i, node in enumerate(candidates)
         ]
         span.set_attribute(
@@ -422,10 +639,19 @@ async def retrieve_nodes(
         )
         span.set_attribute("retrieval.span_id", retriever_span_id)
 
-        span.set_attribute("retrieval.vector_latency_seconds", round(vector_latency, 4))
+        span.set_attribute("retrieval.latency_seconds", round(retrieval_latency, 4))
         span.set_attribute("retrieval.candidate_count", len(candidates))
-        span.set_attribute("retrieval.raw_candidate_count", len(raw_candidates))
+        span.set_attribute(
+            "retrieval.raw_candidate_count",
+            sum(len(nodes) for nodes in pools.values()),
+        )
         span.set_attribute("retrieval.filtered_distractor_count", filtered_distractors)
+        set_json_attribute(span, "rag.dense_candidates", dense_trace)
+        set_json_attribute(span, "rag.text_candidates", text_trace)
+        set_json_attribute(span, "rag.trigram_candidates", trigram_trace)
+        set_json_attribute(span, "rag.fused_candidates", vector_candidates)
+        # Backward-compatible name: evaluation treats this as the complete
+        # pre-rerank retrieval list, which is now the fused candidate list.
         set_json_attribute(span, "rag.vector_candidates_before_rerank", vector_candidates)
         set_document_list_attributes(span, "retrieval.documents", vector_candidates)
         set_span_io(
@@ -447,6 +673,10 @@ async def retrieve_nodes(
 
     _retrieval_trace.set({
         "retriever_span_id": retriever_span_id,
+        "dense_candidates": dense_trace,
+        "text_candidates": text_trace,
+        "trigram_candidates": trigram_trace,
+        "fused_candidates": vector_candidates,
         "vector_candidates_before_rerank": vector_candidates,
         "final_chunks_after_rerank": final_chunks,
         "token_usage": {
@@ -462,8 +692,11 @@ async def retrieve_nodes(
     return reranked
 
 logger.info(
-    "Retrieval configured: table=data_%s, vector_top_k=%s, rerank_top_n=%s",
+    "Retrieval configured: table=data_%s, dense_top_k=%s, lexical_top_k=%s, "
+    "fusion_top_k=%s, rerank_top_n=%s",
     VECTOR_TABLE,
-    SIMILARITY_TOP_K,
+    DENSE_TOP_K,
+    LEXICAL_TOP_K,
+    FUSION_TOP_K,
     RERANK_TOP_N,
 )

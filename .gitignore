@@ -8,9 +8,12 @@ __pycache__/
 data/rag_evaluation/
 data/hotpotqa/
 data/webz_news/
+data/incoming/
 data/generation_results.csv
 data/generation_summary.json
 data/retrieval_results.csv
 data/retrieval_summary.json
+*.progress.json
 safety_intent_log.jsonl
 storage/crawler_state/
+storage/docling/
