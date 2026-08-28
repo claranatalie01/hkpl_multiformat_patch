@@ -20,8 +20,10 @@ from scripts.crawl_hkpl_site import (
     discover_links,
     extract_main_html,
     flush_pending,
+    has_changed,
     is_allowed_url,
     language_for_url,
+    save_hash,
 )
 
 import openpyxl
@@ -854,6 +856,23 @@ class DeterministicReaderTests(unittest.TestCase):
 
 
 class MainContentSelectionTests(unittest.TestCase):
+    def test_crawler_state_directory_is_created_only_when_saving(self) -> None:
+        url = "https://www.hkpl.gov.hk/en/index.html"
+        with tempfile.TemporaryDirectory() as directory:
+            state_directory = Path(directory) / "nested" / "crawler_state"
+            with patch(
+                "scripts.crawl_hkpl_site.CRAWL_STATE_DIR",
+                state_directory,
+            ):
+                self.assertFalse(state_directory.exists())
+                self.assertTrue(has_changed(url, "hash-1"))
+                self.assertFalse(state_directory.exists())
+
+                save_hash(url, "hash-1")
+
+                self.assertTrue(state_directory.is_dir())
+                self.assertFalse(has_changed(url, "hash-1"))
+
     def test_crawler_accepts_all_hkpl_language_paths(self) -> None:
         for language in ("en", "tc", "sc"):
             with self.subTest(language=language):

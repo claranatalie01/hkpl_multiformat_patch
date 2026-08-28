@@ -55,8 +55,12 @@ LITERAL_PDF_URL = re.compile(
     re.IGNORECASE,
 )
 
-CRAWL_STATE_DIR = Path("/app/storage/crawler_state")
-CRAWL_STATE_DIR.mkdir(parents=True, exist_ok=True)
+CRAWL_STATE_DIR = Path(
+    os.getenv(
+        "HKPL_CRAWLER_STATE_DIR",
+        str(PROJECT_ROOT / "storage" / "crawler_state"),
+    )
+)
 
 
 class LowContentPageError(ValueError):
@@ -228,6 +232,7 @@ def has_changed(url: str, content_hash: str) -> bool:
 
 
 def save_hash(url: str, content_hash: str) -> None:
+    CRAWL_STATE_DIR.mkdir(parents=True, exist_ok=True)
     state_path_for_url(url).write_text(content_hash)
 
 
