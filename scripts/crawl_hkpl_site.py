@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import hashlib
 import logging
@@ -20,15 +20,16 @@ from urllib.robotparser import RobotFileParser
 import requests
 from bs4 import BeautifulSoup, UnicodeDammit
 
-from src.ingestion.classification import (
+from hkpl_agent.ingestion.classification import (
     MAX_BATCH_ITEMS,
     classify_batch_items_resilient_sync,
 )
-from src.ingestion.html_utils import normalize_html_text
-from src.ingestion.registry import find_active_web_document_by_source_url
-from src.ingestion.readers import load_file
-from src.ingestion.service import UPLOAD_DIR, ingest_path_sync
-from src.ingestion.write_guard import ensure_corpus_writable
+from hkpl_agent.ingestion.html_utils import normalize_html_text
+from hkpl_agent.ingestion.config import UPLOAD_DIR
+from hkpl_agent.ingestion.registry import find_active_web_document_by_source_url
+from hkpl_agent.ingestion.readers import load_file
+from hkpl_agent.ingestion.service import ingest_path_sync
+from hkpl_agent.ingestion.write_guard import ensure_corpus_writable
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hkpl_crawler")

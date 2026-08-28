@@ -1,0 +1,15 @@
+.git
+.github
+.DS_Store
+.env
+.venv
+__pycache__
+*.py[cod]
+*.log
+data
+docs
+models
+storage
+tests
+uploads
+

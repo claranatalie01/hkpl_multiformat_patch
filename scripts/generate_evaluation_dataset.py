@@ -18,18 +18,18 @@ from pathlib import Path
 from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.evaluation.schema import (
+from hkpl_agent.evaluation.schema import (
     EVALUATION_DATASET_COLUMNS,
     has_supported_evaluation_columns,
     normalize_evaluation_text as normalize_text,
     parse_json_string_array,
     serialize_string_array,
 )
-from src.infrastructure.db import engine
-from src.infrastructure.vector_store import VECTOR_TABLE_NAME
-from src.llm_client import http_llm
+from hkpl_agent.infrastructure.db import engine
+from hkpl_agent.infrastructure.vector_store import VECTOR_TABLE_NAME
+from hkpl_agent.infrastructure.llm_client import http_llm
 
 
 OUTPUT_FILE = PROJECT_ROOT / "data" / "evaluation_dataset.candidate.csv"

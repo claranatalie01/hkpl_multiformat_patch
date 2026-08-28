@@ -34,29 +34,37 @@ from opentelemetry.trace import format_span_id
 from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.answering import (
+from hkpl_agent.rag.answering import (
     answer_completion_budget,
     build_grounded_answer_prompt,
     format_source_block,
 )
-from src.corpus import is_distractor_metadata
-from src.evaluation.schema import parse_accepted_answers, parse_json_string_array
-from src.infrastructure.db import engine
-from src.infrastructure.table_names import configured_table_name
-from src.infrastructure.vector_store import VECTOR_TABLE_NAME
-from src.llm_client import http_llm, http_llm_with_usage
-from src.observability import setup_phoenix_tracing
-from src.phoenix_annotations import (
+from hkpl_agent.rag.corpus import is_distractor_metadata
+from hkpl_agent.evaluation.schema import parse_accepted_answers, parse_json_string_array
+from hkpl_agent.infrastructure.db import engine
+from hkpl_agent.infrastructure.table_names import configured_table_name
+from hkpl_agent.infrastructure.vector_store import VECTOR_TABLE_NAME
+from hkpl_agent.infrastructure.llm_client import http_llm, http_llm_with_usage
+from hkpl_agent.observability.setup import setup_phoenix_tracing
+from hkpl_agent.observability.annotations import (
     log_document_relevance_annotations,
     log_rag_answer_annotations,
     log_span_annotations,
     normalize_evidence_text,
 )
-from src.retrieval import get_last_retrieval_trace, retrieve_nodes
-from src.token_counting import LLM_TOKENIZER_NAME, LLM_TOKENIZER_URL, count_tokens
-from src.tracing_helpers import set_json_attribute, set_llm_attributes, set_span_io
+from hkpl_agent.rag.retrieval import get_last_retrieval_trace, retrieve_nodes
+from hkpl_agent.infrastructure.token_counting import (
+    LLM_TOKENIZER_NAME,
+    LLM_TOKENIZER_URL,
+    count_tokens,
+)
+from hkpl_agent.observability.tracing import (
+    set_json_attribute,
+    set_llm_attributes,
+    set_span_io,
+)
 
 HKPL_EVALUATION_TABLE = configured_table_name(
     "EVALUATION_DATASET_TABLE",

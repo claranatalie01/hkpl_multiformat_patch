@@ -14,11 +14,11 @@ from pathlib import Path
 from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.infrastructure.db import engine
-from src.infrastructure.table_names import sql_identifier
-from src.infrastructure.vector_store import VECTOR_TABLE_NAME
+from hkpl_agent.infrastructure.db import engine
+from hkpl_agent.infrastructure.table_names import sql_identifier
+from hkpl_agent.infrastructure.vector_store import VECTOR_TABLE_NAME
 
 
 CONTROL_TABLE = "knowledge_corpus_control"

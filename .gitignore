@@ -3,9 +3,20 @@ __pycache__/
 *.py[cod]
 *.log
 .env
+.env.*
+!.env.example
 .venv/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+build/
+dist/
+*.egg-info/
 
 data/rag_evaluation/
+data/safety_evaluation/
 data/hotpotqa/
 data/webz_news/
 data/incoming/

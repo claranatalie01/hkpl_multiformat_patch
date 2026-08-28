@@ -18,15 +18,15 @@ from pathlib import Path
 from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.evaluation.schema import (
+from hkpl_agent.evaluation.schema import (
     normalize_evaluation_text as normalize,
     parse_json_string_array,
 )
-from src.infrastructure.db import engine
-from src.infrastructure.table_names import configured_table_name
-from src.infrastructure.vector_store import VECTOR_TABLE_NAME
+from hkpl_agent.infrastructure.db import engine
+from hkpl_agent.infrastructure.table_names import configured_table_name
+from hkpl_agent.infrastructure.vector_store import VECTOR_TABLE_NAME
 
 
 EVALUATION_DATASET_TABLE = configured_table_name(

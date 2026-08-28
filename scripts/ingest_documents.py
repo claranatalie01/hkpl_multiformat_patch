@@ -8,15 +8,17 @@ extraction, chunking, embedding, and pgvector insertion.
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 from uuid import uuid4
 
-from src.ingestion.readers import (
-    SUPPORTED_EXTENSIONS,
-)
-from src.ingestion.classification import MAX_BATCH_ITEMS
-from src.ingestion.service import (
-    UPLOAD_DIR,
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from hkpl_agent.ingestion.classification import MAX_BATCH_ITEMS
+from hkpl_agent.ingestion.config import UPLOAD_DIR
+from hkpl_agent.ingestion.formats import SUPPORTED_EXTENSIONS
+from hkpl_agent.ingestion.service import (
     ingest_path_sync,
     process_registered_batch,
     register_upload,

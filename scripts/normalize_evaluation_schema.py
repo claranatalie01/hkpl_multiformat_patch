@@ -15,9 +15,9 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.evaluation.schema import (
+from hkpl_agent.evaluation.schema import (
     EVALUATION_DATASET_COLUMNS,
     has_supported_evaluation_columns,
     parse_json_string_array,

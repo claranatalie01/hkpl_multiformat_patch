@@ -13,7 +13,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d
+      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
         [
@@ -121,13 +121,14 @@ services:
   langgraph-agent:
     build:
       context: .
-      dockerfile: Dockerfile.agent
+      dockerfile: infra/docker/Dockerfile.agent
     container_name: hkpl_agent
     runtime: nvidia
+    env_file:
+      - .env
     ports:
       - "8001:8001"
     volumes:
-      - .env:/app/.env
       - ./src:/app/src
       - ./main.py:/app/main.py
       - ./scripts:/app/scripts
@@ -141,6 +142,7 @@ services:
       # container even when SAFETY_GPU_ID selects a different host GPU.
       NVIDIA_VISIBLE_DEVICES: ${SAFETY_GPU_ID:-0}
       SAFETY_DEVICE: ${SAFETY_DEVICE:-cuda:0}
+      PYTHONPATH: /app/src
       DB_URL: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/hkpl_vector_db
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       POSTGRES_DB: hkpl_vector_db

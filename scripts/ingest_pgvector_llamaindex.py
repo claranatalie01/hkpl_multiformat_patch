@@ -16,37 +16,36 @@ from pathlib import Path
 from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.evaluation.schema import (
+from hkpl_agent.evaluation.schema import (
     EVALUATION_DATASET_COLUMNS,
     has_supported_evaluation_columns,
     parse_json_string_array,
     parse_parallel_evidence,
     serialize_string_array,
 )
-from src.infrastructure.table_names import configured_table_name
-from src.infrastructure.vector_store import (
+from hkpl_agent.infrastructure.table_names import configured_table_name
+from hkpl_agent.infrastructure.vector_store import (
     EMBED_DIM,
     VECTOR_TABLE_NAME,
     ensure_hybrid_search_schema,
 )
-from src.infrastructure.db import engine
-from src.ingestion.chunking import (
+from hkpl_agent.infrastructure.db import engine
+from hkpl_agent.ingestion.chunking import (
     chunk_documents,
 )
-from src.ingestion.document_types import normalize_document_type
-from src.ingestion.registry import (
+from hkpl_agent.ingestion.config import OCR_LANGUAGES, UPLOAD_DIR
+from hkpl_agent.ingestion.document_types import normalize_document_type
+from hkpl_agent.ingestion.registry import (
     ensure_registry_schema,
     list_documents,
 )
-from src.ingestion.readers import load_file
-from src.ingestion.service import (
-    OCR_LANGUAGES,
-    UPLOAD_DIR,
+from hkpl_agent.ingestion.readers import load_file
+from hkpl_agent.ingestion.service import (
     reindex_registered_document,
 )
-from src.ingestion.write_guard import ensure_corpus_writable
+from hkpl_agent.ingestion.write_guard import ensure_corpus_writable
 EVALUATION_DATASET_TABLE = configured_table_name(
     "EVALUATION_DATASET_TABLE",
     "evaluation_dataset",

@@ -1,0 +1,850 @@
+"""Implement the processing nodes used by the LangGraph RAG workflow.
+
+Nodes classify intent and safety, rewrite contextual questions, invoke vector
+retrieval/reranking, build source-aware context, call the answer model, attach
+citations, filter output, and save conversation turns.
+"""
+
+import os
+import logging
+import json
+import re
+import time
+from datetime import datetime
+from langchain_core.messages import AIMessage
+from dotenv import load_dotenv
+from gliner2 import GLiNER2
+from .state import LibraryBotState
+from ..rag.answering import build_grounded_answer_prompt, format_source_block
+from ..rag.retrieval import retrieve_nodes
+from ..memory.repository import save_conversation_turn
+from ..safety.compliance import check_prohibited_keywords
+from ..infrastructure.llm_client import http_llm
+from ..infrastructure.token_counting import (
+    LLM_TOKENIZER_NAME,
+    LLM_TOKENIZER_URL,
+    count_tokens,
+)
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def get_current_datetime():
+    """Returns the current date and time as a formatted string."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+# ----------------------------------------------------------------------
+# GLiGuard safety classifier
+# ----------------------------------------------------------------------
+safety_model = None
+
+
+def get_safety_device() -> str:
+    """Return and validate the configured PyTorch device for GLiGuard.
+
+    The deployed Compose profile defaults to ``cuda:0`` inside the agent
+    container. ``NVIDIA_VISIBLE_DEVICES`` determines which physical GPU that
+    container-local index represents. CPU remains an explicit development
+    override; the runtime never silently falls back from a requested GPU.
+    """
+
+    import torch
+
+    device = os.getenv("SAFETY_DEVICE", "cuda:0").strip().lower()
+    if device == "cuda":
+        device = "cuda:0"
+    if device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"SAFETY_DEVICE={device!r}, but CUDA is unavailable to the agent process"
+            )
+        try:
+            index = int(device.split(":", maxsplit=1)[1])
+        except (IndexError, ValueError) as error:
+            raise RuntimeError(
+                "SAFETY_DEVICE must use a CUDA index such as 'cuda:0'"
+            ) from error
+        if index < 0 or index >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"SAFETY_DEVICE={device!r}, but only {torch.cuda.device_count()} "
+                "CUDA device(s) are visible"
+            )
+    elif device != "cpu" and not device.startswith("mps"):
+        raise RuntimeError(
+            "SAFETY_DEVICE must be 'cuda:N', 'mps', or the explicit development "
+            "override 'cpu'"
+        )
+    return device
+
+
+def get_safety_model():
+    """Load GLiGuard once and keep it resident on the configured device."""
+
+    global safety_model
+    if safety_model is None:
+        device = get_safety_device()
+        loaded_model = GLiNER2.from_pretrained(
+            "fastino/gliguard-LLMGuardrails-300M"
+        )
+        loaded_model.to(device)
+        # Publish the singleton only after the CUDA transfer succeeds. An OOM
+        # must not leave a CPU-resident partial singleton for the next request.
+        safety_model = loaded_model
+        logger.info("GLiGuard safety model loaded on %s", device)
+    return safety_model
+
+
+def _safety_guard_unavailable_response(error: Exception) -> dict:
+    """Fail closed when the required safety model or GPU is unavailable."""
+
+    logger.exception("GLiGuard safety classifier unavailable: %s", error)
+    return {
+        "messages": [
+            AIMessage(
+                content=(
+                    "The safety service is temporarily unavailable, so I cannot "
+                    "process this request right now. Please try again later."
+                )
+            )
+        ],
+        "is_output_safe": True,
+        "end_conversation": True,
+    }
+
+
+def _history_to_text(history: list) -> str:
+    parts = []
+    for turn in history[-8:]:
+        if isinstance(turn, dict):
+            parts.append(str(turn.get("content", "")))
+        else:
+            parts.append(str(turn))
+    return " ".join(parts).lower()
+
+
+def is_library_follow_up(user_input: str, history: list) -> bool:
+    if not history:
+        return False
+
+    query = user_input.lower()
+    history_text = _history_to_text(history)
+
+    follow_up_terms = [
+        "that",
+        "it",
+        "this",
+        "again",
+        "same",
+        "that event",
+        "the event",
+        "details",
+        "detail",
+        "where",
+        "when",
+        "location",
+        "venue",
+        "what time",
+    ]
+
+    library_terms = [
+        "library",
+        "hkpl",
+        "event",
+        "public library",
+        "book",
+        "borrowing",
+        "opening hours",
+        "password",
+        "reference",
+        "e-resources",
+        "source",
+        "venue",
+    ]
+
+    return (
+        any(term in query for term in follow_up_terms)
+        and any(term in history_text for term in library_terms)
+    )
+async def safety_and_intent_node(state: LibraryBotState) -> dict:
+    logger.info("[Node] Safety Classifier (GLiGuard)")
+    user_input = state["messages"][-1].content
+    policy_hit = check_prohibited_keywords(user_input)
+
+    if policy_hit:
+        logger.warning(
+            "Prohibited keyword matched: %s | category=%s",
+            policy_hit["keyword"],
+            policy_hit["category"],
+        )
+        return {
+            "messages": [AIMessage(content=policy_hit["fallback_response"])],
+            "is_output_safe": True,
+            "end_conversation": True,
+        }
+    try:
+        model = get_safety_model()
+    except Exception as error:
+        return _safety_guard_unavailable_response(error)
+
+    toxicity_labels = [
+        "violence_and_weapons", "non_violent_crime", "sexual_content",
+        "hate_and_discrimination", "self_harm_and_suicide", "pii_exposure",
+        "misinformation", "copyright_violation", "child_safety",
+        "political_manipulation", "unethical_conduct", "regulated_advice",
+        "privacy_violation", "other", "benign",
+    ]
+    toxicity_task = {
+        "labels": toxicity_labels,
+        "multi_label": True,
+        "cls_threshold": 0.4,
+    }
+    jailbreak_labels = [
+        "prompt_injection", "jailbreak_attempt", "policy_evasion",
+        "instruction_override", "system_prompt_exfiltration", "data_exfiltration",
+        "roleplay_bypass", "hypothetical_bypass", "obfuscated_attack",
+        "multi_step_attack", "social_engineering", "benign",
+    ]
+    jailbreak_task = {
+        "labels": jailbreak_labels,
+        "multi_label": True,
+        "cls_threshold": 0.4,
+    }
+    schema = {
+        "prompt_safety": ["safe", "unsafe"],
+        "prompt_toxicity": toxicity_task,
+        "jailbreak_detection": jailbreak_task,
+    }
+
+    try:
+        result = model.classify_text(user_input, schema, threshold=0.5)
+        logger.debug(f"GLiGuard raw result: {result}")
+
+        safety = result.get("prompt_safety", "safe")
+        detected_categories = []
+
+        toxicity = result.get("prompt_toxicity", [])
+        if isinstance(toxicity, list):
+            detected_categories.extend(toxicity)
+
+        jailbreak = result.get("jailbreak_detection", [])
+        if isinstance(jailbreak, list):
+            detected_categories.extend(jailbreak)
+
+        # Remove benign + duplicates.
+        detected_categories = sorted({
+            cat for cat in detected_categories
+            if cat and cat != "benign"
+        })
+
+        # High-risk categories: block immediately.
+        # These are categories where allowing the request could be unsafe.
+        hard_block_categories = {
+            "violence_and_weapons",
+            "sexual_content",
+            "hate_and_discrimination",
+            "self_harm_and_suicide",
+            "pii_exposure",
+            "child_safety",
+            "political_manipulation",
+            "privacy_violation",
+            "prompt_injection",
+            "jailbreak_attempt",
+            "policy_evasion",
+            "instruction_override",
+            "system_prompt_exfiltration",
+            "data_exfiltration",
+            "obfuscated_attack",
+        }
+
+        # Ambiguous categories: log for monitoring, but do not block by themselves.
+        # These caused false positives for valid HKPL questions such as:
+        # "What is Adobe Digital Editions?" and "What is it and how do I use it?"
+        soft_flag_categories = {
+            "non_violent_crime",
+            "copyright_violation",
+            "misinformation",
+            "regulated_advice",
+            "unethical_conduct",
+            "multi_step_attack",
+            "hypothetical_bypass",
+            "roleplay_bypass",
+            "social_engineering",
+            "other",
+        }
+
+        hard_hits = [
+            cat for cat in detected_categories
+            if cat in hard_block_categories
+        ]
+
+        soft_hits = [
+            cat for cat in detected_categories
+            if cat in soft_flag_categories
+        ]
+
+        # Final safety decision:
+        # - hard-hit categories are blocked.
+        # - soft-hit categories are only logged.
+        # - prompt_safety is kept for logging, but not trusted alone because
+        #   GLiGuard can return contradictory outputs such as unsafe + benign.
+        is_unsafe = len(hard_hits) > 0
+
+        logger.info(
+            f"Safety={safety}; categories={detected_categories}; "
+            f"hard_hits={hard_hits}; soft_hits={soft_hits}; is_unsafe={is_unsafe}"
+        )
+
+        conversation_history = state.get("conversation_history", [])
+
+        if (
+            not is_unsafe
+            and is_library_follow_up(user_input, conversation_history)
+        ):
+            logger.info(
+                "Allowing safe vague library follow-up based on conversation history."
+            )
+            return {
+                "is_output_safe": True,
+                "end_conversation": False,
+            }
+    except Exception as error:
+        return _safety_guard_unavailable_response(error)
+
+    log_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "user_input": user_input[:500],
+        "safety": "unsafe" if is_unsafe else "safe",
+        "categories": detected_categories,
+        "hard_hits": hard_hits,
+        "soft_hits": soft_hits,
+    }
+
+    if is_unsafe:
+        with open("safety_intent_log.jsonl", "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+        logger.warning(
+            "Unsafe input blocked: %s | categories: %s",
+            user_input[:100],
+            detected_categories,
+        )
+        if any(
+            cat in {"self_harm_and_suicide", "self_harm", "suicide"}
+            for cat in detected_categories
+        ):
+            safe_msg = (
+                "I'm really sorry you're feeling this way. Please know that "
+                "you're not alone. If you are in distress, please reach out "
+                "to the Samaritans Hong Kong 24‑hour hotline at 2896 0000, or "
+                "contact a mental health professional. Your well‑being is very "
+                "important."
+            )
+        elif "political_manipulation" in detected_categories:
+            safe_msg = (
+                "I'm here to help with library services, book information, and "
+                "general library questions. I can't discuss political topics. "
+                "Is there something about the library I can help you with?"
+            )
+        elif any(
+            cat in {"prompt_injection", "jailbreak_attempt", "instruction_override"}
+            for cat in detected_categories
+        ):
+            safe_msg = (
+                "I can only follow instructions related to library services. "
+                "Please ask a genuine question about library hours, book "
+                "searches, or library policies."
+            )
+        elif "violence_and_weapons" in detected_categories:
+            safe_msg = (
+                "I cannot provide information that promotes or glorifies violence. "
+                "If you need help with library resources, I'm happy to assist."
+            )
+        elif "hate_and_discrimination" in detected_categories:
+            safe_msg = (
+                "I strive to be respectful and helpful to everyone. "
+                "Please ask a library‑related question without using offensive language."
+            )
+        else:
+            safe_msg = (
+                "I'm unable to process that request. Please ask a "
+                "library‑related question, such as "
+                "library hours, book availability, or how to borrow materials."
+            )
+        return {
+            "messages": [AIMessage(content=safe_msg)],
+            "is_output_safe": True,
+            "end_conversation": True,
+        }
+    return {}
+
+# ----------------------------------------------------------------------
+# Intent router (only distinguishes greetings from everything else)
+# ----------------------------------------------------------------------
+async def intent_router_node(state: LibraryBotState) -> dict:
+    logger.info("[Node] Intent Router")
+
+    user_query = state["messages"][-1].content.strip()
+
+    prompt = f"""
+Classify the user's message into exactly one of these labels:
+
+- greeting: greetings such as hello, hi, good morning
+- thanks: thank you messages
+- library_question: any question about HKPL services, library materials,
+  e-resources, borrowing, collections, classification schemes, opening hours,
+  reference services, accounts, apps, or library help
+- other: anything else that is safe but not a greeting or thanks
+
+Return only valid JSON:
+{{"intent": "greeting" | "thanks" | "library_question" | "other"}}
+
+User message:
+{user_query}
+"""
+
+    try:
+        raw = await http_llm(prompt, temperature=0.0, max_tokens=80)
+        raw = raw.strip()
+
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            raw = match.group(0)
+
+        parsed = json.loads(raw)
+        intent = parsed.get("intent", "library_question")
+
+    except Exception as e:
+        logger.warning(f"Intent classification failed, defaulting to RAG: {e}")
+        intent = "library_question"
+
+    if intent in ["greeting", "thanks"]:
+        request_type = "normal_info"
+    else:
+        request_type = "rag_search"
+
+    logger.info(f"Intent classified as: {intent}; request_type={request_type}")
+
+    return {
+        "intent": intent,
+        "request_type": request_type,
+    }
+# ----------------------------------------------------------------------
+# RAG pipeline using LlamaIndex retriever (includes reranking)
+# ----------------------------------------------------------------------
+async def rag_pipeline_node(state: LibraryBotState) -> dict:
+    # Log that the RAG retrieval node has started
+    logger.info("[Node] RAG Pipeline (LlamaIndex + PGVectorStore + reranking)")
+
+    # Use rewritten query if available; otherwise use the latest user message
+    query = state.get("rewritten_query") or state["messages"][-1].content
+    logger.debug(f"Retrieval query: {query}")
+
+    # Measure retrieval time for debugging and performance monitoring
+    start = time.time()
+
+    # Retrieve relevant nodes using LlamaIndex retriever
+    nodes = await retrieve_nodes(query)
+
+    # Calculate retrieval duration
+    elapsed = time.time() - start
+    logger.info(f"Retrieval took {elapsed:.3f} seconds")
+
+    # Store retrieved chunk texts
+    chunk_texts = []
+
+    # Store similarity/reranking scores
+    scores = []
+
+    # Store metadata used later for citations/debugging
+    sources = []
+
+    # Convert LlamaIndex NodeWithScore objects into plain Python data
+    for i, node in enumerate(nodes):
+        # Metadata was saved during ingestion
+        metadata = node.node.metadata or {}
+
+        # Use 0.0 if score is missing
+        score = node.score if node.score is not None else 0.0
+
+        # Retrieval operates on contextual search_text, but generation and
+        # citations must see only the exact selected source evidence.
+        chunk_texts.append(metadata.get("evidence_text") or node.node.text)
+
+        # Store the retrieval/reranking score
+        scores.append(score)
+
+        # Store source metadata for citations and traceability
+        sources.append(
+            {
+                "chunk_index": i,
+                "score": score,
+                "document_id": metadata.get("document_id", ""),
+                "chunk_id": metadata.get("chunk_id", ""),
+                "source": metadata.get("source", ""),
+                "source_title": metadata.get(
+                    "source_title",
+                    metadata.get("file_name", "HKPL knowledge base"),
+                ),
+                "url": metadata.get("url", ""),
+                "source_url": metadata.get(
+                    "source_url",
+                    metadata.get("url", ""),
+                ),
+                "file_name": metadata.get("file_name", ""),
+                "file_type": metadata.get("file_type", ""),
+                "page_number": metadata.get("page_number"),
+                "slide_number": metadata.get("slide_number"),
+                "section_heading": metadata.get("section_heading", ""),
+                "sheet_name": metadata.get("sheet_name", ""),
+                "row_number": metadata.get("row_number"),
+                "domain": metadata.get("domain", ""),
+                "question": metadata.get("question", ""),
+                "locator": metadata.get("locator", {}),
+                "record_kind": metadata.get("record_kind", "prose"),
+                "structure_path": metadata.get("structure_path", []),
+                "branch_ids": metadata.get("branch_ids", []),
+                "document_version": metadata.get("document_version"),
+                "access_level": metadata.get("access_level", "public"),
+            }
+        )
+
+
+    # Log retrieval details for debugging
+    logger.debug(f"Retrieved {len(nodes)} nodes. Scores: {scores}")
+
+    # Log the top retrieved chunk and source
+    if chunk_texts:
+        logger.debug(f"Top chunk text: {chunk_texts[0][:300]}")
+        logger.debug(f"Top source: {sources[0]}")
+
+    # Return retrieval results into LangGraph state
+    return {
+        "retrieved_chunks": chunk_texts,
+        "retrieved_scores": scores,
+        "retrieved_sources": sources,
+    }
+
+def format_citations(sources: list[dict]) -> str:
+    """Create readable citations for FAQs, PDFs, Office files, and tables."""
+    seen = set()
+    citation_lines = []
+
+    for source in sources:
+        title = (
+            source.get("source_title")
+            or source.get("file_name")
+            or "HKPL knowledge base"
+        )
+        url = source.get("source_url") or source.get("url", "")
+        locator = source.get("locator") or {}
+        page = source.get("page_number") or locator.get("page")
+        page_end = locator.get("page_end")
+        slide = source.get("slide_number")
+        structure_path = source.get("structure_path") or locator.get("heading_path") or []
+        section = source.get("section_heading", "") or (
+            structure_path[-1] if structure_path else ""
+        )
+        sheet = source.get("sheet_name", "") or locator.get("sheet", "")
+        row = source.get("row_number") or locator.get("row")
+        anchor = locator.get("anchor", "")
+        domain = source.get("domain", "")
+        question = source.get("question", "")
+
+        key = (
+            title,
+            url,
+            page,
+            slide,
+            section,
+            sheet,
+            row,
+            question,
+            json.dumps(locator, ensure_ascii=False, sort_keys=True),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+
+        details = []
+        if page:
+            details.append(
+                f"pages {page}-{page_end}" if page_end and page_end != page else f"page {page}"
+            )
+        if slide:
+            details.append(f"slide {slide}")
+        if section:
+            details.append(f'section "{section}"')
+        if sheet:
+            details.append(f'sheet "{sheet}"')
+        if row:
+            details.append(f"row {row}")
+        if anchor:
+            details.append(f"anchor {anchor}")
+        if domain:
+            details.append(domain)
+
+        line = f"- {title}"
+        if details:
+            line += f" ({', '.join(details)})"
+        if question:
+            line += f": {question}"
+        if url:
+            line += f"\n  {url}"
+
+        citation_lines.append(line)
+
+    if not citation_lines:
+        return ""
+
+    return "\n\nSources:\n" + "\n".join(citation_lines[:3])
+
+
+def _is_fallback_answer(answer: str) -> bool:
+    lowered = answer.lower()
+    fallback_markers = [
+        "i don't have enough verified information",
+        "i don't have enough confidence",
+        "i don't have that information in my knowledge base",
+        "i couldn't find that information",
+    ]
+    return any(marker in lowered for marker in fallback_markers)
+
+
+async def add_citations_node(state: LibraryBotState) -> dict:
+    logger.info("[Node] Add Citations")
+
+    answer = state.get("generated_answer") or state["messages"][-1].content
+
+    if state.get("request_type") == "normal_info":
+        return {
+            "messages": [AIMessage(content=answer)],
+            "generated_answer": answer,
+        }
+
+    sources = state.get("retrieved_sources", [])
+    citations = format_citations(sources)
+
+    if not _is_fallback_answer(answer) and citations and "Sources:" not in answer:
+        answer = answer.strip() + citations
+
+    return {
+        "messages": [AIMessage(content=answer)],
+        "generated_answer": answer,
+    }
+
+
+async def rewrite_query_node(state: LibraryBotState) -> dict:
+    logger.info("[Node] Query Rewriter")
+
+    question = state["messages"][-1].content
+    history = state.get("conversation_history", [])
+
+    if not history or not is_library_follow_up(question, history):
+        return {
+            "original_query": question,
+            "rewritten_query": question,
+        }
+
+    history_text = "\n".join(
+        f"{turn['role']}: {turn['content']}"
+        for turn in history
+    )
+
+    prompt = f"""
+You rewrite follow-up library questions into standalone search queries.
+
+Rules:
+- Use the conversation history only to resolve references like "it", "that", "them", "do I need it".
+- Do not answer the question.
+- Do not add information not implied by the history.
+- Output only the rewritten query.
+
+Conversation history:
+{history_text}
+
+Current user question:
+{question}
+
+Standalone search query:
+"""
+
+    try:
+        rewritten = await http_llm(prompt, temperature=0.0, max_tokens=128)
+        rewritten = rewritten.strip()
+
+        if not rewritten:
+            rewritten = question
+
+    except Exception as e:
+        logger.error(f"Query rewrite failed: {e}")
+        rewritten = question
+
+    logger.debug(f"Original query: {question}")
+    logger.debug(f"Rewritten query: {rewritten}")
+
+    return {
+        "original_query": question,
+        "rewritten_query": rewritten,
+    }
+
+async def save_conversation_node(state: LibraryBotState) -> dict:
+    logger.info("[Node] Save Conversation History")
+
+    session_id = state.get("session_id", "")
+    user_question = state.get("original_query") or state["messages"][0].content
+    assistant_answer = state["messages"][-1].content
+
+    try:
+        save_conversation_turn(session_id, "user", user_question)
+        save_conversation_turn(session_id, "assistant", assistant_answer)
+    except Exception as e:
+        logger.error(f"Failed to save conversation history: {e}")
+
+    return {}
+
+# ----------------------------------------------------------------------
+# Generate answer (using HTTP LLM)
+# ----------------------------------------------------------------------
+async def generate_answer_node(state: LibraryBotState) -> dict:
+    logger.info("[Node] Generate Answer")
+    request_type = state.get("request_type", "rag_search")
+    question = state["messages"][-1].content
+
+    if request_type == "normal_info":
+        system_msg = "You are a helpful library assistant. Keep answers short and friendly."
+        full_prompt = f"{system_msg}\n\nUser: {question}"
+        response = await http_llm(
+            full_prompt,
+            temperature=0.7,
+            enable_thinking=False,
+        )
+        return {
+            "messages": [AIMessage(content=response)],
+            "generated_answer": response,
+        }
+
+    retrieved_chunks = state.get("retrieved_chunks", [])
+    max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "12000"))
+    answer_max_tokens = int(os.getenv("ANSWER_MAX_TOKENS", "512"))
+
+    selected_context_parts = []
+    used_tokens = 0
+    retrieved_sources = state.get("retrieved_sources", [])
+
+    for index, chunk in enumerate(retrieved_chunks):
+        source = (
+            retrieved_sources[index]
+            if index < len(retrieved_sources)
+            else {}
+        )
+        formatted_chunk = format_source_block(
+            chunk,
+            index + 1,
+            title=str(source.get("source_title") or ""),
+        )
+        chunk_tokens, _, _ = await count_tokens(
+            formatted_chunk,
+            LLM_TOKENIZER_URL,
+            LLM_TOKENIZER_NAME,
+        )
+
+        if (
+            selected_context_parts
+            and used_tokens + chunk_tokens > max_context_tokens
+        ):
+            break
+
+        selected_context_parts.append(formatted_chunk)
+        used_tokens += chunk_tokens
+
+    context = "\n\n".join(selected_context_parts)
+
+    if not context:
+        fallback = (
+    "I don't have enough verified information in my knowledge base to answer that reliably. "
+    "Please check the official HKPL website or contact library staff for assistance."
+)
+        return {
+            "messages": [AIMessage(content=fallback)],
+            "generated_answer": fallback,
+        }
+    scores = state.get("retrieved_scores", [])
+
+    if not scores or max(scores) < float(os.getenv("RERANKER_THRESHOLD", "0.50")):
+        fallback = (
+    "I don't have enough confidence to answer that from the approved HKPL knowledge base. "
+    "Please try asking about a specific library branch, service, event, or policy, "
+    "or contact HKPL staff for confirmation."
+)
+        return {
+            "messages": [AIMessage(content=fallback)],
+            "generated_answer": fallback,
+        }
+
+    library_name = state.get("current_library_name")
+    library_code = state.get("current_library_code")
+    current_time = get_current_datetime()
+
+    system_prompt = build_grounded_answer_prompt(
+        question=question,
+        context=context,
+        current_datetime=current_time,
+        library_name=library_name or "",
+        library_code=library_code or "",
+    )
+
+
+    logger.debug(f"Context length: {len(context)} characters")
+    logger.debug(f"System prompt (first 500 chars): {system_prompt[:500]}...")
+
+    response = await http_llm(
+        system_prompt,
+        temperature=0.0,
+        max_tokens=answer_max_tokens,
+        enable_thinking=False,
+    )
+
+    # Store the generated answer separately so later nodes can inspect it.
+    return {
+        "messages": [AIMessage(content=response)],
+        "generated_answer": response,
+    }
+
+# ----------------------------------------------------------------------
+# Output safety filter
+# ----------------------------------------------------------------------
+async def output_safety_filter_node(state: LibraryBotState) -> dict:
+    logger.info("[Node] Output Safety Filter")
+    answer = state["messages"][-1].content
+    policy_hit = check_prohibited_keywords(answer)
+
+    if policy_hit:
+        logger.warning(
+            "Output prohibited keyword matched: %s | category=%s",
+            policy_hit["keyword"],
+            policy_hit["category"],
+        )
+        return {
+            "is_output_safe": True,
+            "messages": [AIMessage(content=policy_hit["fallback_response"])],
+            "generated_answer": policy_hit["fallback_response"],
+        }
+    blocked_phrases = ["self-harm", "suicide", "kill yourself"]
+    if any(phrase in answer.lower() for phrase in blocked_phrases):
+        return {
+            "is_output_safe": False,
+            "messages": [
+                AIMessage(
+                    content=(
+                        "I cannot provide that answer. Please contact library "
+                        "staff or call the Samaritans at 2896 0000 for "
+                        "immediate help."
+                    )
+                )
+            ],
+        }
+    return {
+        "is_output_safe": True,
+        "messages": [AIMessage(content=answer)],
+        "generated_answer": answer,
+    }
