@@ -7,26 +7,32 @@ synchronization. It changes evaluation metadata only, never vector chunks.
 
 import argparse
 import csv
+import json
 import re
 import shutil
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from src.evaluation.schema import (
-    EVALUATION_DATASET_COLUMNS,
-    has_supported_evaluation_columns,
-    parse_json_string_array,
-    parse_parallel_evidence,
-    serialize_string_array,
-)
-
-
 DEFAULT_PATH = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
+COLUMNS = [
+    "domain",
+    "query",
+    "expected_answer_text",
+    "expected_context_snippet",
+    "expected_context_snippets_json",
+    "accepted_answers_json",
+    "source_title",
+    "source_url",
+    "source_document_id",
+    "source_chunk_id",
+    "source_chunk_ids_json",
+]
+LEGACY_COLUMNS = [
+    column for column in COLUMNS
+    if column not in {"expected_context_snippets_json", "source_chunk_ids_json"}
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,10 +53,10 @@ def main() -> None:
         actual_columns = list(reader.fieldnames or [])
         rows = list(reader)
 
-    if args.check and not has_supported_evaluation_columns(actual_columns):
+    if args.check and actual_columns not in (COLUMNS, LEGACY_COLUMNS):
         raise ValueError(
             "Evaluation CSV columns must exactly match, in order: "
-            f"{list(EVALUATION_DATASET_COLUMNS)}. Found: {actual_columns}"
+            f"{COLUMNS}. Found: {actual_columns}"
         )
 
     seen: set[str] = set()
@@ -66,46 +72,57 @@ def main() -> None:
             raise ValueError(f"Duplicate question at row {line_number}: {query!r}")
         seen.add(query_key)
 
-        try:
-            aliases = parse_json_string_array(
-                row.get("accepted_answers_json"),
-                field_name="accepted_answers_json",
-                strict=True,
-                deduplicate=True,
-            )
-        except ValueError as error:
-            raise ValueError(
-                f"Invalid accepted answers at row {line_number}: {error}"
-            ) from error
+        aliases = json.loads(row.get("accepted_answers_json") or "[]")
+        if not isinstance(aliases, list) or not all(
+            isinstance(alias, str) and alias.strip() for alias in aliases
+        ):
+            raise ValueError(f"Invalid accepted answers at row {line_number}")
 
-        item = {
-            column: str(row.get(column) or "").strip()
-            for column in EVALUATION_DATASET_COLUMNS
-        }
+        item = {column: str(row.get(column) or "").strip() for column in COLUMNS}
         item["query"] = query
-        item["accepted_answers_json"] = serialize_string_array(aliases)
-        try:
-            evidence = parse_parallel_evidence(
-                item,
-                context=f"row {line_number}",
-                require_document_membership=False,
-            )
-        except ValueError as error:
+        item["accepted_answers_json"] = json.dumps(
+            list(dict.fromkeys(alias.strip() for alias in aliases)),
+            ensure_ascii=False,
+        )
+        snippet_values = json.loads(
+            row.get("expected_context_snippets_json")
+            or json.dumps([item["expected_context_snippet"]])
+        )
+        chunk_id_values = json.loads(
+            row.get("source_chunk_ids_json")
+            or json.dumps([item["source_chunk_id"]])
+        )
+        if (
+            not isinstance(snippet_values, list)
+            or not isinstance(chunk_id_values, list)
+            or not snippet_values
+            or len(snippet_values) != len(chunk_id_values)
+            or not all(isinstance(value, str) and value.strip() for value in snippet_values)
+            or not all(isinstance(value, str) and value.strip() for value in chunk_id_values)
+        ):
             raise ValueError(
-                "Evidence and chunk ID arrays must be non-empty parallel "
-                f"string arrays at row {line_number}: {error}"
-            ) from error
-        snippet_values = evidence.snippets
-        chunk_id_values = evidence.chunk_ids
-        item["expected_context_snippets_json"] = serialize_string_array(
-            snippet_values
+                f"Evidence and chunk ID arrays must be non-empty parallel "
+                f"string arrays at row {line_number}"
+            )
+        snippet_values = [value.strip() for value in snippet_values]
+        chunk_id_values = [value.strip() for value in chunk_id_values]
+        item["expected_context_snippets_json"] = json.dumps(
+            snippet_values, ensure_ascii=False
         )
-        item["source_chunk_ids_json"] = serialize_string_array(
-            chunk_id_values
+        item["source_chunk_ids_json"] = json.dumps(
+            chunk_id_values, ensure_ascii=False
         )
+        if (
+            snippet_values[0] != item["expected_context_snippet"]
+            or chunk_id_values[0] != item["source_chunk_id"]
+        ):
+            raise ValueError(
+                f"Singular evidence fields must equal the first JSON-array "
+                f"items at row {line_number}"
+            )
         missing = [
             column
-            for column in EVALUATION_DATASET_COLUMNS
+            for column in COLUMNS
             if column not in {"accepted_answers_json", "source_url"}
             and not item[column]
         ]
@@ -139,7 +156,7 @@ def main() -> None:
         cleaned.append(item)
 
     print(f"Rows: {len(cleaned)}")
-    print("Schema: " + ",".join(EVALUATION_DATASET_COLUMNS))
+    print("Schema: " + ",".join(COLUMNS))
     if args.check:
         print("Result: PASSED (no file changes)")
         return
@@ -150,11 +167,7 @@ def main() -> None:
 
     temporary = args.path.with_suffix(".csv.tmp")
     with temporary.open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(
-            output,
-            fieldnames=EVALUATION_DATASET_COLUMNS,
-            lineterminator="\n",
-        )
+        writer = csv.DictWriter(output, fieldnames=COLUMNS, lineterminator="\n")
         writer.writeheader()
         writer.writerows(cleaned)
     temporary.replace(args.path)

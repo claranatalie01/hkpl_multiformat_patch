@@ -7,13 +7,10 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 from dataclasses import dataclass
-from functools import lru_cache
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urljoin, urlparse
 
 import openpyxl
 from bs4 import BeautifulSoup, Tag
@@ -53,10 +50,6 @@ SUPPORTED_EXTENSIONS = {
 LEGACY_EXTENSIONS = {".doc", ".xls", ".ppt"}
 DETERMINISTIC_EXTENSIONS = {".csv", ".xlsx", ".xlsm", ".json", ".jsonl", ".xml"}
 DOCLING_EXTENSIONS = SUPPORTED_EXTENSIONS - DETERMINISTIC_EXTENSIONS
-LITERAL_PDF_URL = re.compile(
-    r"(?P<url>(?:https?://|/)[^\"'<>]*?\.pdf(?:\?[^\"'<>]*)?)",
-    re.IGNORECASE,
-)
 
 
 def file_content_hash(path: Path) -> str:
@@ -587,24 +580,15 @@ def _load_html_faq(
     return documents
 
 
-@lru_cache(maxsize=4)
 def _docling_converter(ocr_languages: str):
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.object_detection_engine_options import (
-        TransformersObjectDetectionEngineOptions,
-    )
-    from docling.datamodel.pipeline_options import (
-        LayoutObjectDetectionOptions,
-        PdfPipelineOptions,
-        TesseractCliOcrOptions,
-    )
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
     artifacts_path = Path(os.getenv("DOCLING_ARTIFACTS_PATH", "/app/models/docling"))
     if not artifacts_path.exists():
         raise RuntimeError(
-            f"Docling artifacts are not available at {artifacts_path}; "
-            "ingestion cannot continue offline."
+            f"Docling artifacts are not available at {artifacts_path}; ingestion cannot continue offline."
         )
 
     pipeline_options = PdfPipelineOptions(
@@ -621,14 +605,6 @@ def _docling_converter(ocr_languages: str):
         do_formula_enrichment=False,
         do_picture_classification=False,
         do_picture_description=False,
-        # torch.compile needs a C++ toolchain at runtime. Compilation is only a
-        # performance optimization and makes the slim offline image brittle.
-        layout_options=LayoutObjectDetectionOptions.from_preset(
-            "layout_heron_default",
-            engine_options=TransformersObjectDetectionEngineOptions(
-                compile_model=False,
-            ),
-        ),
     )
     format_option = PdfFormatOption(pipeline_options=pipeline_options)
     return DocumentConverter(format_options={
@@ -681,22 +657,7 @@ def _load_or_convert_docling(
         ):
             return DoclingDocument.model_validate(payload["document"]), json_path
 
-    conversion_path = path
-    temporary_directory: tempfile.TemporaryDirectory[str] | None = None
-    if path.suffix.lower() in {".html", ".htm"}:
-        html = path.read_text(encoding="utf-8", errors="strict")
-        if not re.search(r"<html(?:\s|>)", html, re.IGNORECASE):
-            temporary_directory = tempfile.TemporaryDirectory()
-            conversion_path = Path(temporary_directory.name) / path.name
-            conversion_path.write_text(
-                f"<!doctype html><html><body>{html}</body></html>",
-                encoding="utf-8",
-            )
-    try:
-        result = _docling_converter(ocr_languages).convert(conversion_path)
-    finally:
-        if temporary_directory is not None:
-            temporary_directory.cleanup()
+    result = _docling_converter(ocr_languages).convert(path)
     docling_document = result.document
     return docling_document, _persist_docling_document(docling_document, base_metadata)
 
@@ -724,404 +685,13 @@ def _docling_locator(doc_items: list[Any], structure_path: list[str]) -> dict[st
     return locator
 
 
-def _clean_table_cell(value: Any) -> str:
-    text = "" if value is None else str(value)
-    return re.sub(r"\s+", " ", text).strip().replace("|", r"\|")
-
-
-def _docling_table_headers(table: Any) -> list[str]:
-    header_rows: list[list[Any]] = []
-    for row in table.data.grid:
-        if not any(getattr(cell, "column_header", False) for cell in row):
-            break
-        header_rows.append(row)
-
-    if not header_rows:
-        return []
-
-    headers: list[str] = []
-    for column in range(table.data.num_cols):
-        parts: list[str] = []
-        for row in header_rows:
-            if column >= len(row):
-                continue
-            value = _clean_table_cell(getattr(row[column], "text", ""))
-            if value and value not in parts:
-                parts.append(value)
-        headers.append(" / ".join(parts) or f"Column {column + 1}")
-    return headers
-
-
-def _docling_table_links(
-    table: Any,
-    docling_document: Any,
-    headers: list[str],
-    row_number: int,
-) -> list[dict[str, Any]]:
-    header_rows = 0
-    for row in table.data.grid:
-        if not any(getattr(cell, "column_header", False) for cell in row):
-            break
-        header_rows += 1
-    grid_index = header_rows + row_number - 1
-    if grid_index >= len(table.data.grid):
-        return []
-
-    links: list[dict[str, Any]] = []
-    for column, cell in enumerate(table.data.grid[grid_index]):
-        ref = getattr(cell, "ref", None)
-        if ref is None:
-            continue
-        try:
-            target = ref.resolve(docling_document)
-        except (AttributeError, KeyError, ValueError):
-            continue
-        hyperlink = getattr(target, "hyperlink", None)
-        if hyperlink:
-            links.append({
-                "row": row_number,
-                "column": headers[column] if column < len(headers) else column + 1,
-                "url": str(hyperlink),
-            })
-    return links
-
-
-def _docling_table_documents(
-    table: Any,
-    docling_document: Any,
-    base_metadata: dict[str, Any],
-    *,
-    structure_path: list[str],
-    parser_version: str,
-    json_path: Path,
-    parent_record_id: str,
-    tokenizer: Any,
-    section_index: int,
-) -> list[Document]:
-    dataframe = table.export_to_dataframe(doc=docling_document).fillna("")
-    if dataframe.empty:
-        return []
-
-    headers = _docling_table_headers(table)
-    if len(headers) != len(dataframe.columns):
-        headers = [
-            _clean_table_cell(column) or f"Column {index + 1}"
-            for index, column in enumerate(dataframe.columns)
-        ]
-    header = " | ".join(headers)
-    source_title = _clean_table_cell(base_metadata.get("source_title"))
-    try:
-        caption = _clean_table_cell(table.caption_text(docling_document))
-    except (AttributeError, KeyError, ValueError):
-        caption = ""
-    table_title = next(
-        (
-            value
-            for value in (
-                caption,
-                *(_clean_table_cell(item) for item in reversed(structure_path)),
-            )
-            if value and value.casefold() != source_title.casefold()
-        ),
-        "",
-    )
-    context_lines = [source_title]
-    if table_title:
-        context_lines.append(table_title)
-    repeat_context = "\n".join(part for part in context_lines if part)
-    repeat_context = f"{repeat_context}\n\n{header}" if repeat_context else header
-    table_ref = str(getattr(table, "self_ref", ""))
-
-    rows = [
-        " | ".join(_clean_table_cell(value) for value in row)
-        for row in dataframe.itertuples(index=False, name=None)
-    ]
-    documents: list[Document] = []
-
-    def emit(start: int, end: int) -> None:
-        row_text = "\n".join(rows[start - 1:end])
-        evidence_text = f"{repeat_context}\n\n{row_text}"
-        locator = _docling_locator([table], structure_path)
-        locator.update({
-            "table_ref": table_ref,
-            "row_start": start,
-            "row_end": end,
-        })
-        structural_kind = "table_row" if start == end else "table"
-        links = [
-            link
-            for row_number in range(start, end + 1)
-            for link in _docling_table_links(
-                table,
-                docling_document,
-                headers,
-                row_number,
-            )
-        ]
-        metadata = {
-            **base_metadata,
-            "section_index": section_index + len(documents),
-            "structural_kind": structural_kind,
-            "structure_path": [],
-            "table_structure_path": structure_path,
-            "locator": locator,
-            "parser_version": parser_version,
-            "docling_json_path": str(json_path),
-            "docling_item_refs": [table_ref],
-            "parent_record_id": parent_record_id,
-            "record_kind": "table",
-            "chunk_policy": "table_rows",
-            "table_ref": table_ref,
-            "table_title": table_title,
-            "table_header": header,
-            "repeat_context": repeat_context,
-            "row_start": start,
-            "row_end": end,
-            "cell_links": links,
-            "evidence_text": evidence_text,
-        }
-        if locator.get("page"):
-            metadata["page_number"] = locator["page"]
-        if table_title:
-            metadata["section_heading"] = table_title
-        metadata["search_text"] = build_search_text(metadata, evidence_text)
-        document = Document(text=evidence_text, metadata=metadata)
-        document.id_ = f"{base_metadata['source_version_id']}:table:{table_ref}:{start}-{end}"
-        documents.append(document)
-
-    start = 1
-    for row_number in range(1, len(rows) + 1):
-        candidate = f"{repeat_context}\n\n" + "\n".join(rows[start - 1:row_number])
-        metadata = {**base_metadata, "structure_path": []}
-        if tokenizer.count_tokens(build_search_text(metadata, candidate)) <= DEFAULT_MAX_TOKENS:
-            continue
-        if row_number > start:
-            emit(start, row_number - 1)
-            start = row_number
-    if start <= len(rows):
-        emit(start, len(rows))
-    return documents
-
-
-def _load_html_form_directory(
-    path: Path,
-    base_metadata: dict[str, Any],
-) -> list[Document]:
-    """Turn the HKPL forms landing page into searchable form-link records."""
-    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
-    documents: list[Document] = []
-    for row_index, row in enumerate(soup.select("table tr")):
-        cells = [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
-        link = row.find("a", href=True)
-        if len(cells) < 2 or not link or cells[:2] == ["Form No.", "Form Name"]:
-            continue
-        form_number, form_name = cells[:2]
-        href = urljoin(
-            str(base_metadata.get("source_url") or ""),
-            str(link.get("href") or "").strip(),
-        )
-        evidence = f"Form number: {form_number}\nForm name: {form_name}\nDownload URL: {href}"
-        document = _make_document(
-            evidence,
-            base_metadata=base_metadata,
-            section_index=len(documents),
-            structural_kind="table_row",
-            locator={"type": "web_link", "row": row_index + 1, "url": href},
-            structure_path=("Forms",),
-            extra_metadata={
-                "form_number": form_number,
-                "form_name": form_name,
-                "download_url": href,
-                "table_header": "Form number | Form name | Download URL",
-                "repeat_context": "Form number | Form name | Download URL",
-            },
-        )
-        if document:
-            documents.append(document)
-    return documents
-
-
-def _load_html_fallback(
-    path: Path,
-    base_metadata: dict[str, Any],
-) -> list[Document]:
-    """Recover useful HTML text when Docling exports an empty document."""
-    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
-    for tag in soup.select("script, style, noscript, template"):
-        tag.decompose()
-
-    base_url = str(base_metadata.get("source_url") or "")
-    base_host = urlparse(base_url).netloc.lower()
-    resource_links: list[tuple[str, str]] = []
-    seen_urls: set[str] = set()
-    for tag in soup.find_all(True):
-        label = re.sub(r"\s+", " ", tag.get_text(" ", strip=True)).strip()
-        for value in tag.attrs.values():
-            values = value if isinstance(value, list) else [value]
-            for item in values:
-                for match in LITERAL_PDF_URL.finditer(str(item)):
-                    absolute = urljoin(base_url, match.group("url"))
-                    parsed = urlparse(absolute)
-                    if (
-                        parsed.scheme not in {"http", "https"}
-                        or (base_host and parsed.netloc.lower() != base_host)
-                        or absolute in seen_urls
-                    ):
-                        continue
-                    seen_urls.add(absolute)
-                    resource_links.append((label or Path(parsed.path).name, absolute))
-
-    lines = list(dict.fromkeys(
-        re.sub(r"\s+", " ", line).strip()
-        for line in soup.get_text("\n").splitlines()
-        if line.strip()
-    ))
-    lines.extend(f"{label}: {url}" for label, url in resource_links)
-    evidence = "\n".join(lines).strip()
-
-    # Empty Docling output plus interactive controls is normally a login/search
-    # shell. A genuine resource directory remains eligible through its links.
-    if (soup.select_one("form, input, textarea, select") and not resource_links) or (
-        len(evidence) < 200 and not resource_links
-    ):
-        return []
-
-    document = _make_document(
-        evidence,
-        base_metadata=base_metadata,
-        section_index=0,
-        structural_kind="fallback",
-        locator={"type": "web_document", "url": base_url},
-        extra_metadata={"parser_version": "html-fallback-v1"},
-    )
-    return [document] if document else []
-
-
-def _load_html_event_records(
-    path: Path,
-    base_metadata: dict[str, Any],
-) -> list[Document]:
-    """Keep each HKPL event-detail table as one field-aware record."""
-    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
-    root = soup.select_one(".main_content") or soup
-    documents: list[Document] = []
-    for table_index, table in enumerate(root.find_all("table")):
-        fields: list[str] = []
-        for row in table.find_all("tr"):
-            cells = [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
-            if len(cells) >= 2 and any(cells):
-                fields.append(f"{cells[0].rstrip(':')}: {' | '.join(cells[1:])}")
-        evidence = "\n".join(fields)
-        document = _make_document(
-            evidence,
-            base_metadata=base_metadata,
-            section_index=len(documents),
-            structural_kind="record",
-            locator={"type": "web_table", "table": table_index + 1},
-            structure_path=(base_metadata.get("source_title") or "Event",),
-        )
-        if document:
-            documents.append(document)
-    return documents
-
-
-def _load_html_branch_profile(
-    path: Path,
-    base_metadata: dict[str, Any],
-) -> list[Document]:
-    """Preserve each tab of an HKPL branch profile as an addressable section."""
-    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
-    documents: list[Document] = []
-    for panel in soup.select(".info_tabcont"):
-        evidence = panel.get_text("\n", strip=True)
-        if len(evidence) < 40 or "loading events" in evidence.lower():
-            continue
-        anchor = str(panel.get("id") or "")
-        document = _make_document(
-            evidence,
-            base_metadata=base_metadata,
-            section_index=len(documents),
-            structural_kind="record",
-            locator={"type": "web_anchor", "anchor": anchor},
-            structure_path=(base_metadata.get("source_title") or "Library profile",),
-        )
-        if document:
-            documents.append(document)
-    return documents
-
-
-def _expanded_table_rows(table: Tag) -> list[list[str]]:
-    """Expand row/column spans so schedule cells retain their row context."""
-    rows: list[list[str]] = []
-    pending: dict[int, tuple[str, int]] = {}
-    for html_row in table.find_all("tr"):
-        values: dict[int, str] = {}
-        for column, (value, remaining) in list(pending.items()):
-            values[column] = value
-            if remaining <= 1:
-                del pending[column]
-            else:
-                pending[column] = (value, remaining - 1)
-
-        column = 0
-        for cell in html_row.find_all(["th", "td"], recursive=False):
-            while column in values:
-                column += 1
-            value = cell.get_text(" ", strip=True)
-            colspan = max(int(cell.get("colspan") or 1), 1)
-            rowspan = max(int(cell.get("rowspan") or 1), 1)
-            for offset in range(colspan):
-                values[column + offset] = value
-                if rowspan > 1:
-                    pending[column + offset] = (value, rowspan - 1)
-            column += colspan
-        if values:
-            rows.append([values.get(index, "") for index in range(max(values) + 1)])
-    return rows
-
-
-def _load_html_hours_rows(
-    path: Path,
-    base_metadata: dict[str, Any],
-) -> list[Document]:
-    """Index HKPL hours and mobile schedules by logical table row."""
-    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="strict"), "html.parser")
-    root = soup.select_one(".main_content") or soup
-    documents: list[Document] = []
-    for table_index, table in enumerate(root.find_all("table")):
-        rows = _expanded_table_rows(table)
-        if not rows:
-            continue
-        wide = max(len(row) for row in rows) >= 3
-        header_count = 0
-        if wide:
-            header_count = 2 if len(rows) > 1 and any(
-                "week " in cell.lower() for cell in rows[1]
-            ) else 1
-        header = "\n".join(" | ".join(row) for row in rows[:header_count]).strip()
-        group = ""
-        for row_index, row in enumerate(rows[header_count:], start=header_count + 1):
-            unique_values = [value for value in dict.fromkeys(row) if value]
-            if wide and len(unique_values) == 1:
-                group = unique_values[0]
-                continue
-            row_text = " | ".join(row).strip(" |")
-            evidence = "\n".join(part for part in (header, group, row_text) if part)
-            document = _make_document(
-                evidence,
-                base_metadata=base_metadata,
-                section_index=len(documents),
-                structural_kind="table_row",
-                locator={"type": "web_table_row", "table": table_index + 1, "row": row_index},
-                structure_path=(base_metadata.get("source_title") or "Opening hours",),
-                extra_metadata={
-                    "table_header": header,
-                    "repeat_context": header,
-                },
-            )
-            if document:
-                documents.append(document)
-    return documents
+def _table_header_text(table_text: str) -> str:
+    lines = [line for line in table_text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if len(lines) > 1 and re.fullmatch(r"[\s|:+-]+", lines[1]):
+        return "\n".join(lines[:2])
+    return lines[0]
 
 
 def _load_docling(
@@ -1169,59 +739,18 @@ def _load_docling(
         omit_header_on_overflow=False,
     )
     documents: list[Document] = []
-    seen_table_refs: set[str] = set()
-    seen_mixed_item_refs: set[str] = set()
-    section_index = 0
-    for chunk in chunker.chunk(dl_doc=docling_document):
+    for chunk_index, chunk in enumerate(chunker.chunk(dl_doc=docling_document)):
         evidence_text = str(chunk.text or "").strip()
         if not evidence_text:
             continue
         structure_path = [str(value) for value in (chunk.meta.headings or []) if value]
         doc_items = list(chunk.meta.doc_items or [])
-        table_items = [item for item in doc_items if isinstance(item, TableItem)]
-        for table in table_items:
-            table_ref = str(getattr(table, "self_ref", ""))
-            if table_ref in seen_table_refs:
-                continue
-            seen_table_refs.add(table_ref)
-            table_documents = _docling_table_documents(
-                table,
-                docling_document,
-                base_metadata,
-                structure_path=structure_path,
-                parser_version=parser_version,
-                json_path=json_path,
-                parent_record_id=source_parent_id,
-                tokenizer=tokenizer,
-                section_index=section_index,
-            )
-            documents.extend(table_documents)
-            section_index += len(table_documents)
-
-        if table_items:
-            non_table_text: list[str] = []
-            for item in doc_items:
-                if isinstance(item, TableItem):
-                    continue
-                item_ref = str(getattr(item, "self_ref", ""))
-                if item_ref and item_ref in seen_mixed_item_refs:
-                    continue
-                text = str(getattr(item, "text", "") or "").strip()
-                if not text:
-                    continue
-                if item_ref:
-                    seen_mixed_item_refs.add(item_ref)
-                non_table_text.append(text)
-            evidence_text = "\n\n".join(dict.fromkeys(non_table_text))
-            doc_items = [item for item in doc_items if not isinstance(item, TableItem)]
-            if not evidence_text:
-                continue
-
-        structural_kind = "hierarchical_leaf"
+        is_table = any(isinstance(item, TableItem) for item in doc_items)
+        structural_kind = "table" if is_table else "hierarchical_leaf"
         locator = _docling_locator(doc_items, structure_path)
         metadata = {
             **base_metadata,
-            "section_index": section_index,
+            "section_index": chunk_index,
             "structural_kind": structural_kind,
             "structure_path": structure_path,
             "locator": locator,
@@ -1243,6 +772,12 @@ def _load_docling(
             })
             if record_header and not evidence_text.startswith(record_header):
                 evidence_text = f"{record_header}\n{evidence_text}"
+        if is_table:
+            table_header = _table_header_text(evidence_text)
+            metadata.update({
+                "table_header": table_header,
+                "repeat_context": table_header,
+            })
         metadata.update({
             "record_kind": record_kind,
             "chunk_policy": chunk_policy_for(
@@ -1258,9 +793,8 @@ def _load_docling(
         metadata["search_text"] = build_search_text(metadata, evidence_text)
 
         document = Document(text=evidence_text, metadata=metadata)
-        document.id_ = f"{base_metadata['source_version_id']}:docling:{section_index}"
+        document.id_ = f"{base_metadata['source_version_id']}:docling:{chunk_index}"
         documents.append(document)
-        section_index += 1
     return documents
 
 
@@ -1329,39 +863,6 @@ def load_file(
         return _load_xml(path, base_metadata)
     if extension in {".html", ".htm"}:
         html = path.read_text(encoding="utf-8", errors="strict")
-        html_source_url = str(base_metadata.get("source_url") or "")
-        if re.search(
-            r"/about-us/forms\.html(?:[?#].*)?$",
-            html_source_url,
-            re.IGNORECASE,
-        ):
-            form_documents = _load_html_form_directory(path, base_metadata)
-            if form_documents:
-                return form_documents
-        if re.search(
-            r"/extension-activities/(?:event|sub-event)/\d+",
-            html_source_url,
-            re.IGNORECASE,
-        ):
-            event_documents = _load_html_event_records(path, base_metadata)
-            if event_documents:
-                return event_documents
-        if re.search(
-            r"/locations/opening-hours(?:-\d+)?\.html(?:[?#].*)?$",
-            html_source_url,
-            re.IGNORECASE,
-        ):
-            hours_documents = _load_html_hours_rows(path, base_metadata)
-            if hours_documents:
-                return hours_documents
-        if re.search(
-            r"/locations/(?!opening-hours|mobile-libraries|libraries)[^/]+/[^/]+\.html(?:[?#].*)?$",
-            html_source_url,
-            re.IGNORECASE,
-        ):
-            branch_documents = _load_html_branch_profile(path, base_metadata)
-            if branch_documents:
-                return branch_documents
         if base_metadata["record_kind"] == "record":
             base_metadata.update(
                 extract_html_record_metadata(html, base_metadata["record_kind"])
@@ -1371,8 +872,5 @@ def load_file(
             if faq_documents:
                 return faq_documents
     if extension in DOCLING_EXTENSIONS:
-        documents = _load_docling(path, base_metadata, ocr_languages)
-        if documents or extension not in {".html", ".htm"}:
-            return documents
-        return _load_html_fallback(path, base_metadata)
+        return _load_docling(path, base_metadata, ocr_languages)
     raise ValueError(f"No reader configured for {extension}")

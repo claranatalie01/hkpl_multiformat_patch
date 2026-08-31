@@ -2,7 +2,7 @@
 
 The registry records source identity, file location, hash, version, ingestion
 status, and expected chunk count. The actual chunk text and embeddings live in
-the separately configured LlamaIndex-managed ``data_<VECTOR_TABLE>`` table.
+the separate LlamaIndex-managed ``data_hkpl_knowledge`` vector table.
 """
 
 from typing import Any, Optional

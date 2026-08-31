@@ -8,6 +8,7 @@ writes use the shared readers, chunking, embedding, registry, and vector store.
 
 import argparse
 import csv
+import json
 import os
 import re
 import sys
@@ -30,21 +31,12 @@ from llama_index.core.vector_stores import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.evaluation.schema import (
-    EVALUATION_DATASET_COLUMNS,
-    has_supported_evaluation_columns,
-    parse_json_string_array,
-    parse_parallel_evidence,
-    serialize_string_array,
-)
 from src.infrastructure.embedding import (
     embed_model,
 )
-from src.infrastructure.table_names import configured_table_name
 from src.infrastructure.vector_store import (
     EMBED_DIM,
-    VECTOR_TABLE_NAME,
-    ensure_hybrid_search_schema,
+    VECTOR_TABLE,
     vector_store,
 )
 from src.infrastructure.db import engine
@@ -63,10 +55,29 @@ from src.ingestion.service import (
     reindex_registered_document,
 )
 from src.ingestion.write_guard import ensure_corpus_writable
-EVALUATION_DATASET_TABLE = configured_table_name(
+
+
+EVALUATION_DATASET_TABLE = os.getenv(
     "EVALUATION_DATASET_TABLE",
     "evaluation_dataset",
 )
+EVALUATION_DATASET_COLUMNS = [
+    "domain",
+    "query",
+    "expected_answer_text",
+    "expected_context_snippet",
+    "expected_context_snippets_json",
+    "accepted_answers_json",
+    "source_title",
+    "source_url",
+    "source_document_id",
+    "source_chunk_id",
+    "source_chunk_ids_json",
+]
+LEGACY_EVALUATION_DATASET_COLUMNS = [
+    column for column in EVALUATION_DATASET_COLUMNS
+    if column not in {"expected_context_snippets_json", "source_chunk_ids_json"}
+]
 
 
 def create_evaluation_dataset_table() -> None:
@@ -159,10 +170,13 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
     with path.open("r", newline="", encoding="utf-8-sig") as file:
         reader = csv.DictReader(file)
         actual_columns = list(reader.fieldnames or [])
-        if not has_supported_evaluation_columns(actual_columns):
+        if actual_columns not in (
+            EVALUATION_DATASET_COLUMNS,
+            LEGACY_EVALUATION_DATASET_COLUMNS,
+        ):
             raise ValueError(
                 "Evaluation CSV columns must exactly match, in order: "
-                f"{list(EVALUATION_DATASET_COLUMNS)}. Found: {actual_columns}"
+                f"{EVALUATION_DATASET_COLUMNS}. Found: {actual_columns}"
             )
 
         rows = []
@@ -217,30 +231,87 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
                     f"source_chunk_id does not belong to source_document_id "
                     f"at row {line_number}: {chunk_id!r}"
                 )
-            evidence = parse_parallel_evidence(
-                item,
-                context=f"row {line_number} ({item['query']!r})",
-                deduplicate_pairs=True,
-            )
-            item["expected_context_snippets_json"] = serialize_string_array(
-                evidence.snippets
-            )
-            item["source_chunk_ids_json"] = serialize_string_array(
-                evidence.chunk_ids
-            )
-            try:
-                aliases = parse_json_string_array(
-                    item.get("accepted_answers_json"),
-                    field_name="accepted_answers_json",
-                    strict=True,
-                    deduplicate=True,
+            parsed_evidence: dict[str, list[str]] = {}
+            for field, fallback in (
+                ("expected_context_snippets_json", [item["expected_context_snippet"]]),
+                ("source_chunk_ids_json", [item["source_chunk_id"]]),
+            ):
+                raw_values = item.get(field) or json.dumps(fallback)
+                try:
+                    values = json.loads(raw_values)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"Invalid {field} for {item['query']!r}: {error}"
+                    ) from error
+                if not isinstance(values, list) or not all(
+                    isinstance(value, str) and value.strip() for value in values
+                ):
+                    raise ValueError(
+                        f"{field} must be a JSON array of non-empty strings "
+                        f"for {item['query']!r}."
+                    )
+                # Preserve array positions. The same exact evidence sentence
+                # may legitimately occur in several different chunks, so
+                # deduplicating snippets independently would destroy their
+                # one-to-one relationship with the chunk-ID array.
+                values = [value.strip() for value in values]
+                if field == "source_chunk_ids_json" and any(
+                    not value.startswith(f"{document_id}:") for value in values
+                ):
+                    raise ValueError(
+                        "Every source_chunk_ids_json value must belong to "
+                        f"source_document_id at row {line_number}."
+                    )
+                parsed_evidence[field] = values
+            evidence_snippets = parsed_evidence["expected_context_snippets_json"]
+            evidence_chunk_ids = parsed_evidence["source_chunk_ids_json"]
+            if len(evidence_snippets) != len(evidence_chunk_ids):
+                raise ValueError(
+                    "expected_context_snippets_json and source_chunk_ids_json "
+                    f"must be parallel arrays for {item['query']!r}."
                 )
-            except ValueError as error:
+            evidence_pairs = list(dict.fromkeys(zip(
+                evidence_chunk_ids,
+                evidence_snippets,
+                strict=True,
+            )))
+            evidence_chunk_ids = [pair[0] for pair in evidence_pairs]
+            evidence_snippets = [pair[1] for pair in evidence_pairs]
+            item["expected_context_snippets_json"] = json.dumps(
+                evidence_snippets,
+                ensure_ascii=False,
+            )
+            item["source_chunk_ids_json"] = json.dumps(
+                evidence_chunk_ids,
+                ensure_ascii=False,
+            )
+            if (
+                evidence_snippets[0] != item["expected_context_snippet"]
+                or evidence_chunk_ids[0] != item["source_chunk_id"]
+            ):
+                raise ValueError(
+                    "Legacy singular evidence fields must equal the first "
+                    f"items in their JSON arrays for {item['query']!r}."
+                )
+            raw_aliases = item.get("accepted_answers_json") or "[]"
+            try:
+                aliases = json.loads(raw_aliases)
+            except json.JSONDecodeError as error:
                 raise ValueError(
                     f"Invalid accepted_answers_json for {item['query']!r}: "
                     f"{error}"
                 ) from error
-            item["accepted_answers_json"] = serialize_string_array(aliases)
+            if not isinstance(aliases, list) or not all(
+                isinstance(alias, str) and alias.strip() for alias in aliases
+            ):
+                raise ValueError(
+                    "accepted_answers_json must be a JSON array of non-empty "
+                    f"strings for {item['query']!r}."
+                )
+            item["accepted_answers_json"] = json.dumps(
+                list(dict.fromkeys(alias.strip() for alias in aliases)),
+                ensure_ascii=False,
+            )
             rows.append(item)
 
     with engine.begin() as connection:
@@ -436,6 +507,7 @@ def load_faq_documents(
     return documents
 
 
+
 def delete_existing_faq_chunks() -> int:
     filters = MetadataFilters(
         filters=[
@@ -458,7 +530,7 @@ def delete_existing_faq_chunks() -> int:
 
 def clear_hkpl_chunks() -> int:
     """Clear HKPL chunks while preserving benchmark rows in the shared table."""
-    table_name = VECTOR_TABLE_NAME
+    table_name = f"data_{VECTOR_TABLE}"
     with engine.begin() as connection:
         result = connection.execute(
             text(f"""
@@ -576,8 +648,7 @@ def rebuild_registered_documents(documents: list[dict]) -> tuple[int, list[str]]
 
 
 def audit_knowledge_chunks() -> bool:
-    ensure_hybrid_search_schema()
-    table_name = VECTOR_TABLE_NAME
+    table_name = f"data_{VECTOR_TABLE}"
     with engine.connect() as connection:
         summary = connection.execute(
             text(f"""
@@ -603,6 +674,7 @@ def audit_knowledge_chunks() -> bool:
                            OR COALESCE(metadata_->>'chunk_policy', '') = ''
                            OR COALESCE(metadata_->>'parent_record_id', '') = ''
                            OR COALESCE(metadata_->>'parser_version', '') = ''
+                           OR COALESCE(metadata_->>'chunker_version', '') = ''
                            OR COALESCE(metadata_->>'search_text', '') = ''
                            OR COALESCE(metadata_->>'token_count', '') = ''
                            OR COALESCE(
@@ -840,9 +912,7 @@ def audit_knowledge_chunks() -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Ingest FAQ or registered knowledge and synchronize evaluation data."
-        ),
+        description="Ingest FAQ knowledge and/or synchronize the evaluation dataset.",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -949,7 +1019,7 @@ def main() -> None:
         )
         removed_chunks = clear_hkpl_chunks()
         print(
-            f"Removed {removed_chunks} HKPL chunks from {VECTOR_TABLE_NAME}; "
+            f"Removed {removed_chunks} HKPL chunks from data_{VECTOR_TABLE}; "
             "distractor corpus chunks were preserved."
         )
 
@@ -986,7 +1056,7 @@ def main() -> None:
 
         print(
             "Ingested FAQ data into "
-            + VECTOR_TABLE_NAME
+            f"data_{VECTOR_TABLE}"
         )
     elif rebuild_all and faq_is_registered:
         print(

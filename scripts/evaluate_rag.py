@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Evaluate retrieval, reranking, evidence coverage, and generated answers.
 
-Rows use the production retriever and shared grounded-answer prompt, with
-benchmark-only distractors, judges, metrics, and tracing retained around them.
-The script exports per-question results and aggregate diagnostics and attributes
-failures to retrieval, reranking, context, or answer generation. It reads the
-vector corpus but does not ingest documents.
+Rows from the approved evaluation table are run through the live RAG pipeline.
+The script exports per-question results and aggregate diagnostics, records
+Phoenix traces, and attributes failures to retrieval, reranking, context, or
+answer generation. It reads the vector corpus but does not ingest documents.
 """
 
 import argparse
@@ -36,16 +35,9 @@ from sqlalchemy import text
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.answering import (
-    answer_completion_budget,
-    build_grounded_answer_prompt,
-    format_source_block,
-)
-from src.corpus import is_distractor_metadata
-from src.evaluation.schema import parse_accepted_answers, parse_json_string_array
 from src.infrastructure.db import engine
-from src.infrastructure.table_names import configured_table_name
-from src.infrastructure.vector_store import VECTOR_TABLE_NAME
+from src.infrastructure.vector_store import VECTOR_TABLE
+from src.corpus import is_distractor_metadata
 from src.llm_client import http_llm, http_llm_with_usage
 from src.observability import setup_phoenix_tracing
 from src.phoenix_annotations import (
@@ -58,10 +50,7 @@ from src.retrieval import get_last_retrieval_trace, retrieve_nodes
 from src.token_counting import LLM_TOKENIZER_NAME, LLM_TOKENIZER_URL, count_tokens
 from src.tracing_helpers import set_json_attribute, set_llm_attributes, set_span_io
 
-HKPL_EVALUATION_TABLE = configured_table_name(
-    "EVALUATION_DATASET_TABLE",
-    "evaluation_dataset",
-)
+HKPL_EVALUATION_TABLE = os.getenv("EVALUATION_DATASET_TABLE", "evaluation_dataset")
 RESULTS_PATH = Path(
     os.getenv(
         "RAG_EVALUATION_RESULTS_PATH",
@@ -355,9 +344,52 @@ def prior_failure_selection(results_path: Path) -> dict:
     }
 
 
+def safe_table_name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise ValueError(f"Unsafe SQL table name: {value!r}")
+    return value
+
+
+def parse_accepted_answers(value, primary_answer: str) -> list[str]:
+    if isinstance(value, str):
+        try:
+            aliases = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            aliases = []
+    elif isinstance(value, list):
+        aliases = value
+    else:
+        aliases = []
+
+    answers = [primary_answer, *aliases]
+    return list(dict.fromkeys(
+        str(answer).strip() for answer in answers if str(answer).strip()
+    ))
+
+
+def parse_json_string_list(value, fallback: list[str]) -> list[str]:
+    """Read a JSON/JSONB string list, using legacy singular labels if empty."""
+    if isinstance(value, str):
+        try:
+            values = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            values = []
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    cleaned = [
+        str(item).strip() for item in values
+        if isinstance(item, str) and item.strip()
+    ]
+    # Do not deduplicate here: repeated text in different chunks must retain
+    # the same positional relationship as source_chunk_ids_json.
+    return cleaned or fallback
+
+
 def load_hkpl_rows(limit: int | None) -> list[dict]:
-    table = HKPL_EVALUATION_TABLE
-    vector_table = VECTOR_TABLE_NAME
+    table = safe_table_name(HKPL_EVALUATION_TABLE)
+    vector_table = safe_table_name(f"data_{VECTOR_TABLE}")
     limit_clause = "LIMIT :limit" if limit is not None else ""
     parameters = {"limit": limit} if limit is not None else {}
     with engine.connect() as connection:
@@ -410,18 +442,14 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
             "expected_context_snippet": str(
                 row.get("expected_context_snippet") or ""
             ),
-            "expected_context_snippets": parse_json_string_array(
+            "expected_context_snippets": parse_json_string_list(
                 row.get("expected_context_snippets_json"),
-                field_name="expected_context_snippets_json",
-                fallback=[str(row.get("expected_context_snippet") or "")],
-                strict=False,
+                [str(row.get("expected_context_snippet") or "")],
             ),
             "expected_document_ids": [str(row["source_document_id"])],
-            "expected_chunk_ids": parse_json_string_array(
+            "expected_chunk_ids": parse_json_string_list(
                 row.get("source_chunk_ids_json"),
-                field_name="source_chunk_ids_json",
-                fallback=[str(row["source_chunk_id"])],
-                strict=False,
+                [str(row["source_chunk_id"])],
             ),
         }
         for row in rows
@@ -430,8 +458,8 @@ def load_hkpl_rows(limit: int | None) -> list[dict]:
 
 def load_hkpl_coverage() -> dict[str, int | float]:
     """Count intended labels and labels still linked to searchable chunks."""
-    table = HKPL_EVALUATION_TABLE
-    vector_table = VECTOR_TABLE_NAME
+    table = safe_table_name(HKPL_EVALUATION_TABLE)
+    vector_table = safe_table_name(f"data_{VECTOR_TABLE}")
     with engine.connect() as connection:
         row = connection.execute(
             text(f"""
@@ -470,7 +498,7 @@ def load_hkpl_coverage() -> dict[str, int | float]:
 
 
 def load_corpus_counts() -> dict[str, int]:
-    vector_table = VECTOR_TABLE_NAME
+    vector_table = safe_table_name(f"data_{VECTOR_TABLE}")
     with engine.connect() as connection:
         rows = connection.execute(
             text(f"""
@@ -578,10 +606,10 @@ def build_context(nodes) -> tuple[str, list[str], list[dict]]:
         for rank, item in enumerate(nodes, start=1):
             node = item.node
             metadata = node.metadata or {}
-            content = str(metadata.get("evidence_text") or node.get_content())
+            content = node.get_content()
             chunk_id = str(metadata.get("chunk_id") or "")
             title = str(metadata.get("source_title") or "")
-            parts.append(format_source_block(content, rank, title=title))
+            parts.append(f"[Source {rank}: {title}]\n{content}")
             contexts.append(content)
             sources.append(
                 {
@@ -614,19 +642,48 @@ async def generate_answer(
     enable_thinking: bool = False,
     thinking_budget_tokens: int = DEFAULT_REASONING_BUDGET,
 ) -> tuple[str, dict]:
-    prompt = build_grounded_answer_prompt(
-        question=question,
-        context=context,
-    )
+    prompt = f"""You are a retrieval-grounded question answering assistant.
+
+Answer the question using only the retrieved context.
+
+Rules:
+- Output only the final answer. Do not reveal analysis, reasoning,
+  reconsideration, or self-correction.
+- Be concise. Normally answer in one to three sentences; use a short list only
+  when the question requests multiple items.
+- For a yes/no question, begin with "Yes" or "No" and give the decisive
+  supporting fact. Never include contradictory yes and no conclusions.
+- Identify every constraint and relationship expressed by the question. Base
+  the answer on evidence that satisfies those constraints together, not on
+  separate passages that each match only part of the request.
+- Resolve apparent conflicts by specificity: evidence matching more of the
+  question's constraints takes precedence over evidence describing a broader
+  group, scope, heading, or range.
+- Do not infer that a fact about a group applies to each member, or that a fact
+  about one member applies to the group. For a binary question, answer "Yes"
+  only when the exact requested relationship is directly supported.
+- Before answering, silently identify the most specific supporting evidence
+  and verify the conclusion against every requested constraint.
+- Combine evidence from multiple sources when required, but do not invent
+  information.
+- If the context does not contain enough evidence, say exactly: "I don't have
+  that information in my knowledge base."
+
+Retrieved context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
     # llama.cpp counts hidden reasoning and visible answer tokens against the
     # same ``max_tokens`` completion budget. Reserve the requested thinking
     # allowance in addition to the visible-answer allowance so reasoning mode
     # cannot consume the space needed to finish the answer.
-    request_max_tokens = answer_completion_budget(
-        EVALUATION_ANSWER_MAX_TOKENS,
-        enable_thinking=enable_thinking,
-        thinking_budget_tokens=thinking_budget_tokens,
-    )
+    request_max_tokens = EVALUATION_ANSWER_MAX_TOKENS
+    if enable_thinking:
+        request_max_tokens += thinking_budget_tokens
 
     with tracer.start_as_current_span("LLM") as span:
         started = time.perf_counter()
@@ -1678,7 +1735,7 @@ async def main() -> None:
     )
     print(f"Loaded {len(rows)} HKPL evaluation rows for this run.")
     print(
-        f"Retriever searches combined vector table: {VECTOR_TABLE_NAME} "
+        f"Retriever searches combined vector table: data_{VECTOR_TABLE} "
         "(HKPL + all configured distractor corpora)"
     )
     print(f"Search corpus vectors: {corpus_counts}")
@@ -1815,7 +1872,7 @@ async def main() -> None:
         "reliability": metrics["reliability"],
         "per_domain": metrics["per_domain"],
         "corpus": {
-            "vector_table": VECTOR_TABLE_NAME,
+            "vector_table": f"data_{VECTOR_TABLE}",
             "search_vectors": corpus_counts,
             "distractor_datasets": sorted(
                 dataset for dataset in corpus_counts if dataset != "hkpl"

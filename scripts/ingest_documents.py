@@ -130,7 +130,7 @@ def main() -> None:
         choices=("auto", "faq", "record", "prose"),
         default="auto",
         help=(
-            "Librarian label for a single file. 'auto' uses 9B content classification. "
+            "Librarian label for a single file. 'auto' uses the 512/64 fallback. "
             "Directories are always classified in efficient LLM batches."
         ),
     )

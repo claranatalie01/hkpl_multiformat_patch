@@ -20,21 +20,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.infrastructure.db import engine
-from src.infrastructure.table_names import configured_table_name
-from src.infrastructure.vector_store import VECTOR_TABLE_NAME
+from src.infrastructure.vector_store import VECTOR_TABLE
 
 
 SCRIPTS = PROJECT_ROOT / "scripts"
 DEFAULT_CANDIDATE = PROJECT_ROOT / "data" / "evaluation_dataset.candidate.csv"
 DEFAULT_ACTIVE = PROJECT_ROOT / "data" / "evaluation_dataset.csv"
-CANDIDATE_TABLE = configured_table_name(
-    "EVALUATION_CANDIDATE_TABLE",
-    "evaluation_dataset_100",
-)
-ACTIVE_TABLE = configured_table_name(
-    "EVALUATION_ACTIVE_TABLE",
-    "evaluation_dataset",
-)
+CANDIDATE_TABLE = "evaluation_dataset_100"
 
 
 def run_script(name: str, *arguments: str, env: dict[str, str] | None = None) -> None:
@@ -54,12 +46,13 @@ def run_script(name: str, *arguments: str, env: dict[str, str] | None = None) ->
 
 
 def corpus_counts() -> dict[str, int]:
+    table_name = f"data_{VECTOR_TABLE}"
     with engine.connect() as connection:
         rows = connection.execute(text(f"""
             SELECT
                 COALESCE(NULLIF(metadata_->>'dataset', ''), 'hkpl') AS dataset,
                 COUNT(*) AS vectors
-            FROM {VECTOR_TABLE_NAME}
+            FROM {table_name}
             GROUP BY dataset
             ORDER BY dataset
         """)).mappings().all()
@@ -161,7 +154,7 @@ def promote_candidate(args: argparse.Namespace) -> None:
 
     active_environment = os.environ.copy()
     active_environment["EVALUATION_DATASET_PATH"] = str(active)
-    active_environment["EVALUATION_DATASET_TABLE"] = ACTIVE_TABLE
+    active_environment["EVALUATION_DATASET_TABLE"] = "evaluation_dataset"
     run_script(
         "ingest_pgvector_llamaindex.py",
         "--evaluation-only",

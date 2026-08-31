@@ -30,9 +30,9 @@ LEGACY_ALIASES: Final[dict[str, str]] = {
 def document_type_options() -> list[dict[str, str]]:
     options = [{
         "value": "auto",
-        "label": "Unlabelled (9B classification)",
-        "description": "Classify extracted content with the non-reasoning generation model.",
-        "chunk_strategy": "llm_classified",
+        "label": "Unlabelled (512/64 fallback)",
+        "description": "Use only when a librarian label is unavailable.",
+        "chunk_strategy": "fallback",
         "upload_endpoint": "/admin/documents/upload",
     }]
     for value, (label, description) in DOCUMENT_TYPES.items():

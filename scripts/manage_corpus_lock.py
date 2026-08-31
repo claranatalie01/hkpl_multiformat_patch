@@ -8,6 +8,7 @@ after ingestion or migration finishes.
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -17,14 +18,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.infrastructure.db import engine
-from src.infrastructure.table_names import sql_identifier
-from src.infrastructure.vector_store import VECTOR_TABLE_NAME
+from src.infrastructure.vector_store import VECTOR_TABLE
 
 
 CONTROL_TABLE = "knowledge_corpus_control"
 LOCK_FUNCTION = "enforce_knowledge_corpus_read_only"
 REGISTRY_TABLE = "knowledge_documents"
 
+
+def identifier(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise ValueError(f"Unsafe SQL identifier: {value!r}")
+    return value
+
+
+VECTOR_TABLE_NAME = identifier(f"data_{VECTOR_TABLE}")
 PROTECTED_TABLES = (REGISTRY_TABLE, VECTOR_TABLE_NAME)
 
 
@@ -73,8 +81,8 @@ def install_lock() -> None:
         """))
 
         for table_name in PROTECTED_TABLES:
-            trigger_name = sql_identifier(f"trg_freeze_{table_name}")
-            truncate_trigger_name = sql_identifier(
+            trigger_name = identifier(f"trg_freeze_{table_name}")
+            truncate_trigger_name = identifier(
                 f"trg_freeze_truncate_{table_name}"
             )
             connection.execute(text(
@@ -114,8 +122,8 @@ def set_lock(read_only: bool) -> None:
         )
         if not read_only:
             for table_name in PROTECTED_TABLES:
-                trigger_name = sql_identifier(f"trg_freeze_{table_name}")
-                truncate_trigger_name = sql_identifier(
+                trigger_name = identifier(f"trg_freeze_{table_name}")
+                truncate_trigger_name = identifier(
                     f"trg_freeze_truncate_{table_name}"
                 )
                 connection.execute(text(

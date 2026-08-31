@@ -8,6 +8,7 @@ exclude unresolved labels; the knowledge-vector table remains read-only.
 
 import argparse
 import csv
+import json
 import os
 import re
 import shutil
@@ -20,24 +21,23 @@ from sqlalchemy import text
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.evaluation.schema import (
-    normalize_evaluation_text as normalize,
-    parse_json_string_array,
-)
 from src.infrastructure.db import engine
-from src.infrastructure.table_names import configured_table_name
-from src.infrastructure.vector_store import VECTOR_TABLE_NAME
+from src.infrastructure.vector_store import VECTOR_TABLE
 
 
-EVALUATION_DATASET_TABLE = configured_table_name(
-    "EVALUATION_DATASET_TABLE",
-    "evaluation_dataset",
-)
-KNOWLEDGE_TABLE = VECTOR_TABLE_NAME
+EVALUATION_DATASET_TABLE = os.getenv("EVALUATION_DATASET_TABLE", "evaluation_dataset")
+KNOWLEDGE_TABLE = f"data_{VECTOR_TABLE}"
 EVALUATION_DATASET_PATH = Path(os.getenv(
     "EVALUATION_DATASET_PATH",
     "/app/data/evaluation_dataset.csv",
 ))
+
+
+def normalize(value: str) -> str:
+    value = value.lower().strip()
+    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r"[\"'“”‘’]", "", value)
+    return value
 
 
 def compact_normalize(value: str) -> str:
@@ -53,6 +53,26 @@ def formatting_tolerant_contains(expected: str, actual: str) -> bool:
     compact_expected = compact_normalize(expected)
     compact_actual = compact_normalize(actual)
     return len(compact_expected) >= 40 and compact_expected in compact_actual
+
+
+def parse_json_string_list(value, fallback: list[str]) -> list[str]:
+    """Parse JSON/JSONB string arrays while accepting legacy singular fields."""
+    if isinstance(value, str):
+        try:
+            values = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            values = []
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    cleaned = [
+        str(item).strip() for item in values
+        if isinstance(item, str) and item.strip()
+    ]
+    # Preserve positions because identical snippets can support different
+    # chunks in the parallel source_chunk_ids_json array.
+    return cleaned or fallback
 
 
 def parse_args() -> argparse.Namespace:
@@ -362,17 +382,13 @@ def main() -> None:
             chunk_text = item.get("source_chunk_text") or ""
             expected_answer = item.get("expected_answer_text") or ""
             expected_snippet = item.get("expected_context_snippet") or ""
-            expected_chunk_ids = parse_json_string_array(
+            expected_chunk_ids = parse_json_string_list(
                 item.get("source_chunk_ids_json"),
-                field_name="source_chunk_ids_json",
-                fallback=[str(item.get("source_chunk_id") or "")],
-                strict=False,
+                [str(item.get("source_chunk_id") or "")],
             )
-            expected_snippets = parse_json_string_array(
+            expected_snippets = parse_json_string_list(
                 item.get("expected_context_snippets_json"),
-                field_name="expected_context_snippets_json",
-                fallback=[expected_snippet],
-                strict=False,
+                [expected_snippet],
             )
             chunk_rows = connection.execute(
                 text(f"""
@@ -448,18 +464,8 @@ def main() -> None:
     print(f"Evaluation table      : {EVALUATION_DATASET_TABLE}")
     print(f"Knowledge table       : {KNOWLEDGE_TABLE}")
     print(f"Evaluation rows       : {total}")
-    print(
-        f"Expected chunk found  : {chunk_found}/{total} "
-        f"({chunk_found / total:.2%})"
-        if total
-        else "Expected chunk found  : 0/0"
-    )
-    print(
-        f"Snippet text found    : {snippet_found}/{total} "
-        f"({snippet_found / total:.2%})"
-        if total
-        else "Snippet text found    : 0/0"
-    )
+    print(f"Expected chunk found  : {chunk_found}/{total} ({chunk_found / total:.2%})" if total else "Expected chunk found  : 0/0")
+    print(f"Snippet text found    : {snippet_found}/{total} ({snippet_found / total:.2%})" if total else "Snippet text found    : 0/0")
     print(
         f"Answer verbatim found : {answer_found}/{total} "
         f"({answer_found / total:.2%}) [informational]"

@@ -11,11 +11,10 @@ import json
 import re
 import time
 from datetime import datetime
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from dotenv import load_dotenv
 from gliner2 import GLiNER2
 from .state import LibraryBotState
-from .answering import build_grounded_answer_prompt, format_source_block
 from .retrieval import retrieve_nodes
 from .memory import save_conversation_turn
 from .compliance import check_prohibited_keywords
@@ -31,9 +30,19 @@ def get_current_datetime():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # ----------------------------------------------------------------------
+# Nodes
+# ----------------------------------------------------------------------
+async def voice_to_text_node(state: LibraryBotState) -> dict:
+    """Mock voice transcription node (kept as placeholder)."""
+    logger.info("[Node] Voice-to-Text Conversion (mock)")
+    transcribed = "請問沙田圖書館幾點關門？"
+    return {"messages": [HumanMessage(content=transcribed)]}
+
+# ----------------------------------------------------------------------
 # GLiGuard safety classifier
 # ----------------------------------------------------------------------
 safety_model = None
+safety_model_device = None
 
 
 def get_safety_device() -> str:
@@ -77,7 +86,7 @@ def get_safety_device() -> str:
 def get_safety_model():
     """Load GLiGuard once and keep it resident on the configured device."""
 
-    global safety_model
+    global safety_model, safety_model_device
     if safety_model is None:
         device = get_safety_device()
         loaded_model = GLiNER2.from_pretrained(
@@ -87,6 +96,7 @@ def get_safety_model():
         # Publish the singleton only after the CUDA transfer succeeds. An OOM
         # must not leave a CPU-resident partial singleton for the next request.
         safety_model = loaded_model
+        safety_model_device = device
         logger.info("GLiGuard safety model loaded on %s", device)
     return safety_model
 
@@ -285,6 +295,7 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
         # - prompt_safety is kept for logging, but not trusted alone because
         #   GLiGuard can return contradictory outputs such as unsafe + benign.
         is_unsafe = len(hard_hits) > 0
+        blocking_hits = hard_hits
 
         logger.info(
             f"Safety={safety}; categories={detected_categories}; "
@@ -319,36 +330,22 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
     if is_unsafe:
         with open("safety_intent_log.jsonl", "a") as f:
             f.write(json.dumps(log_entry) + "\n")
-        logger.warning(
-            "Unsafe input blocked: %s | categories: %s",
-            user_input[:100],
-            detected_categories,
-        )
-        if any(
-            cat in {"self_harm_and_suicide", "self_harm", "suicide"}
-            for cat in detected_categories
-        ):
+        logger.warning(f"Unsafe input blocked: {user_input[:100]} | categories: {detected_categories}")
+        if any(cat in ["self_harm_and_suicide", "self_harm", "suicide"] for cat in detected_categories):
             safe_msg = (
-                "I'm really sorry you're feeling this way. Please know that "
-                "you're not alone. If you are in distress, please reach out "
-                "to the Samaritans Hong Kong 24‑hour hotline at 2896 0000, or "
-                "contact a mental health professional. Your well‑being is very "
-                "important."
+                "I'm really sorry you're feeling this way. Please know that you're not alone. "
+                "If you are in distress, please reach out to the Samaritans Hong Kong 24‑hour hotline at 2896 0000, "
+                "or contact a mental health professional. Your well‑being is very important."
             )
         elif "political_manipulation" in detected_categories:
             safe_msg = (
-                "I'm here to help with library services, book information, and "
-                "general library questions. I can't discuss political topics. "
-                "Is there something about the library I can help you with?"
+                "I'm here to help with library services, book information, and general library questions. "
+                "I can't discuss political topics. Is there something about the library I can help you with?"
             )
-        elif any(
-            cat in {"prompt_injection", "jailbreak_attempt", "instruction_override"}
-            for cat in detected_categories
-        ):
+        elif any(cat in ["prompt_injection", "jailbreak_attempt", "instruction_override"] for cat in detected_categories):
             safe_msg = (
                 "I can only follow instructions related to library services. "
-                "Please ask a genuine question about library hours, book "
-                "searches, or library policies."
+                "Please ask a genuine question about library hours, book searches, or library policies."
             )
         elif "violence_and_weapons" in detected_categories:
             safe_msg = (
@@ -362,14 +359,13 @@ async def safety_and_intent_node(state: LibraryBotState) -> dict:
             )
         else:
             safe_msg = (
-                "I'm unable to process that request. Please ask a "
-                "library‑related question, such as "
+                "I'm unable to process that request. Please ask a library‑related question, such as "
                 "library hours, book availability, or how to borrow materials."
             )
         return {
             "messages": [AIMessage(content=safe_msg)],
             "is_output_safe": True,
-            "end_conversation": True,
+            "end_conversation": True
         }
     return {}
 
@@ -386,9 +382,7 @@ Classify the user's message into exactly one of these labels:
 
 - greeting: greetings such as hello, hi, good morning
 - thanks: thank you messages
-- library_question: any question about HKPL services, library materials,
-  e-resources, borrowing, collections, classification schemes, opening hours,
-  reference services, accounts, apps, or library help
+- library_question: any question about HKPL services, library materials, e-resources, borrowing, collections, classification schemes, opening hours, reference services, accounts, apps, or library help
 - other: anything else that is safe but not a greeting or thanks
 
 Return only valid JSON:
@@ -721,23 +715,12 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
 
     retrieved_chunks = state.get("retrieved_chunks", [])
     max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "12000"))
-    answer_max_tokens = int(os.getenv("ANSWER_MAX_TOKENS", "512"))
 
     selected_context_parts = []
     used_tokens = 0
-    retrieved_sources = state.get("retrieved_sources", [])
 
     for index, chunk in enumerate(retrieved_chunks):
-        source = (
-            retrieved_sources[index]
-            if index < len(retrieved_sources)
-            else {}
-        )
-        formatted_chunk = format_source_block(
-            chunk,
-            index + 1,
-            title=str(source.get("source_title") or ""),
-        )
+        formatted_chunk = f"[Source {index + 1}]\n{chunk}"
         chunk_tokens, _, _ = await count_tokens(
             formatted_chunk,
             LLM_TOKENIZER_URL,
@@ -780,14 +763,32 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
     library_name = state.get("current_library_name")
     library_code = state.get("current_library_code")
     current_time = get_current_datetime()
+    user_memory = state.get("user_memory", {})
 
-    system_prompt = build_grounded_answer_prompt(
-        question=question,
-        context=context,
-        current_datetime=current_time,
-        library_name=library_name or "",
-        library_code=library_code or "",
-    )
+    location_hint = f"The user is currently at or near **{library_name}** (code: {library_code}). " if library_name else ""
+    date_hint = f"Current date and time: {current_time}. " if current_time else ""
+    memory_hint = f"User context: {json.dumps(user_memory)}" if user_memory else ""
+
+    # ✅ Build the system prompt first
+    system_prompt = f"""You are the official HKPL (Hong Kong Public Libraries) assistant.  
+    **IMPORTANT:** Do not expose reasoning, thinking, or analysis in your response. Output only the final answer.
+    {date_hint}{location_hint}{memory_hint}
+
+    **Instructions:**
+    1. Answer based **only** on the provided context. Do not invent facts.
+    2. **Generalise across phrasing:** The user's question may use different words, but if the intent matches information in the context, answer it. Treat paraphrases as equivalent to the original question in the context.
+    3. **Extract fully:** If the context contains the exact answer, state it clearly and completely.
+    4. **Handle partial information:** If the context provides only part of the answer, give what is available and politely note what is missing.
+    5. **Handle empty or irrelevant context:** If the context is empty or does not address the question at all, say: "I don't have that information in my knowledge base. Please try rephrasing or ask about a specific library service."
+    6. **Be concise:** Keep answers short (1-3 sentences), but include all essential facts.
+    7. **Lists:** If the question asks for a list, present it in bullet points.
+    8. **Stay specific**: Do not broaden the answer beyond the retrieved FAQ. If the context is about e-resources, answer only about e-resources. Do not add advice for unrelated issues.
+
+    **Context:**
+    {context}
+
+    **Question:** {question}
+    **Answer:**"""
 
 
     logger.debug(f"Context length: {len(context)} characters")
@@ -796,7 +797,6 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
     response = await http_llm(
         system_prompt,
         temperature=0.0,
-        max_tokens=answer_max_tokens,
         enable_thinking=False,
     )
 
@@ -827,18 +827,7 @@ async def output_safety_filter_node(state: LibraryBotState) -> dict:
         }
     blocked_phrases = ["self-harm", "suicide", "kill yourself"]
     if any(phrase in answer.lower() for phrase in blocked_phrases):
-        return {
-            "is_output_safe": False,
-            "messages": [
-                AIMessage(
-                    content=(
-                        "I cannot provide that answer. Please contact library "
-                        "staff or call the Samaritans at 2896 0000 for "
-                        "immediate help."
-                    )
-                )
-            ],
-        }
+        return {"is_output_safe": False, "messages": [AIMessage(content="I cannot provide that answer. Please contact library staff or call the Samaritans at 2896 0000 for immediate help.")]}
     return {
         "is_output_safe": True,
         "messages": [AIMessage(content=answer)],

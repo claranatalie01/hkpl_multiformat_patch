@@ -134,7 +134,7 @@ services:
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./storage:/app/storage
-      - ${DOCLING_HOST_MODELS:-./models/docling}:/app/models/docling:ro
+      - ./models/docling:/app/models/docling:ro
       - ./models/qwen3-embedding:/app/models/qwen3-embedding:ro
     environment:
       # Expose one physical GPU to the agent. It appears as cuda:0 inside the
@@ -154,22 +154,20 @@ services:
       LLM_CONTEXT_WINDOW: "32768"
       LLM_MAX_TOKENS: "16000"
 
-      VECTOR_TABLE: ${VECTOR_TABLE:-hkpl_knowledge}
+      VECTOR_TABLE: hkpl_knowledge
       KNOWLEDGE_CORPUS_READ_ONLY: "true"
       EVALUATION_DATASET_TABLE: evaluation_dataset
-      EVALUATION_CANDIDATE_TABLE: ${EVALUATION_CANDIDATE_TABLE:-evaluation_dataset_100}
-      EVALUATION_ACTIVE_TABLE: ${EVALUATION_ACTIVE_TABLE:-evaluation_dataset}
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
       EMBED_DIM: "1024"
       SIMILARITY_TOP_K: "10"
-      RERANK_TOP_N: "${RERANK_TOP_N:-8}"
+      RERANK_TOP_N: "5"
       RERANKER_THRESHOLD: "0.30"
       UPLOAD_DIR: /app/uploads
       MAX_UPLOAD_BYTES: "26214400"
       CHUNK_SIZE: "512"
       CHUNK_OVERLAP: "64"
+      CHUNKER_VERSION: hkpl-structure-v2
       MAX_CONTEXT_TOKENS: "12000"
-      ANSWER_MAX_TOKENS: "512"
       HKPL_CRAWLER_MAX_PAGES: "300"
       HKPL_CRAWLER_MAX_DEPTH: "3"
       HKPL_CRAWLER_DELAY_SECONDS: "0.5"

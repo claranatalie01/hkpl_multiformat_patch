@@ -1,7 +1,7 @@
 """Typed state contracts passed between LangGraph workflow nodes.
 
 The state records request context, routing decisions, retrieved chunks and
-sources, safety flags, generated output, and the selected library branch.
+sources, safety flags, generated output, library selection, and user memory.
 It contains transient workflow data rather than database behavior.
 """
 
@@ -21,10 +21,16 @@ class LibraryBotState(TypedDict):
     session_id: str
     conversation_history: List[ConversationTurn]
 
+    input_type: Literal["text", "voice"]
+    stt_confidence: float
+
     intent: str
     request_type: Literal[
+        "sensitive_reject",
         "normal_info",
+        "tool_use",
         "rag_search",
+        "mcp_tool",
     ]
 
     original_query: str
@@ -40,3 +46,4 @@ class LibraryBotState(TypedDict):
 
     current_library_code: Optional[str]
     current_library_name: Optional[str]
+    user_memory: Dict[str, Any]
