@@ -165,6 +165,7 @@ services:
       EVALUATION_ACTIVE_TABLE: ${EVALUATION_ACTIVE_TABLE:-evaluation_dataset}
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
       EMBED_DIM: "1024"
+      RETRIEVAL_MODE: "${RETRIEVAL_MODE:-hybrid}"
       SIMILARITY_TOP_K: "${SIMILARITY_TOP_K:-10}"
       DENSE_TOP_K: "${DENSE_TOP_K:-10}"
       LEXICAL_TOP_K: "${LEXICAL_TOP_K:-10}"

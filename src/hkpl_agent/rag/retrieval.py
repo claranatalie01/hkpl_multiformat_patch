@@ -57,6 +57,20 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("hkpl-retrieval")
 
 RERANKER_URL = os.getenv("RERANKER_URL", "http://reranker:8080/reranking")
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "hybrid").strip().lower()
+if RETRIEVAL_MODE not in {"dense", "hybrid"}:
+    raise ValueError(
+        "RETRIEVAL_MODE must be either 'dense' or 'hybrid'; "
+        f"received {RETRIEVAL_MODE!r}."
+    )
+PRE_RERANK_SCORE_NAME = (
+    "dense_score" if RETRIEVAL_MODE == "dense" else "fused_score"
+)
+FALLBACK_SCORE_NAME = (
+    "fallback_dense_score"
+    if RETRIEVAL_MODE == "dense"
+    else "fallback_fused_score"
+)
 DENSE_TOP_K = int(os.getenv("DENSE_TOP_K", os.getenv("SIMILARITY_TOP_K", "10")))
 LEXICAL_TOP_K = int(os.getenv("LEXICAL_TOP_K", "10"))
 FUSION_TOP_K = int(os.getenv("FUSION_TOP_K", "10"))
@@ -314,7 +328,7 @@ class HTTPReranker:
     async def arerank(self, nodes: List[NodeWithScore], query: str) -> List[NodeWithScore]:
         with tracer.start_as_current_span("Reranker") as span:
             before_rerank = [
-                node_to_trace_dict(node, i + 1, "fused_score")
+                node_to_trace_dict(node, i + 1, PRE_RERANK_SCORE_NAME)
                 for i, node in enumerate(nodes)
             ]
 
@@ -391,7 +405,7 @@ class HTTPReranker:
                             body = await response.text()
                             fallback = nodes[: self.top_n]
                             after_rerank = [
-                                node_to_trace_dict(node, i + 1, "fallback_fused_score")
+                                node_to_trace_dict(node, i + 1, FALLBACK_SCORE_NAME)
                                 for i, node in enumerate(fallback)
                             ]
                             span.set_attribute(
@@ -430,7 +444,7 @@ class HTTPReranker:
             except Exception as error:
                 fallback = nodes[: self.top_n]
                 after_rerank = [
-                    node_to_trace_dict(node, i + 1, "fallback_fused_score")
+                    node_to_trace_dict(node, i + 1, FALLBACK_SCORE_NAME)
                     for i, node in enumerate(fallback)
                 ]
 
@@ -458,7 +472,7 @@ class HTTPReranker:
             if not isinstance(results, list) or not results:
                 fallback = nodes[: self.top_n]
                 after_rerank = [
-                    node_to_trace_dict(node, i + 1, "fallback_fused_score")
+                    node_to_trace_dict(node, i + 1, FALLBACK_SCORE_NAME)
                     for i, node in enumerate(fallback)
                 ]
 
@@ -497,7 +511,7 @@ class HTTPReranker:
             if not ranked:
                 fallback = nodes[: self.top_n]
                 after_rerank = [
-                    node_to_trace_dict(node, i + 1, "fallback_fused_score")
+                    node_to_trace_dict(node, i + 1, FALLBACK_SCORE_NAME)
                     for i, node in enumerate(fallback)
                 ]
 
@@ -551,6 +565,7 @@ async def retrieve_nodes(
             "RETRIEVER",
             input_value={
                 "query": query,
+                "retrieval_mode": RETRIEVAL_MODE,
                 "dense_top_k": DENSE_TOP_K,
                 "lexical_top_k": LEXICAL_TOP_K,
                 "fusion_top_k": FUSION_TOP_K,
@@ -573,24 +588,29 @@ async def retrieve_nodes(
         )
         span.set_attribute("retrieval.token_count.tokenizer", query_tokenizer)
 
-        await asyncio.to_thread(ensure_hybrid_search_schema)
         dense_retriever = (
             vector_retriever
             if include_distractors
             else live_vector_retriever
         )
-        dense_candidates, text_candidates, trigram_candidates = await asyncio.gather(
-            dense_retriever.aretrieve(query),
-            _text_search_candidates(
-                query,
-                include_distractors=include_distractors,
-            ),
-            asyncio.to_thread(
-                _trigram_candidates,
-                query,
-                include_distractors=include_distractors,
-            ),
-        )
+        if RETRIEVAL_MODE == "dense":
+            dense_candidates = await dense_retriever.aretrieve(query)
+            text_candidates = []
+            trigram_candidates = []
+        else:
+            await asyncio.to_thread(ensure_hybrid_search_schema)
+            dense_candidates, text_candidates, trigram_candidates = await asyncio.gather(
+                dense_retriever.aretrieve(query),
+                _text_search_candidates(
+                    query,
+                    include_distractors=include_distractors,
+                ),
+                asyncio.to_thread(
+                    _trigram_candidates,
+                    query,
+                    include_distractors=include_distractors,
+                ),
+            )
         pools = {
             "dense": list(dense_candidates),
             "text": list(text_candidates),
@@ -610,7 +630,11 @@ async def retrieve_nodes(
                     if not is_distractor_metadata(node.node.metadata)
                 ]
 
-        candidates = reciprocal_rank_fuse(pools)
+        candidates = (
+            list(pools["dense"])[:DENSE_TOP_K]
+            if RETRIEVAL_MODE == "dense"
+            else reciprocal_rank_fuse(pools)
+        )
         retrieval_latency = time.time() - start
         dense_trace = [
             node_to_trace_dict(node, i + 1, "dense_score")
@@ -625,7 +649,7 @@ async def retrieve_nodes(
             for i, node in enumerate(pools["trigram"])
         ]
         vector_candidates = [
-            node_to_trace_dict(node, i + 1, "fused_score")
+            node_to_trace_dict(node, i + 1, PRE_RERANK_SCORE_NAME)
             for i, node in enumerate(candidates)
         ]
         span.set_attribute(
@@ -637,6 +661,7 @@ async def retrieve_nodes(
             "retrieval.query",
             query,
         )
+        span.set_attribute("retrieval.mode", RETRIEVAL_MODE)
         span.set_attribute("retrieval.span_id", retriever_span_id)
 
         span.set_attribute("retrieval.latency_seconds", round(retrieval_latency, 4))
@@ -649,9 +674,13 @@ async def retrieve_nodes(
         set_json_attribute(span, "rag.dense_candidates", dense_trace)
         set_json_attribute(span, "rag.text_candidates", text_trace)
         set_json_attribute(span, "rag.trigram_candidates", trigram_trace)
-        set_json_attribute(span, "rag.fused_candidates", vector_candidates)
+        set_json_attribute(
+            span,
+            "rag.fused_candidates",
+            vector_candidates if RETRIEVAL_MODE == "hybrid" else [],
+        )
         # Backward-compatible name: evaluation treats this as the complete
-        # pre-rerank retrieval list, which is now the fused candidate list.
+        # pre-rerank list, whether it came from dense search or rank fusion.
         set_json_attribute(span, "rag.vector_candidates_before_rerank", vector_candidates)
         set_document_list_attributes(span, "retrieval.documents", vector_candidates)
         set_span_io(
@@ -673,10 +702,13 @@ async def retrieve_nodes(
 
     _retrieval_trace.set({
         "retriever_span_id": retriever_span_id,
+        "retrieval_mode": RETRIEVAL_MODE,
         "dense_candidates": dense_trace,
         "text_candidates": text_trace,
         "trigram_candidates": trigram_trace,
-        "fused_candidates": vector_candidates,
+        "fused_candidates": (
+            vector_candidates if RETRIEVAL_MODE == "hybrid" else []
+        ),
         "vector_candidates_before_rerank": vector_candidates,
         "final_chunks_after_rerank": final_chunks,
         "token_usage": {
@@ -692,9 +724,10 @@ async def retrieve_nodes(
     return reranked
 
 logger.info(
-    "Retrieval configured: table=data_%s, dense_top_k=%s, lexical_top_k=%s, "
+    "Retrieval configured: table=data_%s, mode=%s, dense_top_k=%s, lexical_top_k=%s, "
     "fusion_top_k=%s, rerank_top_n=%s",
     VECTOR_TABLE,
+    RETRIEVAL_MODE,
     DENSE_TOP_K,
     LEXICAL_TOP_K,
     FUSION_TOP_K,
