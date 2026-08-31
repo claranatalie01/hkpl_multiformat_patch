@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Rebuild registered HKPL sources, synchronize evaluations, or audit chunks.
+"""Rebuild, synchronize, or audit HKPL knowledge and evaluation data.
 
-Registered crawler and upload sources are rebuilt from their durable copies in
-``uploads/``. The shared readers, chunker, embedding client, registry, and
-vector store are used so a rebuild follows the same pipeline as ingestion.
+Modes can rebuild FAQ chunks, rebuild all registered sources, synchronize the
+evaluation CSV, preflight source availability, or audit stored chunks. Corpus
+writes use the shared readers, chunking, embedding, registry, and vector store.
 """
 
 import argparse
@@ -12,8 +12,20 @@ import os
 import re
 import sys
 from pathlib import Path
+from uuid import uuid5, NAMESPACE_URL
 
 from sqlalchemy import text
+
+from llama_index.core import (
+    Document,
+    StorageContext,
+    VectorStoreIndex,
+)
+from llama_index.core.vector_stores import (
+    FilterOperator,
+    MetadataFilter,
+    MetadataFilters,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -25,11 +37,15 @@ from src.evaluation.schema import (
     parse_parallel_evidence,
     serialize_string_array,
 )
+from src.infrastructure.embedding import (
+    embed_model,
+)
 from src.infrastructure.table_names import configured_table_name
 from src.infrastructure.vector_store import (
     EMBED_DIM,
     VECTOR_TABLE_NAME,
     ensure_hybrid_search_schema,
+    vector_store,
 )
 from src.infrastructure.db import engine
 from src.ingestion.chunking import (
@@ -40,7 +56,7 @@ from src.ingestion.registry import (
     ensure_registry_schema,
     list_documents,
 )
-from src.ingestion.readers import load_file
+from src.ingestion.readers import file_content_hash, load_file
 from src.ingestion.service import (
     OCR_LANGUAGES,
     UPLOAD_DIR,
@@ -312,6 +328,134 @@ def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
     return 0, 0, 0
 
 
+def load_faq_documents(
+    csv_path: str,
+) -> list[Document]:
+    documents: list[Document] = []
+
+    with open(
+        csv_path,
+        newline="",
+        encoding="utf-8",
+    ) as file:
+        reader = csv.DictReader(file)
+
+        for row_index, row in enumerate(reader):
+            question = row.get(
+                "query",
+                "",
+            ).strip()
+            answer = row.get(
+                "expected_answer_text",
+                "",
+            ).strip()
+
+            if not question or not answer:
+                continue
+
+            source_url = row.get(
+                "source_url",
+                "https://www.hkpl.gov.hk/en/ask-a-librarian/faq.html",
+            ).strip()
+            row_id = row.get(
+                "source_row_id",
+                str(row_index),
+            ).strip()
+
+            document_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"{source_url}#faq-{row_id}",
+                )
+            )
+
+            document = Document(
+                text=f"{question}\n{answer}",
+                metadata={
+                    "document_id": document_id,
+                    "kb_document_id": document_id,
+                    "source_version_id": f"{document_id}:v1",
+                    "original_file_name": (
+                        Path(csv_path).name
+                    ),
+                    "file_name": (
+                        Path(csv_path).name
+                    ),
+                    "file_type": "csv",
+                    "source_title": row.get(
+                        "source_title",
+                        "HKPL Ask a Librarian FAQ",
+                    ).strip(),
+                    "source": row.get(
+                        "source_title",
+                        "HKPL Ask a Librarian FAQ",
+                    ).strip(),
+                    "source_url": source_url,
+                    "url": source_url,
+                    "source_type": row.get(
+                        "source_type",
+                        "official_website",
+                    ).strip(),
+                    "access_level": "public",
+                    "document_version": 1,
+                    "domain": row.get(
+                        "domain",
+                        "",
+                    ).strip(),
+                    "question": question,
+                    "answer_text": answer,
+                    "record_header": question,
+                    "repeat_context": question,
+                    "snippet": row.get(
+                        "expected_context_snippet",
+                        "",
+                    ).strip(),
+                    "row_id": row_id,
+                    "row_number": row_index + 2,
+                    "section_index": row_index,
+                    "document_type": "faq",
+                    "record_kind": "faq",
+                    "structural_kind": "faq_pair",
+                    "chunk_policy": "atomic_record",
+                    "structure_path": [],
+                    "locator": {
+                        "type": "faq_record",
+                        "record": row_id,
+                        "row": row_index + 2,
+                    },
+                    "parent_record_id": f"{document_id}:faq:{row_id}",
+                    "parser_version": "deterministic-faq-csv-v2",
+                    "evidence_text": f"{question}\n{answer}",
+                },
+            )
+            document.id_ = (
+                f"{document_id}:v1:section:0"
+            )
+            documents.append(document)
+
+    return documents
+
+
+def delete_existing_faq_chunks() -> int:
+    filters = MetadataFilters(
+        filters=[
+            MetadataFilter(
+                key="source_title",
+                value="HKPL Ask a Librarian FAQ",
+                operator=FilterOperator.EQ,
+            )
+        ]
+    )
+    nodes = vector_store.get_nodes(filters=filters)
+    if not nodes:
+        return 0
+
+    vector_store.delete_nodes(
+        node_ids=[node.node_id for node in nodes]
+    )
+    return len(nodes)
+
+
 def clear_hkpl_chunks() -> int:
     """Clear HKPL chunks while preserving benchmark rows in the shared table."""
     table_name = VECTOR_TABLE_NAME
@@ -331,11 +475,6 @@ def registered_documents_for_rebuild() -> list[dict]:
     """Return rebuildable registry rows, failing before vectors are cleared."""
     ensure_registry_schema()
     documents = list_documents()
-    if not documents:
-        raise RuntimeError(
-            "Full rebuild aborted before clearing vectors because "
-            "knowledge_documents contains no registered sources."
-        )
     missing_sources = [
         document
         for document in documents
@@ -702,7 +841,7 @@ def audit_knowledge_chunks() -> bool:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Rebuild registered knowledge, synchronize evaluations, or audit chunks."
+            "Ingest FAQ or registered knowledge and synchronize evaluation data."
         ),
     )
     mode = parser.add_mutually_exclusive_group()
@@ -712,11 +851,16 @@ def parse_args() -> argparse.Namespace:
         help="Synchronize evaluation_dataset.csv without changing knowledge chunks.",
     )
     mode.add_argument(
+        "--faq-only",
+        action="store_true",
+        help="Rebuild the FAQ CSV knowledge chunks without importing evaluation rows.",
+    )
+    mode.add_argument(
         "--rebuild-all",
         action="store_true",
         help=(
-            "Clear HKPL primary chunks and rebuild every non-deleted document "
-            "registered in knowledge_documents, including saved crawler HTML."
+            "Clear and rebuild FAQ chunks plus every non-deleted document in "
+            "knowledge_documents, including saved crawler HTML."
         ),
     )
     mode.add_argument(
@@ -734,6 +878,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    data_path = os.getenv(
+        "DATA_PATH",
+        "/app/data/hkpl_faq_clean.csv",
+    )
     evaluation_dataset_path = os.getenv(
         "EVALUATION_DATASET_PATH",
         "/app/data/evaluation_dataset.csv",
@@ -745,6 +893,10 @@ def main() -> None:
         return
 
     if args.check_rebuild:
+        if not Path(data_path).is_file():
+            raise FileNotFoundError(
+                f"FAQ source file is missing: {data_path}"
+            )
         registered_documents = registered_documents_for_rebuild()
         source_counts: dict[str, int] = {}
         for document in registered_documents:
@@ -755,11 +907,15 @@ def main() -> None:
             )
             source_counts[source_kind] = source_counts.get(source_kind, 0) + 1
 
+        print(f"FAQ source: {data_path}")
         print(f"Registered documents ready: {len(registered_documents)}")
         for source_kind, count in sorted(source_counts.items()):
             print(f"- {source_kind}: {count}")
         print("Preflight passed. No vectors or registry rows were changed.")
         return
+
+    if not args.evaluation_only:
+        ensure_corpus_writable("ingest or rebuild knowledge chunks")
 
     rebuild_all_from_env = (
         os.getenv(
@@ -771,20 +927,71 @@ def main() -> None:
     rebuild_all = args.rebuild_all or (
         rebuild_all_from_env
         and not args.evaluation_only
+        and not args.faq_only
     )
 
     registered_documents: list[dict] = []
+    faq_is_registered = False
     if rebuild_all:
-        ensure_corpus_writable("rebuild registered knowledge chunks")
+        if not Path(data_path).is_file():
+            raise FileNotFoundError(
+                f"FAQ source file is missing: {data_path}"
+            )
         registered_documents = registered_documents_for_rebuild()
+        faq_hash = file_content_hash(Path(data_path))
+        faq_is_registered = any(
+            document.get("content_hash") == faq_hash
+            for document in registered_documents
+        )
         print(
-            "Full rebuild preflight passed: "
+            f"Full rebuild preflight passed: FAQ source plus "
             f"{len(registered_documents)} registered documents are available."
         )
         removed_chunks = clear_hkpl_chunks()
         print(
             f"Removed {removed_chunks} HKPL chunks from {VECTOR_TABLE_NAME}; "
             "distractor corpus chunks were preserved."
+        )
+
+    if not args.evaluation_only and not (rebuild_all and faq_is_registered):
+        removed = delete_existing_faq_chunks()
+        print(f"Removed {removed} existing FAQ chunks")
+
+        documents = load_faq_documents(
+            data_path
+        )
+        print(
+            f"Loaded {len(documents)} FAQ documents"
+        )
+
+        nodes = chunk_documents(
+            documents
+        )
+        print(
+            f"Created {len(nodes)} FAQ chunks"
+        )
+
+        storage_context = (
+            StorageContext.from_defaults(
+                vector_store=vector_store
+            )
+        )
+
+        VectorStoreIndex(
+            nodes,
+            storage_context=storage_context,
+            embed_model=embed_model,
+            show_progress=True,
+        )
+
+        print(
+            "Ingested FAQ data into "
+            + VECTOR_TABLE_NAME
+        )
+    elif rebuild_all and faq_is_registered:
+        print(
+            "Skipped standalone FAQ ingestion because the same FAQ source is "
+            "registered in knowledge_documents and will be rebuilt there."
         )
 
     if rebuild_all:
@@ -805,7 +1012,7 @@ def main() -> None:
             "from the rebuilt knowledge base before evaluating."
         )
 
-    if not rebuild_all:
+    if not args.faq_only and not rebuild_all:
         changed_rows, deleted_rows, csv_rows = ingest_evaluation_dataset(
             evaluation_dataset_path
         )

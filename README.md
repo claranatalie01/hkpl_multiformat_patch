@@ -284,9 +284,7 @@ docker compose run --rm \
 `--rebuild-all` deletes and recreates HKPL primary chunks in the selected
 table while preserving rows tagged as HotpotQA or Webz News distractors. It
 creates new document versions and chunk IDs, so evaluation labels must be
-revalidated and often regenerated afterward. The rebuild reads only registered
-sources and their saved files under `uploads/`; it does not require a separate
-FAQ CSV.
+revalidated and often regenerated afterward.
 
 ## Local document ingestion
 
@@ -1013,7 +1011,7 @@ website.
 | --- | --- |
 | `scripts/crawl_hkpl_site.py` | Robots-aware crawl, discovery, cleaning, change detection, ingestion handoff |
 | `scripts/ingest_documents.py` | Local file/directory ingestion |
-| `scripts/ingest_pgvector_llamaindex.py` | Registered-source rebuild, evaluation sync, and chunk audit |
+| `scripts/ingest_pgvector_llamaindex.py` | FAQ ingestion, rebuild, evaluation sync, and chunk audit |
 | `scripts/manage_corpus_lock.py` | Database-level corpus freeze/unfreeze |
 | `src/ingestion/service.py` | Registration, extraction, chunking, embedding, insertion, replacement |
 | `src/ingestion/registry.py` | Document identity, hash, version, status, and count |
