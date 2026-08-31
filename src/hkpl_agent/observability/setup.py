@@ -39,6 +39,9 @@ def setup_phoenix_tracing(project_name: Optional[str] = None) -> None:
         tracer_provider = register(
             project_name=selected_project,
             endpoint=endpoint,
+            # Export completed spans in the background instead of blocking
+            # the RAG request on one HTTP export per span.
+            batch=True,
         )
 
         LlamaIndexInstrumentor().instrument(

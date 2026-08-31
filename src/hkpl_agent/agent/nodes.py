@@ -724,8 +724,8 @@ async def generate_answer_node(state: LibraryBotState) -> dict:
         }
 
     retrieved_chunks = state.get("retrieved_chunks", [])
-    max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "12000"))
-    answer_max_tokens = int(os.getenv("ANSWER_MAX_TOKENS", "512"))
+    max_context_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "4000"))
+    answer_max_tokens = int(os.getenv("ANSWER_MAX_TOKENS", "256"))
 
     selected_context_parts = []
     used_tokens = 0

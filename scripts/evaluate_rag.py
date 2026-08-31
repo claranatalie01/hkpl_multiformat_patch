@@ -82,7 +82,7 @@ SUMMARY_PATH = Path(
         "/app/data/rag_evaluation/summary.json",
     )
 )
-LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
+LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "8192"))
 EVALUATION_MAX_TOKENS = int(os.getenv("EVALUATION_MAX_TOKENS", "2048"))
 # Keep answer generation concise without constraining the separate evaluator
 # calls, which may need more tokens to explain their scoring decisions.

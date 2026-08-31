@@ -101,8 +101,10 @@ services:
       --host 0.0.0.0
       --port 8080
       --n-gpu-layers 99
-      --ctx-size 32768
+      --ctx-size ${LLM_CONTEXT_WINDOW:-8192}
       --parallel 1
+      --flash-attn on
+      --metrics
       --reasoning on
     healthcheck:
       test:
@@ -153,8 +155,8 @@ services:
       EMBEDDING_URL: http://embedding:8080/v1/embeddings
       RERANKER_URL: http://reranker:8080/reranking
       LLM_URL: http://llm:8080/v1/chat/completions
-      LLM_CONTEXT_WINDOW: "32768"
-      LLM_MAX_TOKENS: "16000"
+      LLM_CONTEXT_WINDOW: "${LLM_CONTEXT_WINDOW:-8192}"
+      LLM_MAX_TOKENS: "${LLM_MAX_TOKENS:-2048}"
 
       VECTOR_TABLE: ${VECTOR_TABLE:-hkpl_knowledge}
       KNOWLEDGE_CORPUS_READ_ONLY: "true"
@@ -163,15 +165,19 @@ services:
       EVALUATION_ACTIVE_TABLE: ${EVALUATION_ACTIVE_TABLE:-evaluation_dataset}
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
       EMBED_DIM: "1024"
-      SIMILARITY_TOP_K: "10"
-      RERANK_TOP_N: "${RERANK_TOP_N:-8}"
-      RERANKER_THRESHOLD: "0.30"
+      SIMILARITY_TOP_K: "${SIMILARITY_TOP_K:-10}"
+      DENSE_TOP_K: "${DENSE_TOP_K:-10}"
+      LEXICAL_TOP_K: "${LEXICAL_TOP_K:-10}"
+      FUSION_TOP_K: "${FUSION_TOP_K:-10}"
+      RRF_K: "${RRF_K:-60}"
+      RERANK_TOP_N: "${RERANK_TOP_N:-5}"
+      RERANKER_THRESHOLD: "${RERANKER_THRESHOLD:-0.30}"
       UPLOAD_DIR: /app/uploads
       MAX_UPLOAD_BYTES: "26214400"
       CHUNK_SIZE: "512"
       CHUNK_OVERLAP: "64"
-      MAX_CONTEXT_TOKENS: "12000"
-      ANSWER_MAX_TOKENS: "512"
+      MAX_CONTEXT_TOKENS: "${MAX_CONTEXT_TOKENS:-4000}"
+      ANSWER_MAX_TOKENS: "${ANSWER_MAX_TOKENS:-256}"
       HKPL_CRAWLER_MAX_PAGES: "300"
       HKPL_CRAWLER_MAX_DEPTH: "3"
       HKPL_CRAWLER_DELAY_SECONDS: "0.5"
