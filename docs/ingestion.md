@@ -44,6 +44,43 @@ to the same ingestion service used by administrative uploads.
    insertion. Replacement keeps the last complete version available until the
    new version succeeds.
 
+## Current chunk construction
+
+Readers first create structural evidence records; `chunking.py` then enforces
+the final embedding-token limit. This is structure-aware chunking, not a blind
+fixed-character split.
+
+| Record type | Boundary policy |
+|---|---|
+| FAQ | Keep one question with its answer. |
+| Event, notice, branch, or similar record | Keep the complete record atomic where it fits. |
+| Table | Preserve headers and row locators; keep rows atomic where possible. |
+| Prose | Follow Docling headings and hierarchical leaf structure. |
+
+For Docling sources, `HybridChunker` repeats table headers and merges compatible
+peer content. The final chunker then:
+
+1. Builds exact `evidence_text` for generation and citations.
+2. Builds `search_text` from evidence plus non-duplicated title, heading,
+   aliases, or repeated record/table context.
+3. Accepts the record unchanged if `search_text` fits `CHUNK_SIZE` (512 tokens
+   by default).
+4. Otherwise splits at paragraphs, list items, and sentence boundaries.
+5. Uses tokenizer-offset windows only when semantic splitting cannot fit the
+   evidence. These windows overlap by `CHUNK_OVERLAP` (64 tokens by default),
+   except atomic table rows use zero overlap.
+6. Rejects a chunk that still exceeds the embedding-token limit.
+
+Each node stores source version, document ID, structural kind, record kind,
+locator, heading path, part number/count, token count, exact evidence, and
+retrieval text. Its stable ID contains the source version, a locator hash, part
+number, and evidence hash. Duplicate IDs within one chunking run are skipped;
+distinct source locators are not removed merely because their text matches.
+
+The embedding model receives `search_text`. Answer generation uses the
+retrieved metadata's `evidence_text`, preventing retrieval-only title/header
+augmentation from being presented as source evidence.
+
 ## Vector-table naming
 
 `VECTOR_TABLE` is the logical name used by the application. The current adapter

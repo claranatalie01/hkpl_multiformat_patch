@@ -6,6 +6,7 @@ system design.
 
 | Guide | Use it when you need to |
 |---|---|
+| [PoC report](poc-report.md) | Review implemented scope, methods, RAG results, guardrail results, limitations, and recommendations |
 | [Architecture and code map](architecture.md) | Understand how packages and files connect |
 | [Ingestion](ingestion.md) | Crawl, extract, chunk, embed, or rebuild vectors |
 | [Evaluation](evaluation.md) | Generate datasets, validate rows, evaluate RAG, or inspect Phoenix |

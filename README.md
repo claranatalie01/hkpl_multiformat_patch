@@ -44,7 +44,7 @@ approved upload or allowlisted HKPL URL
         v
 acquire -> extract -> normalize -> chunk -> embed -> pgvector
                                                     |
-user -> safety -> intent -> rewrite -> hybrid retrieve -> rerank
+user -> safety -> intent -> rewrite -> configured retrieve -> rerank
                                                     |
                                                     v
                              context pack -> generate -> validate -> answer
@@ -147,6 +147,7 @@ corpus lock, promoting an evaluation dataset, or switching vector tables.
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [Proof-of-concept report](docs/poc-report.md)
 - [Architecture and code map](docs/architecture.md)
 - [Ingestion, chunking, embedding, and vector storage](docs/ingestion.md)
 - [Evaluation dataset generation and Phoenix](docs/evaluation.md)

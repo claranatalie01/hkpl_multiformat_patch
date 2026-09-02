@@ -37,6 +37,51 @@ pgvector HKPL chunks
     -> validate every evidence ID against pgvector
 ```
 
+### Selection and prompt construction
+
+- The vector path selects non-empty `dataset=hkpl`, `corpus_role=primary`
+  evidence with at least 120 characters. A preview path can instead select one
+  explicit completed `ingestion_preview_chunks` run.
+- At most eight chunks per document are considered unless `--all-chunks` is
+  supplied.
+- Each selected chunk is clipped to 1,800 characters in the generation prompt
+  to bound LLM input; the stored evidence itself is not changed.
+- Chunks are grouped by document. The current chunk becomes the anchor and
+  available chunks from the same document become siblings, allowing one answer
+  to cover facts split across multiple chunks.
+- The LLM returns zero or one candidate for each anchor using temperature zero,
+  reasoning disabled, and a strict JSON response schema.
+
+A document is not restricted to one evaluation question. When a row cites the
+anchor or siblings, every cited chunk is marked consumed and cannot later be an
+anchor in the same case/language slice. Siblings not cited by that row remain
+eligible for a different, non-overlapping question.
+
+### Acceptance and deduplication
+
+The code rejects a proposed row when:
+
+- its question, answer, evidence, or required punctuation is missing;
+- a cited ID was not included in the supplied document group;
+- an evidence snippet is not a contiguous normalized substring of its cited
+  chunk;
+- snippet and chunk-ID arrays are not parallel;
+- a requested multi-chunk case cites fewer than two chunks; or
+- a quoted repeated subject occurs in additional sibling chunks without either
+  complete evidence coverage or an exact date/month and branch/venue scope.
+
+Normalized duplicate questions with the same answer keep the version with more
+supporting evidence. Conflicting versions of the same question are all removed.
+Rows that reuse an already reserved evidence chunk are removed within the same
+case/language slice. Because invalid and duplicate proposals do not count,
+`--target-questions 100` may process substantially more than 100 anchors.
+
+The CSV and its progress JSON are checkpointed after every anchor, so an
+interrupted run can resume only with matching options. Important output fields
+include the question, expected answer, source document, primary chunk,
+parallel evidence snippets/chunk IDs, accepted alternatives, source title, and
+URL.
+
 Generate exactly 100 rows:
 
 ```bash

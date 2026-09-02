@@ -11,7 +11,7 @@ FastAPI transport
     -> LangGraph workflow
         -> safety and intent
         -> query rewrite
-        -> dense + lexical retrieval
+        -> configured dense or hybrid retrieval
         -> reranking and context packing
         -> grounded answer generation
         -> citations and output safety
@@ -42,7 +42,7 @@ logic must not call a CLI script.
 | `src/hkpl_agent/agent/state.py` | Typed state shared by graph nodes |
 | `src/hkpl_agent/agent/graph.py` | Finite LangGraph topology and conditional routing |
 | `src/hkpl_agent/agent/nodes.py` | Safety, intent, rewrite, retrieval, generation, citation, and persistence nodes |
-| `src/hkpl_agent/rag/retrieval.py` | Dense/lexical candidate retrieval, rank fusion, reranking, and diagnostics |
+| `src/hkpl_agent/rag/retrieval.py` | Configurable dense/hybrid retrieval, optional rank fusion, reranking, and diagnostics |
 | `src/hkpl_agent/rag/answering.py` | Canonical evidence-grounded prompt and context formatting |
 | `src/hkpl_agent/rag/corpus.py` | Corpus-role metadata and dataset-scoped vector maintenance |
 | `src/hkpl_agent/safety/compliance.py` | Prohibited-keyword policy storage and checks |
