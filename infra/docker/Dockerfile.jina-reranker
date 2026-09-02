@@ -1,11 +1,12 @@
-# PoC runtime for the exact jinaai/jina-reranker-v3-GGUF:Q8_0 artifact.
-# Jina v3 GGUF needs the external projector and the llama-embedding and
-# llama-tokenize binaries from the pinned Hanxiao llama.cpp fork.
+# PoC runtime for Jina Reranker v3/v3.5 GGUF artifacts.
+# Each Compose override selects the llama.cpp fork and immutable revision
+# required by that model version.
 ARG CUDA_VERSION=12.4.1
 
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG LLAMA_CPP_REPOSITORY=https://github.com/hanxiao/llama.cpp.git
 ARG LLAMA_CPP_REVISION=96d58cc68ee4d59804b17ceeb3c46541e2d2a05e
 ARG CUDA_ARCHITECTURES=75
 
@@ -19,7 +20,7 @@ RUN apt-get update \
 
 RUN git init /src/llama.cpp \
     && cd /src/llama.cpp \
-    && git remote add origin https://github.com/hanxiao/llama.cpp.git \
+    && git remote add origin "${LLAMA_CPP_REPOSITORY}" \
     && git fetch --depth 1 origin "${LLAMA_CPP_REVISION}" \
     && git checkout --detach FETCH_HEAD \
     && cmake -S . -B build \
@@ -54,6 +55,13 @@ RUN python3 -m pip install --no-cache-dir \
         safetensors==0.5.3 \
         tokenizers==0.21.4 \
         "uvicorn[standard]==0.35.0"
+
+# v3.5's revision-pinned rerank.py uses PyTorch only to read and cast the
+# external projector. A CPU wheel avoids installing a second CUDA runtime;
+# the GGUF backbone itself still runs on the GPU through llama-embedding.
+RUN python3 -m pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch==2.8.0
 
 COPY --from=builder /src/llama.cpp/build/bin/llama-embedding /usr/local/bin/llama-embedding
 COPY --from=builder /src/llama.cpp/build/bin/llama-tokenize /usr/local/bin/llama-tokenize

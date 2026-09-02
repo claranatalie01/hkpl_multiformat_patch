@@ -1,4 +1,4 @@
-"""Serve the exact Jina Reranker v3 Q8_0 GGUF artifact over HTTP.
+"""Serve revision-pinned Jina Reranker Q8_0 GGUF artifacts over HTTP.
 
 The HKPL RAG client expects a Jina-compatible ``POST /reranking`` endpoint.
 The upstream Jina GGUF package instead provides a backbone GGUF file, an
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -55,6 +56,11 @@ LLAMA_EMBEDDING_PATH = os.getenv(
     "JINA_LLAMA_EMBEDDING_PATH",
     "/usr/local/bin/llama-embedding",
 )
+LLAMA_TOKENIZE_PATH = os.getenv(
+    "JINA_LLAMA_TOKENIZE_PATH",
+    "/usr/local/bin/llama-tokenize",
+)
+N_GPU_LAYERS = int(os.getenv("JINA_N_GPU_LAYERS", "99"))
 MAX_DOCUMENTS = int(os.getenv("JINA_MAX_DOCUMENTS", "64"))
 
 
@@ -126,11 +132,26 @@ def build_runtime() -> JinaRuntime:
     )
 
     module = _load_module(implementation_path)
-    reranker = module.GGUFReranker(
-        model_path=model_path,
-        projector_path=projector_path,
-        llama_embedding_path=LLAMA_EMBEDDING_PATH,
-    )
+    # v3.5 adds in-process tokenization and configurable GPU offload, while
+    # v3 has a smaller constructor. Select only parameters supported by the
+    # pinned implementation so one adapter can serve either version safely.
+    constructor_parameters = inspect.signature(module.GGUFReranker).parameters
+    reranker_arguments: dict[str, Any] = {
+        "model_path": model_path,
+        "projector_path": projector_path,
+        "llama_embedding_path": LLAMA_EMBEDDING_PATH,
+    }
+    optional_arguments = {
+        "llama_tokenize_path": LLAMA_TOKENIZE_PATH,
+        "tokenizer_path": tokenizer_path,
+        "n_gpu_layers": N_GPU_LAYERS,
+    }
+    reranker_arguments.update({
+        name: value
+        for name, value in optional_arguments.items()
+        if name in constructor_parameters
+    })
+    reranker = module.GGUFReranker(**reranker_arguments)
     tokenizer = Tokenizer.from_file(tokenizer_path)
     tokenizer.no_padding()
     tokenizer.no_truncation()
@@ -151,8 +172,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="HKPL Jina Reranker v3 GGUF Adapter",
-    version="1.0.0",
+    title="HKPL Jina Reranker GGUF Adapter",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -207,13 +228,16 @@ async def _rerank(payload: RerankRequest, request: Request) -> dict[str, Any]:
         # GPU subprocess, so serialize requests instead of risking corruption
         # or out-of-memory failures.
         async with runtime.lock:
+            # Keyword arguments are required here: v3 and v3.5 put
+            # ``instruction`` and ``return_embeddings`` in different
+            # positional slots.
             results = await asyncio.to_thread(
                 runtime.reranker.rerank,
-                payload.query,
-                payload.documents,
-                top_n,
-                False,
-                payload.instruction,
+                query=payload.query,
+                documents=payload.documents,
+                top_n=top_n,
+                instruction=payload.instruction,
+                return_embeddings=False,
             )
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Reranking failed: {error}") from error

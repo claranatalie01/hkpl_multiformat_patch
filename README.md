@@ -212,6 +212,60 @@ docker compose \
 docker compose up -d reranker
 ```
 
+### Jina Reranker v3.5 Q8_0 experiment
+
+Jina v3.5 uses a different pinned llama.cpp fork and its own tokenizer. Stop
+the other rerankers, then build and start the isolated v3.5 service:
+
+```bash
+docker compose stop reranker
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-reranker.yml \
+  stop reranker-jina
+
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-reranker-v3.5.yml \
+  build reranker-jina-v35
+
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-reranker-v3.5.yml \
+  up -d reranker-jina-v35
+
+curl http://localhost:8006/health
+```
+
+Run it against the same 128 questions and the same Qwen baseline settings:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-reranker-v3.5.yml \
+  run --rm --no-deps \
+  -e EVALUATION_DATASET_TABLE=evaluation_dataset_128 \
+  -e VECTOR_TABLE=hkpl_knowledge_hybrid \
+  -e RETRIEVAL_MODE=dense \
+  -e DENSE_TOP_K=10 \
+  -e SIMILARITY_TOP_K=10 \
+  -e RERANK_TOP_N=5 \
+  -e RERANKER_THRESHOLD=0.30 \
+  -e RERANKER_TIMEOUT_SECONDS=120 \
+  -e MAX_CONTEXT_TOKENS=4000 \
+  -e ANSWER_MAX_TOKENS=256 \
+  -e EVALUATION_ANSWER_MAX_TOKENS=512 \
+  -e RAG_EVALUATION_RESULTS_PATH=/app/data/rag_evaluation/results_jina_v35_q8.csv \
+  -e RAG_EVALUATION_SUMMARY_PATH=/app/data/rag_evaluation/summary_jina_v35_q8.json \
+  langgraph-agent \
+  python scripts/rag_benchmark_workflow.py evaluate \
+  --phoenix-project hkpl-rag-jina-v35-q8
+```
+
+The container downloads the pinned Q8_0 GGUF, projector, tokenizer, and
+official `rerank.py` into the shared model cache. Manual `hf download` is not
+required.
+
 Each accepted anchor consumes every chunk listed in its
 `source_chunk_ids_json`. Those sibling evidence chunks are checkpointed and
 skipped as future anchors, preventing the same multi-chunk fact from generating

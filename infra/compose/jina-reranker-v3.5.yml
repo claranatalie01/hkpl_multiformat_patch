@@ -1,0 +1,50 @@
+# Compose override for the exact jinaai/jina-reranker-v3.5-GGUF Q8_0 model.
+# Use this file instead of jina-reranker.yml for the v3.5 A/B experiment.
+services:
+  reranker-jina-v35:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.jina-reranker
+      args:
+        CUDA_VERSION: "${JINA_CUDA_VERSION:-12.4.1}"
+        CUDA_ARCHITECTURES: "${JINA_CUDA_ARCHITECTURES:-75}"
+        LLAMA_CPP_REPOSITORY: https://github.com/littlewine/llama.cpp.git
+        LLAMA_CPP_REVISION: "${JINA_V35_LLAMA_CPP_REVISION:-0278d8362d78c5de291bc03b76016f7f74b2ab77}"
+    container_name: hkpl_reranker_jina_v35
+    ports:
+      - "8006:8080"
+    volumes:
+      - jina_reranker_cache:/models
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${JINA_RERANKER_GPU_ID:-0}"
+      HF_TOKEN: "${HF_TOKEN:-}"
+      JINA_MODEL_REPOSITORY: jinaai/jina-reranker-v3.5-GGUF
+      JINA_MODEL_REVISION: 884f7c67aa3ac24edb89064da8c7bfd03f4a90f5
+      JINA_MODEL_FILENAME: jina-reranker-v3.5-Q8_0.gguf
+      JINA_TOKENIZER_REPOSITORY: jinaai/jina-reranker-v3.5-GGUF
+      JINA_TOKENIZER_REVISION: 884f7c67aa3ac24edb89064da8c7bfd03f4a90f5
+      JINA_MAX_DOCUMENTS: "64"
+      JINA_N_GPU_LAYERS: "99"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 300s
+    restart: unless-stopped
+
+  langgraph-agent:
+    environment:
+      RERANKER_URL: http://reranker-jina-v35:8080/reranking
+      RERANKER_MODEL_NAME: jinaai/jina-reranker-v3.5-GGUF:Q8_0
+      RERANKER_TOKENIZER_URL: http://reranker-jina-v35:8080/tokenize
+      RERANKER_TOKENIZER_NAME: jina-reranker-v3.5-q8_0
+      # All common RAG/evaluation values are inherited or supplied to both
+      # A/B runs. This override changes only the reranker implementation.
+    depends_on:
+      reranker-jina-v35:
+        condition: service_healthy
+
+volumes:
+  jina_reranker_cache:
