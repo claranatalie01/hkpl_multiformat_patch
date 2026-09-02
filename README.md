@@ -272,14 +272,10 @@ This experiment keeps the existing chunks and regenerates only their vectors.
 It reads `data_hkpl_knowledge_hybrid` and writes the separate physical table
 `data_hkpl_knowledge_hybrid_jina_v5`; the original Qwen table is unchanged.
 
-Download the revision-pinned model and start the embedding server:
+Start the embedding server. Its llama.cpp container downloads Q8_0 into the
+same persistent `llama_cache` volume used by the Qwen services:
 
 ```bash
-hf download jinaai/jina-embeddings-v5-text-small-retrieval-GGUF \
-  v5-small-retrieval-Q8_0.gguf \
-  --revision 78b0ebcb4c870fdfef409e578b65288b49a4fa90 \
-  --local-dir models/jina-v5
-
 docker compose stop embedding
 docker compose \
   -f docker-compose.yml \

@@ -1,7 +1,7 @@
 # Compose override for jina-embeddings-v5-text-small-retrieval Q8_0.
 #
-# Download the pinned GGUF into models/jina-v5 before starting this service.
-# The override selects a new vector table and never overwrites Qwen vectors.
+# llama.cpp downloads Q8_0 into the shared model cache, matching the Qwen
+# embedding service pattern. The new vector table never overwrites Qwen data.
 services:
   embedding-jina-v5:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
@@ -9,12 +9,12 @@ services:
     ports:
       - "8007:8080"
     volumes:
-      - ./models/jina-v5:/models/jina-v5:ro
+      - llama_cache:/root/.cache/llama.cpp
     runtime: nvidia
     environment:
       NVIDIA_VISIBLE_DEVICES: "${JINA_EMBEDDING_GPU_ID:-0}"
     command: >
-      -m /models/jina-v5/v5-small-retrieval-Q8_0.gguf
+      -hf jinaai/jina-embeddings-v5-text-small-retrieval-GGUF:Q8_0
       --host 0.0.0.0
       --port 8080
       --embedding
@@ -41,4 +41,3 @@ services:
     depends_on:
       embedding-jina-v5:
         condition: service_healthy
-
