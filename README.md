@@ -140,6 +140,78 @@ The generator may inspect more than 100 chunks because rejected or duplicate
 questions do not count toward the 100-row target.
 The existing `data/evaluation_dataset.csv` is not changed by this command.
 
+### Jina Reranker v3 Q8_0 experiment
+
+The normal Compose stack uses Qwen. To test the exact
+`jinaai/jina-reranker-v3-GGUF:Q8_0` artifact without changing that baseline,
+add the Jina override file. Build and start its adapter first:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-reranker.yml \
+  build reranker-jina
+
+# Avoid GPU contention with the Qwen reranker during the A/B run.
+docker compose stop reranker
+
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-reranker.yml \
+  up -d reranker-jina
+
+curl http://localhost:8005/health
+```
+
+Run the 128-question dense-retrieval experiment with identical retrieval and
+output counts:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-reranker.yml \
+  run --rm --no-deps \
+  -e EVALUATION_DATASET_TABLE=evaluation_dataset_128 \
+  -e VECTOR_TABLE=hkpl_knowledge_hybrid \
+  -e RETRIEVAL_MODE=dense \
+  -e DENSE_TOP_K=10 \
+  -e SIMILARITY_TOP_K=10 \
+  -e RERANK_TOP_N=5 \
+  -e RERANKER_THRESHOLD=0.30 \
+  -e RERANKER_TIMEOUT_SECONDS=120 \
+  -e MAX_CONTEXT_TOKENS=4000 \
+  -e ANSWER_MAX_TOKENS=256 \
+  -e EVALUATION_ANSWER_MAX_TOKENS=512 \
+  -e RAG_EVALUATION_RESULTS_PATH=/app/data/rag_evaluation/results_jina_v3_q8.csv \
+  -e RAG_EVALUATION_SUMMARY_PATH=/app/data/rag_evaluation/summary_jina_v3_q8.json \
+  langgraph-agent \
+  python scripts/rag_benchmark_workflow.py evaluate \
+  --phoenix-project hkpl-rag-jina-v3-q8
+```
+
+This is the official GGUF plus external-projector execution path. Its current
+upstream implementation starts `llama-embedding` for each reranking request,
+so it is expected to be slower than a persistent model server. Use its result
+to measure this exact deployable Q8_0 path, not as a hardware-equivalent
+comparison with persistent PyTorch/H100 benchmarks.
+
+These shared values match the Qwen dense baseline. The Jina override changes
+only the reranker URL, model identity, and tokenizer. The same `0.30` threshold
+is retained for this controlled reproduction, although Jina cosine scores and
+Qwen relevance scores are not inherently calibrated to the same scale. If
+Jina is considered for promotion, run threshold calibration as a separate
+experiment instead of silently changing this A/B configuration.
+
+To return to Qwen, omit the override file and restart its service:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-reranker.yml \
+  stop reranker-jina
+docker compose up -d reranker
+```
+
 Each accepted anchor consumes every chunk listed in its
 `source_chunk_ids_json`. Those sibling evidence chunks are checkpointed and
 skipped as future anchors, preventing the same multi-chunk fact from generating

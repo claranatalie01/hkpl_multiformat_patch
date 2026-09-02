@@ -1,0 +1,52 @@
+# Compose override for the exact jinaai/jina-reranker-v3-GGUF Q8_0 model.
+#
+# This file does not change the normal Qwen reranker in docker-compose.yml.
+# Add it with a second ``-f`` argument only for the Jina A/B experiment.
+services:
+  reranker-jina:
+    build:
+      # Compose resolves override paths from the directory containing the
+      # first compose file (the repository root).
+      context: .
+      dockerfile: infra/docker/Dockerfile.jina-reranker
+      args:
+        CUDA_VERSION: "${JINA_CUDA_VERSION:-12.4.1}"
+        CUDA_ARCHITECTURES: "${JINA_CUDA_ARCHITECTURES:-75}"
+        LLAMA_CPP_REVISION: "${JINA_LLAMA_CPP_REVISION:-96d58cc68ee4d59804b17ceeb3c46541e2d2a05e}"
+    container_name: hkpl_reranker_jina
+    ports:
+      - "8005:8080"
+    volumes:
+      - jina_reranker_cache:/models
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${JINA_RERANKER_GPU_ID:-0}"
+      HF_TOKEN: "${HF_TOKEN:-}"
+      JINA_MODEL_REPOSITORY: jinaai/jina-reranker-v3-GGUF
+      JINA_MODEL_REVISION: 4bbace80cf59987f6fec850519012341c06810d5
+      JINA_MODEL_FILENAME: jina-reranker-v3-Q8_0.gguf
+      JINA_TOKENIZER_REPOSITORY: jinaai/jina-reranker-v3
+      JINA_TOKENIZER_REVISION: d7d7e73b6ea138ced340b83865931b5dfb6c97aa
+      JINA_MAX_DOCUMENTS: "64"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 300s
+    restart: unless-stopped
+
+  langgraph-agent:
+    environment:
+      RERANKER_URL: http://reranker-jina:8080/reranking
+      RERANKER_MODEL_NAME: jinaai/jina-reranker-v3-GGUF:Q8_0
+      RERANKER_TOKENIZER_URL: http://reranker-jina:8080/tokenize
+      RERANKER_TOKENIZER_NAME: jina-reranker-v3-q8_0
+      # Shared retrieval, context, generation, and threshold settings are not
+      # changed here. The override replaces only the reranker implementation.
+    depends_on:
+      reranker-jina:
+        condition: service_healthy
+
+volumes:
+  jina_reranker_cache:
