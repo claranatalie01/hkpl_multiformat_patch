@@ -266,6 +266,58 @@ The container downloads the pinned Q8_0 GGUF, projector, tokenizer, and
 official `rerank.py` into the shared model cache. Manual `hf download` is not
 required.
 
+### Jina Embeddings v5 Q8_0 experiment
+
+This experiment keeps the existing chunks and regenerates only their vectors.
+It reads `data_hkpl_knowledge_hybrid` and writes the separate physical table
+`data_hkpl_knowledge_hybrid_jina_v5`; the original Qwen table is unchanged.
+
+Download the revision-pinned model and start the embedding server:
+
+```bash
+hf download jinaai/jina-embeddings-v5-text-small-retrieval-GGUF \
+  v5-small-retrieval-Q8_0.gguf \
+  --revision 78b0ebcb4c870fdfef409e578b65288b49a4fa90 \
+  --local-dir models/jina-v5
+
+docker compose stop embedding
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-embedding-v5.yml \
+  up -d embedding-jina-v5
+
+curl http://localhost:8007/health
+```
+
+Create ten vectors as a smoke test, then resume through the complete corpus:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-embedding-v5.yml \
+  run --rm --no-deps \
+  -e KNOWLEDGE_CORPUS_READ_ONLY=false \
+  -e VECTOR_TABLE=hkpl_knowledge_hybrid_jina_v5 \
+  langgraph-agent \
+  python scripts/reembed_vector_table.py \
+  --source-table data_hkpl_knowledge_hybrid \
+  --reset-target --yes --limit 10
+
+docker compose \
+  -f docker-compose.yml \
+  -f infra/compose/jina-embedding-v5.yml \
+  run --rm --no-deps \
+  -e KNOWLEDGE_CORPUS_READ_ONLY=false \
+  -e VECTOR_TABLE=hkpl_knowledge_hybrid_jina_v5 \
+  langgraph-agent \
+  python scripts/reembed_vector_table.py \
+  --source-table data_hkpl_knowledge_hybrid
+```
+
+The second command resumes after the first ten node IDs. The final audit checks
+that all source rows exist, every vector has 1,024 dimensions, and text and
+metadata remain identical to the Qwen source table.
+
 Each accepted anchor consumes every chunk listed in its
 `source_chunk_ids_json`. Those sibling evidence chunks are checkpointed and
 skipped as future anchors, preventing the same multi-chunk fact from generating

@@ -1,0 +1,44 @@
+# Compose override for jina-embeddings-v5-text-small-retrieval Q8_0.
+#
+# Download the pinned GGUF into models/jina-v5 before starting this service.
+# The override selects a new vector table and never overwrites Qwen vectors.
+services:
+  embedding-jina-v5:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: hkpl_embedding_jina_v5
+    ports:
+      - "8007:8080"
+    volumes:
+      - ./models/jina-v5:/models/jina-v5:ro
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${JINA_EMBEDDING_GPU_ID:-0}"
+    command: >
+      -m /models/jina-v5/v5-small-retrieval-Q8_0.gguf
+      --host 0.0.0.0
+      --port 8080
+      --embedding
+      --pooling last
+      --n-gpu-layers 99
+      --ctx-size 8192
+      --batch-size 1024
+      --ubatch-size 512
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+  langgraph-agent:
+    environment:
+      EMBEDDING_URL: http://embedding-jina-v5:8080/v1/embeddings
+      EMBEDDING_TOKENIZER_URL: http://embedding-jina-v5:8080/tokenize
+      EMBEDDING_TOKENIZER_NAME: llama.cpp:jina-embeddings-v5-small-retrieval-q8_0
+      VECTOR_TABLE: "${JINA_EMBEDDING_VECTOR_TABLE:-hkpl_knowledge_hybrid_jina_v5}"
+      EMBED_DIM: "1024"
+    depends_on:
+      embedding-jina-v5:
+        condition: service_healthy
+

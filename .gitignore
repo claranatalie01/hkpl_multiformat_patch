@@ -14,3 +14,6 @@ data/retrieval_results.csv
 data/retrieval_summary.json
 safety_intent_log.jsonl
 storage/crawler_state/
+
+# Locally downloaded experimental model artifacts.
+models/jina-v5/
