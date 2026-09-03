@@ -34,14 +34,16 @@ The dependency-free repository policy is implemented by
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pull requests and pushes to `RAG_ONLY` or
-`main`:
+`.github/workflows/ci.yml` runs on every push, every pull request, and manual
+dispatch from the GitHub Actions page. A newer commit cancels an unfinished CI
+run for the same branch:
 
 1. Install Python 3.11 and `uv`.
 2. Recreate the locked environment with `uv sync --frozen`.
 3. Check syntax, module documentation, imports, layout, and tracked artifacts.
 4. Run unit tests.
-5. Validate the Docker Compose model in a separate lightweight job.
+5. Validate the base branch's Docker Compose configuration without downloading
+   GPU models or running the full RAG benchmark.
 
 Run the same gates locally:
 

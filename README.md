@@ -1,5 +1,7 @@
 # HKPL Agentic RAG
 
+[![CI](https://github.com/claranatalie01/hkpl_multiformat_patch/actions/workflows/ci.yml/badge.svg)](https://github.com/claranatalie01/hkpl_multiformat_patch/actions/workflows/ci.yml)
+
 HKPL Agentic RAG is a bounded LangGraph application for answering questions
 from approved Hong Kong Public Libraries webpages and documents. It combines
 multi-format ingestion, PostgreSQL/pgvector retrieval, multilingual embedding
