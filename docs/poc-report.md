@@ -263,8 +263,11 @@ QE = Qwen3 Embedding 0.6B and QR = Qwen3 Reranker 0.6B. Both are Q8_0.
 pass rate, so dense top-10 retrieval was retained.
 
 The [ACM retrieval study](https://dl.acm.org/doi/10.1145/3816713.3818802)
-compares lexical, dense, and hybrid retrieval but does not identify one winner
-for every corpus. The PoC decision follows the HKPL result above.
+reports strong overall retrieval and recommendation performance from dense
+retrieval, while hybrid retrieval mainly improves robustness over lexical
+retrieval. The HKPL results align with that finding. Dense retrieval achieved
+higher retrieval and reranker hit rates, slightly better answer quality, lower
+token use, and much lower latency than the tested hybrid configuration.
 
 ### 2.2 Embedding and reranker comparison
 
