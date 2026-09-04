@@ -4,12 +4,11 @@
 
 ## Executive summary
 
-This PoC evaluates an internally hosted RAG system on approved Hong Kong
-Public Libraries (HKPL) webpages and documents. It covers ingestion,
-retrieval, reranking, grounded generation, input safety, evaluation, and
-tracing.
+The PoC evaluates an internally hosted RAG system on approved Hong Kong Public
+Libraries (HKPL) webpages and documents. It covers ingestion, retrieval,
+reranking, grounded generation, input safety, evaluation, and tracing.
 
-The recommended PoC configuration is:
+The tests support the following configuration:
 
 - Qwen3 Embedding 0.6B Q8_0;
 - dense retrieval, top 10;
@@ -18,13 +17,13 @@ The recommended PoC configuration is:
 - Qwen3.5-9B Q6_K generation with reasoning disabled; and
 - GLiGuard as the low-latency input-safety candidate.
 
-**Result:** On 128 HKPL questions, this configuration achieved 90.63%
+**Headline result.** On 128 HKPL questions, this configuration achieved 90.63%
 Retriever Hit@10, 83.59% Reranker Hit@5, 87.50% answer pass, 97.66%
 faithfulness, and 1.93 / 3.05 seconds p50 / p95 latency.
 
 ## 1. Methodology
 
-The PoC follows one controlled path from source to answer:
+The workflow follows one controlled path from source to answer:
 
 ```mermaid
 flowchart LR
@@ -44,9 +43,9 @@ flowchart LR
 
 ### 1.1 Runtime architecture
 
-The PoC uses six containers: five supporting services and the LangGraph agent.
-Each model service can be replaced and tested without rebuilding the rest of
-the system.
+The runtime places five supporting services and the LangGraph agent in six
+containers. This separation allows one model service to be replaced and tested
+without rebuilding the rest of the system.
 
 | Container | Role |
 |---|---|
@@ -59,11 +58,10 @@ the system.
 
 Local model serving keeps HKPL evidence and user questions off public AI
 services. LangGraph provides a finite workflow, not an open-ended planning
-loop. PostgreSQL replaces a separate FAISS index, keeping vectors, metadata,
-versions, filters, backups, and corpus activation in one database.
-
-**Design choice:** Separate containers make model A/B tests easier, while one
-transactional database keeps the corpus traceable.
+loop. PostgreSQL replaces a separate FAISS index, so vectors, metadata,
+versions, filters, backups, and corpus activation stay in one database. The
+container boundaries simplify model A/B tests; the transactional database
+keeps the corpus traceable.
 
 ### 1.2 Building the knowledge corpus
 
@@ -73,10 +71,10 @@ It follows approved English, Traditional Chinese, Simplified Chinese, and PDF
 links. Page, depth, delay, file-type, path, and `robots.txt` rules bound the
 crawl.
 
-The crawler downloads pages with `requests` and extracts the main content,
-title, and links with Beautiful Soup. It saves new or changed content, records
-its checksum and version, and sends it through the same ingestion service as
-an uploaded document.
+The crawler downloads pages with `requests`. Beautiful Soup extracts the main
+content, title, and links. The crawler saves new or changed content with its
+checksum and version, then passes it to the same ingestion service as an
+uploaded document.
 
 The reader is selected by source structure:
 
@@ -94,7 +92,7 @@ locators, so custom readers and structure-aware chunking were implemented.
 
 ### 1.3 Chunking method
 
-The project uses **two-stage, structure-aware, record-preserving,
+The pipeline uses **two-stage, structure-aware, record-preserving,
 token-bounded chunking**, not fixed windows for every source.
 
 ```text
@@ -127,15 +125,15 @@ needed. Each chunk stores exact `evidence_text`, enriched `search_text`, and
 provenance. Its ID combines the source version, locator, part number, and
 evidence hash.
 
-**Decision:** One chunk per page is too broad; fixed windows can separate an
-event from its schedule or a value from its table header. Structure-aware
-chunks preserve those facts while enforcing the model limit.
+One chunk per page proved too broad, while fixed windows could separate an
+event from its schedule or a value from its table header. The selected method
+keeps records intact before enforcing the model limit.
 
 ### 1.4 Evaluation dataset generation
 
-The generator used only HKPL chunks marked `primary`. It then validated all
-128 questions against the vector table. An anchor-and-sibling method keeps the
-expected evidence complete.
+The generator draws questions only from HKPL chunks marked `primary`. All 128
+rows are validated against the vector table. The anchor-and-sibling method
+keeps the expected evidence complete.
 
 ```mermaid
 flowchart TD
@@ -163,8 +161,8 @@ Cited chunks are then consumed so they cannot create paraphrased duplicates.
 Matching duplicates keep the best-supported row; conflicting versions are
 removed.
 
-**Purpose:** A question answerable from three sibling chunks must label all
-three, not only its anchor.
+A question answerable from three sibling chunks must label all three, not only
+its anchor. This is the main reason for using sibling evidence.
 
 #### Repeated-event example
 
@@ -181,9 +179,8 @@ The earlier method could ask “When is the talk held?” from A and save only 1
 September. That label was incomplete. An answer containing all three dates
 could be judged wrong, while retrieval of B or C could be recorded as a miss.
 
-The current method uses A as the anchor and supplies B, C, and D as siblings.
-The LLM identifies A, B, and C as the same talk. An unscoped question must
-store:
+The generator uses A as the anchor and supplies B, C, and D as siblings. The
+LLM identifies A, B, and C as the same talk. An unscoped question must store:
 
 ```text
 expected_answer_text            = 16, 23, and 30 September
@@ -255,14 +252,13 @@ QE = Qwen3 Embedding 0.6B and QR = Qwen3 Reranker 0.6B. Both are Q8_0.
 | **QE + dense + QR** | **90.63%** | **83.59%** | 87.50% | **4.578** | **97.66%** | **3,782.9** | **1.93 / 3.05 s** |
 | QE + hybrid + QR | 89.06% | 82.03% | 87.50% | 4.563 | 96.09% | 4,420.2 | 5.72 / 7.38 s |
 
-**Finding:** Hybrid retrieval found fewer labelled chunks, used 16.8% more
-tokens, and nearly tripled p50 latency. It did not improve answer pass rate.
+**Retrieval decision.** Hybrid retrieval found fewer labelled chunks, used
+16.8% more tokens, and nearly tripled p50 latency. It did not improve answer
+pass rate, so dense top-10 retrieval was retained.
 
 The [ACM retrieval study](https://dl.acm.org/doi/10.1145/3816713.3818802)
 compares lexical, dense, and hybrid retrieval but does not identify one winner
-for every corpus. The HKPL result decides this PoC choice.
-
-**Decision:** Use dense top-10 retrieval for the PoC baseline.
+for every corpus. The PoC decision follows the HKPL result above.
 
 ### 2.2 Embedding and reranker comparison
 
@@ -280,14 +276,12 @@ overrides isolated the Jina services from the baseline.
 | JE5 + dense + QR | 87.50% | 81.25% | 88.28% | 4.539 | 93.75% | 4,015.9 | 2.00 / 3.16 s |
 | JE5 + dense + JR3.5 | 87.50% | 79.69% | 85.94% | 4.477 | 92.19% | 4,010.5 | 1.90 / 3.04 s |
 
-**Finding:** Qwen embedding found labelled evidence for 116/128 questions;
-Jina v5 found 112/128. Jina v3 had the highest answer pass rate but was too
-slow through the tested GGUF path. Jina v3.5 was fast, but Qwen reranking kept
-four more labelled chunks and had higher faithfulness for only 0.06 seconds
-more p50 latency.
-
-**Decision:** Retain Qwen3 Embedding 0.6B Q8_0 and Qwen3 Reranker 0.6B Q8_0
-for the current HKPL baseline.
+**Model decision.** Qwen embedding found labelled evidence for 116/128
+questions; Jina v5 found 112/128. Jina v3 had the highest answer pass rate but
+was too slow through the tested GGUF path. Jina v3.5 was fast, but Qwen
+reranking kept four more labelled chunks and had higher faithfulness for only
+0.06 seconds more p50 latency. These results support Qwen3 Embedding 0.6B Q8_0
+and Qwen3 Reranker 0.6B Q8_0 for the current baseline.
 
 ### 2.3 Why Jina's published ranking differs from this PoC
 
@@ -312,9 +306,9 @@ can reduce quality even when the server returns valid vectors. Q8_0 and a
 different backend can also shift close rankings. The reranker article compares
 Jina v3 with Qwen 4B; this PoC uses Qwen3 Reranker 0.6B Q8_0.
 
-**Limitation:** Four retrieval hits separate Qwen and Jina v5, and no confidence
-interval was calculated. Jina also had a higher answer pass rate in some runs.
-The result supports Qwen for this setup; it does not prove that Qwen is always
+Only four retrieval hits separate Qwen and Jina v5, and no confidence interval
+was calculated. Jina also had a higher answer pass rate in some runs. The
+result supports Qwen for this setup; it does not prove that Qwen is always
 better. A follow-up should verify Jina's official recipe and use repeated,
 paired per-question runs. External benchmarks shortlist models; the HKPL
 benchmark selects the deployment model.
@@ -329,8 +323,7 @@ Create-and-Refine and hierarchical summarisation require several LLM calls.
 They add latency, may lose details, and weaken the link to exact source text.
 Deterministic packing uses one call and preserves citation evidence.
 
-**Decision:** Use deterministic context packing and one bounded generation
-call.
+The PoC uses deterministic context packing and one bounded generation call.
 
 ### 2.5 Input-safety benchmark
 
@@ -350,16 +343,12 @@ were caught. F1 balances those two measures. FPR is the share of safe prompts
 blocked, while FNR is the share of unsafe prompts allowed. Latency measures the
 guard's added response time.
 
-**Finding:** GLiGuard was about 15 times faster and had the highest unsafe
-recall. Its 20.74% false-positive rate is the main trade-off.
-
-GLiGuard still needs deterministic rules and HKPL-specific multilingual and
-jailbreak calibration. It supplements request validation, source
-authorization, grounding, output checks, and rate limits; it does not replace
-them.
-
-**Decision:** Use GLiGuard as the latency-first PoC semantic guard. Calibrate
-it on HKPL-specific data before production.
+**Safety decision.** GLiGuard was about 15 times faster and had the highest
+unsafe recall, supporting its selection as the latency-first PoC guard. Its 20.74%
+false-positive rate is the main trade-off. Before production, it needs
+HKPL-specific multilingual and jailbreak calibration. It supplements
+deterministic rules, authorization, grounding, output checks, and rate limits;
+it does not replace them.
 
 ## 3. Problems found and design decisions
 
@@ -371,9 +360,9 @@ omitted “Religion.” A 1,000-token reasoning budget kept it but raised latenc
 from about 3 to 15 seconds. Across tests, reasoning-off took 2–3 seconds;
 reasoning-on took 8–15 seconds.
 
-**Decision:** Keep reasoning off for ordinary questions. A future complexity
-classifier could reserve it for multi-item, comparison, date-resolution, or
-multi-hop questions, but that route needs its own evaluation.
+Reasoning remains off for ordinary questions. A future complexity classifier
+could reserve it for multi-item, comparison, date-resolution, or multi-hop
+questions, but that route needs its own evaluation.
 
 ### Exact URL and identifier questions
 
@@ -381,9 +370,9 @@ Semantic retrieval missed the labelled record for “What is the URL for the
 Tung Wah Museum - Reference Library?” URLs and identifiers are poor semantic
 targets.
 
-**Decision:** Route exact titles, URLs, branches, and identifiers to a typed,
-read-only metadata lookup. Apply the same grounding and output checks. The
-model may choose this route but must not write SQL.
+Future work will route exact titles, URLs, branches, and identifiers to a
+typed, read-only metadata lookup. The result will use the same grounding and
+output checks. The model may choose this route but must not write SQL.
 
 ### Reproducibility and service readiness
 
@@ -400,7 +389,7 @@ warnings.
 
 ## 4. PoC conclusion and next steps
 
-**PoC verdict:** Use **Qwen embedding + dense top 10 + Qwen reranker top 5 +
+**PoC verdict.** Use **Qwen embedding + dense top 10 + Qwen reranker top 5 +
 deterministic context + reasoning-off generation**. Use GLiGuard as the
 low-latency guard candidate after false-positive calibration.
 
