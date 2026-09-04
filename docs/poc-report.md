@@ -1,4 +1,4 @@
-# HKPL Agentic RAG proof of concept
+# HKPL Agentic RAG
 
 [GitHub repository](https://github.com/claranatalie01/hkpl_multiformat_patch)
 
@@ -7,6 +7,12 @@
 The PoC evaluates an internally hosted RAG system on approved Hong Kong Public
 Libraries (HKPL) webpages and documents. It covers ingestion, retrieval,
 reranking, grounded generation, input safety, evaluation, and tracing.
+
+**Scope:** The measured results focus on the RAG path: ingestion, retrieval,
+reranking, context construction, and answer generation. The guardrail figures
+come from a separate input-safety benchmark. They do not yet validate the full
+agentic workflow, including intent routing, multi-turn context, clarification,
+branch resolution, integrated safety decisions, and fallback handling.
 
 The tests support the following configuration:
 
@@ -17,7 +23,7 @@ The tests support the following configuration:
 - Qwen3.5-9B Q6_K generation with reasoning disabled; and
 - GLiGuard as the low-latency input-safety candidate.
 
-**Headline result.** On 128 HKPL questions, this configuration achieved 90.63%
+**Headline result:** On 128 HKPL questions, this configuration achieved 90.63%
 Retriever Hit@10, 83.59% Reranker Hit@5, 87.50% answer pass, 97.66%
 faithfulness, and 1.93 / 3.05 seconds p50 / p95 latency.
 
@@ -252,7 +258,7 @@ QE = Qwen3 Embedding 0.6B and QR = Qwen3 Reranker 0.6B. Both are Q8_0.
 | **QE + dense + QR** | **90.63%** | **83.59%** | 87.50% | **4.578** | **97.66%** | **3,782.9** | **1.93 / 3.05 s** |
 | QE + hybrid + QR | 89.06% | 82.03% | 87.50% | 4.563 | 96.09% | 4,420.2 | 5.72 / 7.38 s |
 
-**Retrieval decision.** Hybrid retrieval found fewer labelled chunks, used
+**Retrieval decision:** Hybrid retrieval found fewer labelled chunks, used
 16.8% more tokens, and nearly tripled p50 latency. It did not improve answer
 pass rate, so dense top-10 retrieval was retained.
 
@@ -276,7 +282,7 @@ overrides isolated the Jina services from the baseline.
 | JE5 + dense + QR | 87.50% | 81.25% | 88.28% | 4.539 | 93.75% | 4,015.9 | 2.00 / 3.16 s |
 | JE5 + dense + JR3.5 | 87.50% | 79.69% | 85.94% | 4.477 | 92.19% | 4,010.5 | 1.90 / 3.04 s |
 
-**Model decision.** Qwen embedding found labelled evidence for 116/128
+**Model decision:** Qwen embedding found labelled evidence for 116/128
 questions; Jina v5 found 112/128. Jina v3 had the highest answer pass rate but
 was too slow through the tested GGUF path. Jina v3.5 was fast, but Qwen
 reranking kept four more labelled chunks and had higher faithfulness for only
@@ -285,33 +291,21 @@ and Qwen3 Reranker 0.6B Q8_0 for the current baseline.
 
 ### 2.3 Why Jina's published ranking differs from this PoC
 
-Published rankings and this PoC measure different systems. The
-[Jina model page](https://jina.ai/models/jina-embeddings-v5-text-small/)
-reports strong aggregate MTEB results, and the AIMultiple
-[embedding](https://aimultiple.com/open-source-embedding-models) and
-[reranker](https://aimultiple.com/rerankers) studies also rank Jina highly.
-Their experimental conditions differ from this PoC:
+Published Jina results and this PoC are not directly comparable. They use
+different datasets, candidate counts, hardware, inference backends, and model
+configurations. Published tests generally use official full-weight
+implementations on high-end hardware. This PoC used Q8_0 GGUF models on RTX
+2080 Ti hardware and reranked only ten candidates.
 
-| Factor | Published benchmark | HKPL PoC |
-|---|---|---|
-| Data | General multilingual/English benchmarks, legal contracts, technical documents, medical abstracts, or English Amazon reviews | HKPL webpages and PDFs containing branch names, event schedules, tables, URLs, English, and Chinese |
-| Candidate flow | Embedding ranking across large corpora; reranking top 100 into top 10 | Dense top 10 reranked into top 5 |
-| Metrics | Aggregate MTEB, nDCG, MRR, Recall, or product-level hits | Exact labelled HKPL chunk hits, answer correctness, faithfulness, tokens, and end-to-end latency |
-| Runtime | Full Hugging Face weights through vLLM or Transformers/PyTorch on an H100 80 GB | Q8_0 GGUF services on RTX 2080 Ti hardware |
-| Model recipe | Official task adapter, pooling, query/document prefixes, and backend | PoC GGUF adapter path, whose parity with the official recipe must be checked |
+Jina v5 also depends on the correct query/document prefixes, pooling,
+normalization, tokenizer, and task configuration. Differences in the GGUF
+adapter may have affected close rankings.
 
-Jina v5 expects its retrieval configuration and asymmetric query/document
-treatment. Adapter, prefix, pooling, normalization, or tokenizer differences
-can reduce quality even when the server returns valid vectors. Q8_0 and a
-different backend can also shift close rankings. The reranker article compares
-Jina v3 with Qwen 4B; this PoC uses Qwen3 Reranker 0.6B Q8_0.
-
-Only four retrieval hits separate Qwen and Jina v5, and no confidence interval
-was calculated. Jina also had a higher answer pass rate in some runs. The
-result supports Qwen for this setup; it does not prove that Qwen is always
-better. A follow-up should verify Jina's official recipe and use repeated,
-paired per-question runs. External benchmarks shortlist models; the HKPL
-benchmark selects the deployment model.
+**Limitation:** Qwen found only four more labelled chunks than Jina v5 across
+128 questions, and no confidence interval was calculated. The result supports
+Qwen for the tested HKPL configuration; it does not prove that Qwen is always
+better. A stronger comparison would verify Jina's official inference recipe
+and repeat the experiment several times.
 
 ### 2.4 Context and answer generation
 
@@ -343,7 +337,7 @@ were caught. F1 balances those two measures. FPR is the share of safe prompts
 blocked, while FNR is the share of unsafe prompts allowed. Latency measures the
 guard's added response time.
 
-**Safety decision.** GLiGuard was about 15 times faster and had the highest
+**Safety decision:** GLiGuard was about 15 times faster and had the highest
 unsafe recall, supporting its selection as the latency-first PoC guard. Its 20.74%
 false-positive rate is the main trade-off. Before production, it needs
 HKPL-specific multilingual and jailbreak calibration. It supplements
@@ -389,7 +383,7 @@ warnings.
 
 ## 4. PoC conclusion and next steps
 
-**PoC verdict.** Use **Qwen embedding + dense top 10 + Qwen reranker top 5 +
+**PoC verdict:** Use **Qwen embedding + dense top 10 + Qwen reranker top 5 +
 deterministic context + reasoning-off generation**. Use GLiGuard as the
 low-latency guard candidate after false-positive calibration.
 
