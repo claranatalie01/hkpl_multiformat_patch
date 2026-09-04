@@ -1,0 +1,591 @@
+"""FastAPI entry point for HKPL chat and knowledge-base administration.
+
+The public chat endpoint executes the LangGraph RAG workflow. Protected admin
+endpoints manage compliance rules and delegate upload, URL-indexing, replace,
+reindex, and delete operations to ``hkpl_agent.ingestion.service``. This module does
+not implement extraction or vector creation itself; it exposes those shared
+services over HTTP.
+"""
+
+import hmac
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
+)
+from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage
+
+from .agent.factory import build_initial_state
+from .safety.compliance import (
+    create_prohibited_keyword,
+    list_prohibited_keywords,
+    set_keyword_active,
+)
+from .agent.graph import compiled_workflow
+from .ingestion.document_types import document_type_options, validate_document_type
+from .ingestion.registry import (
+    ensure_registry_schema,
+    find_active_web_document_by_source_url,
+    get_document,
+    list_documents,
+)
+from .ingestion.config import UPLOAD_DIR
+from .ingestion.service import (
+    delete_registered_document,
+    ingest_path_sync,
+    process_registered_document,
+    register_upload,
+    reindex_registered_document,
+)
+from .ingestion.webpage import save_webpage_to_uploads
+from .ingestion.write_guard import (
+    CorpusReadOnlyError,
+    ensure_corpus_writable,
+)
+from .memory.repository import load_conversation_history
+from .observability.setup import setup_phoenix_tracing
+from .api.schemas import (
+    KeywordStatusRequest,
+    ProhibitedKeywordRequest,
+    TestQueryRequest,
+    UrlIndexRequest,
+    UserRequest,
+)
+from .api.streaming import format_sse
+from .api.uploads import save_upload
+
+
+setup_phoenix_tracing()
+
+
+logger = logging.getLogger(__name__)
+
+ADMIN_API_KEY = os.getenv(
+    "ADMIN_API_KEY",
+    "",
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    UPLOAD_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    ensure_registry_schema()
+
+    if not ADMIN_API_KEY:
+        logger.warning(
+            "ADMIN_API_KEY is not set. "
+            "Admin endpoints are open in development mode."
+        )
+
+    yield
+
+
+app = FastAPI(
+    title="HKPL Agentic RAG Service",
+    lifespan=lifespan,
+)
+
+
+def require_admin(
+    x_admin_key: Optional[str] = Header(
+        default=None,
+        alias="X-Admin-Key",
+    ),
+) -> None:
+    if not ADMIN_API_KEY:
+        return
+
+    if (
+        x_admin_key is None
+        or not hmac.compare_digest(
+            x_admin_key,
+            ADMIN_API_KEY,
+        )
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid admin API key.",
+        )
+
+
+def require_corpus_write_access() -> None:
+    try:
+        ensure_corpus_writable("modify the knowledge corpus")
+    except CorpusReadOnlyError as error:
+        raise HTTPException(
+            status_code=423,
+            detail=str(error),
+        ) from error
+
+
+@app.get(
+    "/admin/compliance/keywords",
+    dependencies=[Depends(require_admin)],
+)
+async def get_prohibited_keywords():
+    return {
+        "keywords": list_prohibited_keywords()
+    }
+
+
+@app.post(
+    "/admin/compliance/keywords",
+    dependencies=[Depends(require_admin)],
+)
+async def add_prohibited_keyword(
+    payload: ProhibitedKeywordRequest,
+):
+    return create_prohibited_keyword(
+        keyword=payload.keyword,
+        category=payload.category,
+        language=payload.language,
+        fallback_response=payload.fallback_response,
+        created_by=payload.created_by,
+    )
+
+
+@app.patch(
+    "/admin/compliance/keywords/{keyword_id}",
+    dependencies=[Depends(require_admin)],
+)
+async def update_keyword_status(
+    keyword_id: str,
+    payload: KeywordStatusRequest,
+):
+    updated = set_keyword_active(
+        keyword_id,
+        payload.is_active,
+        staff_id=payload.staff_id,
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=404,
+            detail="Keyword not found.",
+        )
+
+    return updated
+@app.post("/admin/knowledge-base/test-query")
+async def admin_test_query(
+    payload: TestQueryRequest,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    require_admin(x_admin_key)
+
+    initial_state = build_initial_state(
+        question=payload.question,
+        session_id=payload.session_id,
+        conversation_history=[],
+        request_type="rag_search",
+    )
+
+    final_answer = ""
+    visited_nodes = []
+
+    async for chunk in compiled_workflow.astream(initial_state, stream_mode="updates"):
+        for node_name, updated in chunk.items():
+            visited_nodes.append(node_name)
+
+            if isinstance(updated, dict) and "messages" in updated:
+                for msg in updated["messages"]:
+                    if isinstance(msg, AIMessage):
+                        final_answer = msg.content
+
+    return {
+        "question": payload.question,
+        "answer": final_answer,
+        "visited_nodes": visited_nodes,
+    }
+
+
+@app.post(
+    "/admin/documents/index-url",
+    status_code=202,
+    dependencies=[Depends(require_corpus_write_access)],
+)
+async def index_url(
+    payload: UrlIndexRequest,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    require_admin(x_admin_key)
+
+    existing_document = find_active_web_document_by_source_url(payload.url)
+    previous_path = (
+        UPLOAD_DIR / existing_document["stored_file_name"]
+        if existing_document
+        else None
+    )
+
+    path, detected_title = save_webpage_to_uploads(
+        url=payload.url,
+        upload_dir=UPLOAD_DIR,
+    )
+
+    result = ingest_path_sync(
+        path,
+        original_file_name=path.name,
+        mime_type="text/html",
+        source_title=payload.source_title or detected_title,
+        source_url=payload.url,
+        source_type="webpage",
+        access_level=payload.access_level,
+        category=payload.category,
+        language=payload.language,
+        effective_date=payload.effective_date,
+        source_kind="webpage",
+        document_type=validate_document_type(payload.document_type),
+        replace_document_id=(
+            str(existing_document["document_id"])
+            if existing_document
+            else None
+        ),
+    )
+
+    if path != previous_path and result.get("status") == "duplicate":
+        path.unlink(missing_ok=True)
+
+    return result
+
+
+@app.post("/chat/stream")
+async def chat_stream(
+    payload: UserRequest,
+):
+    current_library = None
+
+    if payload.library_code:
+        name_map = {
+            "HKCL": "Hong Kong Central Library",
+            "STPL": "Shatin Public Library",
+        }
+        current_library = {
+            "code": payload.library_code,
+            "name": name_map.get(
+                payload.library_code,
+                payload.library_code,
+            ),
+        }
+    history = load_conversation_history(
+        payload.session_id
+    )
+
+    initial_state = build_initial_state(
+        question=payload.input_string,
+        session_id=payload.session_id,
+        conversation_history=history,
+        current_library=current_library,
+    )
+
+    async def event_generator():
+        async for chunk in compiled_workflow.astream(
+            initial_state,
+            stream_mode="updates",
+        ):
+            for node_name, updated in chunk.items():
+                yield format_sse(
+                    "node",
+                    node_name,
+                )
+
+                if node_name in {
+                    "safety",
+                    "output_safety_filter",
+                }:
+                    if (
+                        isinstance(updated, dict)
+                        and "messages" in updated
+                    ):
+                        for message in updated["messages"]:
+                            if isinstance(
+                                message,
+                                AIMessage,
+                            ):
+                                yield format_sse(
+                                    "answer",
+                                    message.content,
+                                )
+
+        yield format_sse(
+            "end",
+            "",
+        )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post(
+    "/admin/documents/upload",
+    status_code=202,
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_corpus_write_access),
+    ],
+)
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    source_title: str = Form(""),
+    source_url: str = Form(""),
+    category: str | None = Form(None),
+    language: str | None = Form(None),
+    effective_date: str | None = Form(None),
+    access_level: str = Form("public"),
+    document_type: str = Form("auto"),
+):
+    stored_path, original_name, mime_type = (
+        await save_upload(file)
+    )
+
+    try:
+        registration = register_upload(
+            stored_path=stored_path,
+            original_file_name=original_name,
+            mime_type=mime_type,
+            source_title=source_title,
+            source_url=source_url,
+            source_type="admin_upload",
+            access_level=access_level,
+            category=category,
+            language=language,
+            effective_date=effective_date,
+            source_kind="upload",
+            document_type=validate_document_type(document_type),
+        )
+    except Exception:
+        stored_path.unlink(
+            missing_ok=True
+        )
+        raise
+
+    if registration["duplicate"]:
+        stored_path.unlink(
+            missing_ok=True
+        )
+        document = registration["document"]
+        return {
+            "status": "duplicate",
+            "document_id": str(
+                document["document_id"]
+            ),
+            "file_name": document[
+                "original_file_name"
+            ],
+        }
+
+    document_id = str(
+        registration["document"][
+            "document_id"
+        ]
+    )
+
+    background_tasks.add_task(
+        process_registered_document,
+        document_id,
+    )
+
+    return {
+        "status": "uploaded",
+        "document_id": document_id,
+        "file_name": original_name,
+        "message": (
+            "Extraction, chunking, and embedding "
+            "have been queued."
+        ),
+    }
+
+
+@app.post(
+    "/admin/documents/{document_id}/replace",
+    status_code=202,
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_corpus_write_access),
+    ],
+)
+async def replace_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    source_title: str = Form(""),
+    source_url: str = Form(""),
+    access_level: str = Form("public"),
+    category: str | None = Form(None),
+    language: str | None = Form(None),
+    effective_date: str | None = Form(None),
+    document_type: str = Form("auto"),
+):
+    stored_path, original_name, mime_type = (
+        await save_upload(file)
+    )
+
+    try:
+        registration = register_upload(
+            stored_path=stored_path,
+            original_file_name=original_name,
+            mime_type=mime_type,
+            source_title=source_title,
+            source_url=source_url,
+            source_type="admin_upload",
+            access_level=access_level,
+            replace_document_id=document_id,
+            category=category,
+            language=language,
+            effective_date=effective_date,
+            source_kind="upload",
+            document_type=validate_document_type(document_type),
+        )
+    except Exception:
+        stored_path.unlink(
+            missing_ok=True
+        )
+        raise
+
+    if registration["duplicate"]:
+        stored_path.unlink(
+            missing_ok=True
+        )
+        return {
+            "status": "unchanged",
+            "document_id": document_id,
+        }
+
+    background_tasks.add_task(
+        process_registered_document,
+        document_id,
+    )
+
+    return {
+        "status": "uploaded",
+        "document_id": document_id,
+        "file_name": original_name,
+        "message": (
+            "The replacement has been queued. "
+            "The previous chunks remain available "
+            "until the new version is indexed."
+        ),
+    }
+
+
+@app.get(
+    "/admin/document-types",
+    dependencies=[Depends(require_admin)],
+)
+async def get_document_types():
+    return {
+        "document_types": document_type_options(),
+        "upload_endpoint": "/admin/documents/upload",
+        "field_name": "document_type",
+    }
+
+
+@app.get(
+    "/admin/documents",
+    dependencies=[Depends(require_admin)],
+)
+async def get_documents():
+    return {
+        "documents": list_documents()
+    }
+
+
+@app.get(
+    "/admin/documents/{document_id}",
+    dependencies=[Depends(require_admin)],
+)
+async def get_document_status(
+    document_id: str,
+):
+    document = get_document(
+        document_id
+    )
+    if not document:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found.",
+        )
+    return document
+
+
+@app.delete(
+    "/admin/documents/{document_id}",
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_corpus_write_access),
+    ],
+)
+async def delete_document(
+    document_id: str,
+):
+    try:
+        return delete_registered_document(
+            document_id
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        ) from error
+
+
+@app.post(
+    "/admin/documents/{document_id}/reindex",
+    status_code=202,
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_corpus_write_access),
+    ],
+)
+async def reindex_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    document_type: str | None = Form(None),
+):
+    if not get_document(document_id):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    selected_type = (
+        validate_document_type(document_type)
+        if document_type is not None
+        else None
+    )
+    background_tasks.add_task(
+        reindex_registered_document,
+        document_id,
+        document_type=selected_type,
+    )
+    return {
+        "status": "queued",
+        "document_id": document_id,
+        "document_type": selected_type or "existing selection",
+        "message": "Re-chunking and embedding have been queued.",
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8001,
+        reload=True,
+    )

@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Download Webz.io news archives and load optional retrieval distractors.
+
+Articles are cleaned, kept separate, chunked, embedded, and tagged as an
+external benchmark dataset in the shared vector table. They are deliberately
+excluded from the primary HKPL knowledge corpus during live retrieval.
+"""
 
 import argparse
 import hashlib
@@ -13,14 +19,14 @@ import requests
 from llama_index.core import Document
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.corpus import (
+from hkpl_agent.rag.corpus import (
     DISTRACTOR_CORPUS_ROLE,
     VECTOR_TABLE_NAME,
     replace_dataset_vectors,
 )
-from src.ingestion.chunking import chunk_documents
+from hkpl_agent.ingestion.chunking import chunk_documents
 
 
 DATASET_NAME = "webz_news"

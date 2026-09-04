@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Validate and optionally repair evaluation rows against stored evidence.
+
+Checks include schema, exact or formatting-tolerant evidence containment,
+source/chunk existence, duplicates, and ambiguity. Repair modes can relink or
+exclude unresolved labels; the knowledge-vector table remains read-only.
+"""
 
 import argparse
 import csv
@@ -12,25 +18,26 @@ from pathlib import Path
 from sqlalchemy import text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.infrastructure.db import engine
-from src.infrastructure.vector_store import VECTOR_TABLE
+from hkpl_agent.evaluation.schema import (
+    normalize_evaluation_text as normalize,
+    parse_json_string_array,
+)
+from hkpl_agent.infrastructure.db import engine
+from hkpl_agent.infrastructure.table_names import configured_table_name
+from hkpl_agent.infrastructure.vector_store import VECTOR_TABLE_NAME
 
 
-EVALUATION_DATASET_TABLE = os.getenv("EVALUATION_DATASET_TABLE", "evaluation_dataset")
-KNOWLEDGE_TABLE = f"data_{VECTOR_TABLE}"
+EVALUATION_DATASET_TABLE = configured_table_name(
+    "EVALUATION_DATASET_TABLE",
+    "evaluation_dataset",
+)
+KNOWLEDGE_TABLE = VECTOR_TABLE_NAME
 EVALUATION_DATASET_PATH = Path(os.getenv(
     "EVALUATION_DATASET_PATH",
     "/app/data/evaluation_dataset.csv",
 ))
-
-
-def normalize(value: str) -> str:
-    value = value.lower().strip()
-    value = re.sub(r"\s+", " ", value)
-    value = re.sub(r"[\"'“”‘’]", "", value)
-    return value
 
 
 def compact_normalize(value: str) -> str:
@@ -53,11 +60,6 @@ def parse_args() -> argparse.Namespace:
         description="Validate evaluation rows against the searchable knowledge chunks.",
     )
     parser.add_argument(
-        "--delete-missing-chunks",
-        action="store_true",
-        help="Delete evaluation rows whose source_chunk_id is missing from the knowledge table.",
-    )
-    parser.add_argument(
         "--repair-missing-chunks",
         action="store_true",
         help=(
@@ -66,15 +68,25 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--exclude-unresolved",
+        action="store_true",
+        help=(
+            "Remove only unresolved stale rows from the evaluation CSV after "
+            "manual review. A timestamped backup and exclusions report are "
+            "created. Run the evaluation-only ingestion afterward to sync "
+            "the database table."
+        ),
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="Confirm destructive cleanup actions.",
     )
     args = parser.parse_args()
-    if args.delete_missing_chunks and args.repair_missing_chunks:
+    if args.repair_missing_chunks and args.exclude_unresolved:
         parser.error(
-            "--delete-missing-chunks and --repair-missing-chunks are mutually "
-            "exclusive."
+            "--repair-missing-chunks and --exclude-unresolved must be run "
+            "separately"
         )
     return args
 
@@ -199,44 +211,11 @@ def synchronize_csv(repaired_rows: list[dict]) -> int:
 
     temporary_path = EVALUATION_DATASET_PATH.with_suffix(".csv.tmp")
     with temporary_path.open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     temporary_path.replace(EVALUATION_DATASET_PATH)
     return updated
-
-
-def delete_rows_from_csv(deleted_rows: list[dict]) -> int:
-    if not EVALUATION_DATASET_PATH.is_file() or not deleted_rows:
-        return 0
-
-    deleted_keys = {
-        (str(item.get("query") or ""), str(item.get("source_chunk_id") or ""))
-        for item in deleted_rows
-    }
-    with EVALUATION_DATASET_PATH.open(
-        newline="",
-        encoding="utf-8-sig",
-    ) as source:
-        reader = csv.DictReader(source)
-        fieldnames = list(reader.fieldnames or [])
-        original_rows = list(reader)
-
-    retained_rows = [
-        row
-        for row in original_rows
-        if (
-            str(row.get("query") or ""),
-            str(row.get("source_chunk_id") or ""),
-        ) not in deleted_keys
-    ]
-    temporary_path = EVALUATION_DATASET_PATH.with_suffix(".csv.tmp")
-    with temporary_path.open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(retained_rows)
-    temporary_path.replace(EVALUATION_DATASET_PATH)
-    return len(original_rows) - len(retained_rows)
 
 
 def backup_evaluation_csv() -> Path | None:
@@ -250,6 +229,101 @@ def backup_evaluation_csv() -> Path | None:
     return backup_path
 
 
+def exclude_unresolved_from_csv(
+    unresolved_rows: list[dict],
+) -> tuple[int, Path, Path]:
+    if not EVALUATION_DATASET_PATH.is_file():
+        raise FileNotFoundError(
+            f"Evaluation CSV not found: {EVALUATION_DATASET_PATH}"
+        )
+
+    unresolved_keys = {
+        (
+            str(item.get("query") or ""),
+            str(item.get("source_chunk_id") or ""),
+        )
+        for item in unresolved_rows
+    }
+    with EVALUATION_DATASET_PATH.open(
+        newline="",
+        encoding="utf-8-sig",
+    ) as source:
+        reader = csv.DictReader(source)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+
+    excluded = [
+        row
+        for row in rows
+        if (
+            str(row.get("query") or ""),
+            str(row.get("source_chunk_id") or ""),
+        ) in unresolved_keys
+    ]
+    if len(excluded) != len(unresolved_keys):
+        matched_keys = {
+            (
+                str(row.get("query") or ""),
+                str(row.get("source_chunk_id") or ""),
+            )
+            for row in excluded
+        }
+        missing_keys = sorted(unresolved_keys - matched_keys)
+        raise RuntimeError(
+            "Refusing partial cleanup because the database and CSV do not "
+            f"match. Missing CSV rows: {missing_keys}"
+        )
+
+    kept = [row for row in rows if row not in excluded]
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = EVALUATION_DATASET_PATH.with_name(
+        f"{EVALUATION_DATASET_PATH.stem}.before-exclusion-{timestamp}.csv"
+    )
+    report_path = EVALUATION_DATASET_PATH.with_name(
+        f"{EVALUATION_DATASET_PATH.stem}.excluded-unresolved-{timestamp}.csv"
+    )
+    shutil.copy2(EVALUATION_DATASET_PATH, backup_path)
+
+    report_fields = fieldnames + ["exclusion_reason", "excluded_at_utc"]
+    with report_path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(
+            output,
+            fieldnames=report_fields,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for row in excluded:
+            key = (
+                str(row.get("query") or ""),
+                str(row.get("source_chunk_id") or ""),
+            )
+            reason = next(
+                str(item.get("repair_reason") or "evidence_not_found")
+                for item in unresolved_rows
+                if (
+                    str(item.get("query") or ""),
+                    str(item.get("source_chunk_id") or ""),
+                ) == key
+            )
+            writer.writerow({
+                **row,
+                "exclusion_reason": reason,
+                "excluded_at_utc": timestamp,
+            })
+
+    temporary_path = EVALUATION_DATASET_PATH.with_suffix(".csv.tmp")
+    with temporary_path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(
+            output,
+            fieldnames=fieldnames,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(kept)
+    temporary_path.replace(EVALUATION_DATASET_PATH)
+    return len(excluded), backup_path, report_path
+
+
 def main() -> None:
     args = parse_args()
 
@@ -261,15 +335,13 @@ def main() -> None:
                     e.query,
                     e.expected_answer_text,
                     e.expected_context_snippet,
+                    e.expected_context_snippets_json,
                     e.source_title AS expected_source_title,
                     e.source_url,
                     e.source_document_id,
                     e.source_chunk_id,
-                    k.text AS source_chunk_text,
-                    k.metadata_->>'source_title' AS source_title
+                    e.source_chunk_ids_json
                 FROM {EVALUATION_DATASET_TABLE} e
-                LEFT JOIN {KNOWLEDGE_TABLE} k
-                  ON k.metadata_->>'chunk_id' = e.source_chunk_id
                 ORDER BY e.id
             """)
         ).fetchall()
@@ -290,12 +362,45 @@ def main() -> None:
             chunk_text = item.get("source_chunk_text") or ""
             expected_answer = item.get("expected_answer_text") or ""
             expected_snippet = item.get("expected_context_snippet") or ""
+            expected_chunk_ids = parse_json_string_array(
+                item.get("source_chunk_ids_json"),
+                field_name="source_chunk_ids_json",
+                fallback=[str(item.get("source_chunk_id") or "")],
+                strict=False,
+            )
+            expected_snippets = parse_json_string_array(
+                item.get("expected_context_snippets_json"),
+                field_name="expected_context_snippets_json",
+                fallback=[expected_snippet],
+                strict=False,
+            )
+            chunk_rows = connection.execute(
+                text(f"""
+                    SELECT metadata_->>'chunk_id' AS chunk_id, text
+                    FROM {KNOWLEDGE_TABLE}
+                    WHERE metadata_->>'chunk_id' = ANY(CAST(:chunk_ids AS text[]))
+                """),
+                {"chunk_ids": expected_chunk_ids},
+            ).mappings().all()
+            chunks_by_id = {
+                str(chunk_row["chunk_id"]): str(chunk_row["text"] or "")
+                for chunk_row in chunk_rows
+            }
+            chunk_text = chunks_by_id.get(item["source_chunk_id"], "")
+            item["source_chunk_text"] = chunk_text
+            item["source_title"] = item.get("expected_source_title") or ""
 
-            if chunk_text:
+            all_chunks_found = all(
+                chunk_id in chunks_by_id for chunk_id in expected_chunk_ids
+            )
+            if all_chunks_found:
                 chunk_found += 1
             else:
                 missing_chunks.append(item)
-                replacement, reason = find_replacement(connection, item)
+                if len(expected_chunk_ids) > 1:
+                    replacement, reason = None, "multi_chunk_label_requires_regeneration"
+                else:
+                    replacement, reason = find_replacement(connection, item)
                 if replacement:
                     repairable_chunks.append({
                         **item,
@@ -309,10 +414,25 @@ def main() -> None:
                     })
                 continue
 
-            normalized_chunk = normalize(chunk_text)
+            combined_chunk_text = "\n".join(chunks_by_id.values())
+            normalized_chunk = normalize(combined_chunk_text)
             normalized_answer = normalize(expected_answer)
 
-            if formatting_tolerant_contains(expected_snippet, chunk_text):
+            snippets_valid = (
+                len(expected_snippets) == len(expected_chunk_ids)
+                and all(
+                    formatting_tolerant_contains(
+                        snippet,
+                        chunks_by_id.get(chunk_id, ""),
+                    )
+                    for snippet, chunk_id in zip(
+                        expected_snippets,
+                        expected_chunk_ids,
+                        strict=True,
+                    )
+                )
+            )
+            if snippets_valid:
                 snippet_found += 1
             else:
                 missing_snippets.append(item)
@@ -328,9 +448,24 @@ def main() -> None:
     print(f"Evaluation table      : {EVALUATION_DATASET_TABLE}")
     print(f"Knowledge table       : {KNOWLEDGE_TABLE}")
     print(f"Evaluation rows       : {total}")
-    print(f"Expected chunk found  : {chunk_found}/{total} ({chunk_found / total:.2%})" if total else "Expected chunk found  : 0/0")
-    print(f"Snippet text found    : {snippet_found}/{total} ({snippet_found / total:.2%})" if total else "Snippet text found    : 0/0")
-    print(f"Answer text found     : {answer_found}/{total} ({answer_found / total:.2%})" if total else "Answer text found     : 0/0")
+    print(
+        f"Expected chunk found  : {chunk_found}/{total} "
+        f"({chunk_found / total:.2%})"
+        if total
+        else "Expected chunk found  : 0/0"
+    )
+    print(
+        f"Snippet text found    : {snippet_found}/{total} "
+        f"({snippet_found / total:.2%})"
+        if total
+        else "Snippet text found    : 0/0"
+    )
+    print(
+        f"Answer verbatim found : {answer_found}/{total} "
+        f"({answer_found / total:.2%}) [informational]"
+        if total
+        else "Answer verbatim found : 0/0 [informational]"
+    )
 
     if missing_chunks:
         print()
@@ -355,9 +490,25 @@ def main() -> None:
 
     if missing_answers:
         print()
-        print("Expected answer not found verbatim in linked chunk:")
+        print(
+            "Expected answer not found as one contiguous string "
+            "(informational; paraphrases and combined facts are allowed):"
+        )
         for item in missing_answers[:10]:
             print(f"- id={item['id']} answer={item['expected_answer_text']} query={item['query']}")
+
+    ready = chunk_found == total and snippet_found == total
+    print()
+    print(
+        "Evaluation evidence status: "
+        + ("READY" if ready else "REVIEW REQUIRED")
+    )
+    if not ready:
+        print(
+            "Readiness requires every row to reference an existing chunk and "
+            "contain its expected evidence snippet. Verbatim answer coverage "
+            "does not determine readiness."
+        )
 
     if args.repair_missing_chunks:
         if not args.yes:
@@ -412,40 +563,40 @@ def main() -> None:
                 "unchanged for manual review."
             )
 
-    if args.delete_missing_chunks:
+    if args.exclude_unresolved:
         if not args.yes:
             raise SystemExit(
-                "Refusing to delete rows without --yes. "
-                "Re-run with --delete-missing-chunks --yes after reviewing the list."
+                "Refusing to exclude unresolved benchmark rows without --yes. "
+                "Confirm that these questions no longer have authoritative "
+                "evidence in the frozen corpus first."
             )
-
-        missing_ids = [item["id"] for item in missing_chunks]
-        if not missing_ids:
+        if repairable_chunks:
+            raise SystemExit(
+                "Refusing to exclude rows while safely repairable references "
+                "remain. Run --repair-missing-chunks --yes first."
+            )
+        if not unresolved_repairs:
+            print("No unresolved stale rows to exclude.")
+        else:
+            excluded, backup_path, report_path = exclude_unresolved_from_csv(
+                unresolved_repairs
+            )
             print()
-            print("No rows with missing expected chunks to delete.")
-            return
-
-        backup_path = backup_evaluation_csv()
-        if backup_path:
-            print(f"Backed up evaluation CSV to {backup_path}.")
-
-        with engine.begin() as connection:
-            deleted = connection.execute(
-                text(f"""
-                    DELETE FROM {EVALUATION_DATASET_TABLE}
-                    WHERE id = ANY(:missing_ids)
-                """),
-                {"missing_ids": missing_ids},
-            ).rowcount
-
-        print()
-        print(f"Deleted {deleted} rows with missing expected chunks.")
-        csv_deletions = delete_rows_from_csv(missing_chunks)
-        if EVALUATION_DATASET_PATH.is_file():
+            print(f"Excluded {excluded} unresolved rows from the CSV.")
+            print(f"Backup: {backup_path}")
+            print(f"Exclusions report: {report_path}")
             print(
-                f"Deleted {csv_deletions} matching rows from "
-                f"{EVALUATION_DATASET_PATH}."
+                "The database table has not been changed. Synchronize it with "
+                "ingest_pgvector_llamaindex.py --evaluation-only, then validate "
+                "again."
             )
+
+    if (
+        not ready
+        and not args.repair_missing_chunks
+        and not args.exclude_unresolved
+    ):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

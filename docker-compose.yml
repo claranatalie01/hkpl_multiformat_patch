@@ -1,3 +1,6 @@
+# Local/deployment runtime for PostgreSQL/pgvector, embedding, reranking,
+# generation, FastAPI, and Phoenix. This file starts services; it does not
+# schedule crawl_hkpl_site.py or perform recurring ingestion.
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -10,7 +13,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d
+      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
         [
@@ -98,10 +101,11 @@ services:
       --host 0.0.0.0
       --port 8080
       --n-gpu-layers 99
-      --ctx-size 32768
+      --ctx-size ${LLM_CONTEXT_WINDOW:-8192}
       --parallel 1
+      --flash-attn on
+      --metrics
       --reasoning on
-      --reasoning-budget 8000
     healthcheck:
       test:
         [
@@ -119,19 +123,28 @@ services:
   langgraph-agent:
     build:
       context: .
-      dockerfile: Dockerfile.agent
+      dockerfile: infra/docker/Dockerfile.agent
     container_name: hkpl_agent
+    runtime: nvidia
+    env_file:
+      - .env
     ports:
       - "8001:8001"
     volumes:
-      - .env:/app/.env
       - ./src:/app/src
       - ./main.py:/app/main.py
       - ./scripts:/app/scripts
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./storage:/app/storage
+      - ${DOCLING_HOST_MODELS:-./models/docling}:/app/models/docling:ro
+      - ./models/qwen3-embedding:/app/models/qwen3-embedding:ro
     environment:
+      # Expose one physical GPU to the agent. It appears as cuda:0 inside the
+      # container even when SAFETY_GPU_ID selects a different host GPU.
+      NVIDIA_VISIBLE_DEVICES: ${SAFETY_GPU_ID:-0}
+      SAFETY_DEVICE: ${SAFETY_DEVICE:-cuda:0}
+      PYTHONPATH: /app/src
       DB_URL: postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/hkpl_vector_db
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       POSTGRES_DB: hkpl_vector_db
@@ -142,37 +155,52 @@ services:
       EMBEDDING_URL: http://embedding:8080/v1/embeddings
       RERANKER_URL: http://reranker:8080/reranking
       LLM_URL: http://llm:8080/v1/chat/completions
-      LLM_CONTEXT_WINDOW: "32768"
-      LLM_MAX_TOKENS: "16000"
+      LLM_CONTEXT_WINDOW: "${LLM_CONTEXT_WINDOW:-8192}"
+      LLM_MAX_TOKENS: "${LLM_MAX_TOKENS:-2048}"
 
-      VECTOR_TABLE: hkpl_knowledge
+      VECTOR_TABLE: ${VECTOR_TABLE:-hkpl_knowledge}
+      KNOWLEDGE_CORPUS_READ_ONLY: "true"
       EVALUATION_DATASET_TABLE: evaluation_dataset
+      EVALUATION_CANDIDATE_TABLE: ${EVALUATION_CANDIDATE_TABLE:-evaluation_dataset_100}
+      EVALUATION_ACTIVE_TABLE: ${EVALUATION_ACTIVE_TABLE:-evaluation_dataset}
       EVALUATION_DATASET_PATH: /app/data/evaluation_dataset.csv
       EMBED_DIM: "1024"
-      SIMILARITY_TOP_K: "10"
-      RERANK_TOP_N: "5"
-      RERANKER_THRESHOLD: "0.30"
+      RETRIEVAL_MODE: "${RETRIEVAL_MODE:-hybrid}"
+      SIMILARITY_TOP_K: "${SIMILARITY_TOP_K:-10}"
+      DENSE_TOP_K: "${DENSE_TOP_K:-10}"
+      LEXICAL_TOP_K: "${LEXICAL_TOP_K:-10}"
+      FUSION_TOP_K: "${FUSION_TOP_K:-10}"
+      RRF_K: "${RRF_K:-60}"
+      RERANK_TOP_N: "${RERANK_TOP_N:-5}"
+      RERANKER_THRESHOLD: "${RERANKER_THRESHOLD:-0.30}"
       UPLOAD_DIR: /app/uploads
       MAX_UPLOAD_BYTES: "26214400"
       CHUNK_SIZE: "512"
       CHUNK_OVERLAP: "64"
-      ATOMIC_MAX_TOKENS: "2048"
-      RECORD_MAX_TOKENS: "8192"
-      MAX_CONTEXT_TOKENS: "12000"
+      MAX_CONTEXT_TOKENS: "${MAX_CONTEXT_TOKENS:-4000}"
+      ANSWER_MAX_TOKENS: "${ANSWER_MAX_TOKENS:-256}"
       HKPL_CRAWLER_MAX_PAGES: "300"
       HKPL_CRAWLER_MAX_DEPTH: "3"
       HKPL_CRAWLER_DELAY_SECONDS: "0.5"
       HKPL_CRAWLER_INCLUDE_PDFS: "true"
       HKPL_CRAWLER_INCLUDE_QUERY_URLS: "false"
-      OCR_LANGUAGES: eng+chi_tra
+      OCR_LANGUAGES: eng+chi_tra+chi_sim
+      DOCLING_ARTIFACTS_PATH: /app/models/docling
+      DOCLING_JSON_DIR: /app/storage/docling
+      DOCLING_DOCUMENT_TIMEOUT_SECONDS: "300"
+      EMBEDDING_TOKENIZER_PATH: /app/models/qwen3-embedding
+      EMBEDDING_TOKENIZER_MODEL: Qwen/Qwen3-Embedding-0.6B
+      ALLOW_REMOTE_MODEL_DOWNLOADS: "false"
       PHOENIX_ENABLED: "true"
-      PHOENIX_PROJECT_NAME: hkpl-rag
+      PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-hkpl-rag}
       PHOENIX_BASE_URL: "http://phoenix:6006"
       PHOENIX_LOG_EVAL_ANNOTATIONS: "true"
       PHOENIX_COLLECTOR_ENDPOINT: "http://phoenix:6006/v1/traces"
       RAG_EVALUATION_RESULTS_PATH: /app/data/rag_evaluation/results.csv
       RAG_EVALUATION_SUMMARY_PATH: /app/data/rag_evaluation/summary.json
-      EVALUATION_MAX_TOKENS: "1024"
+      # Answer generation is intentionally shorter than evaluator-judge output.
+      EVALUATION_ANSWER_MAX_TOKENS: "512"
+      EVALUATION_MAX_TOKENS: "2048"
       LLM_TOKENIZER_URL: http://llm:8080/tokenize
       EMBEDDING_TOKENIZER_URL: http://embedding:8080/tokenize
       RERANKER_TOKENIZER_URL: http://reranker:8080/tokenize
@@ -181,7 +209,6 @@ services:
       RERANKER_TOKENIZER_NAME: llama.cpp:qwen3-reranker-0.6b
       TOKENIZER_TIMEOUT_SECONDS: "30"
       HF_TOKEN: ${HF_TOKEN:-}
-      DOCUMENT_TYPE_RULES_JSON: ${DOCUMENT_TYPE_RULES_JSON:-}
       LLM_PROMPT_COST_PER_1K_USD: "0"
       LLM_COMPLETION_COST_PER_1K_USD: "0"
 

@@ -1,3 +1,4 @@
+# Python runtime dependencies for API, ingestion, RAG, evaluation, and tracing.
 [project]
 name = "hkpl-agent"
 version = "0.1.0"
@@ -25,14 +26,11 @@ dependencies = [
     "llama-index-core",
     "llama-index-vector-stores-postgres",
 
-    "PyMuPDF",
-    "python-docx",
-    "python-pptx",
+    "docling==2.118.1",
+    "docling-core[chunking]",
     "openpyxl",
     "beautifulsoup4",
     "lxml",
-    "Pillow",
-    "pytesseract",
 
     "arize-phoenix",
     "openinference-instrumentation-llama-index",

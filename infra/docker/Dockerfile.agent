@@ -1,0 +1,37 @@
+# Runtime image for the HKPL API, ingestion, crawler, and evaluation code.
+# OCR system packages are installed here; model servers run in other services.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        libgl1 \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-chi-tra \
+        tesseract-ocr-chi-sim \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --frozen --no-dev
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPATH="/app/src"
+
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY main.py .
+
+RUN mkdir -p \
+    /app/uploads \
+    /app/data \
+    /app/storage/docling
+
+EXPOSE 8001
+
+CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]

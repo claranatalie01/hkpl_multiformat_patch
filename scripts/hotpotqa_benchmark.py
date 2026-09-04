@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Load deterministic HotpotQA paragraphs as optional retrieval distractors.
+
+The script builds paragraph nodes, embeds them through the shared embedding
+model, and replaces only rows tagged as the HotpotQA dataset. These rows make
+evaluation retrieval harder and are not part of the primary HKPL corpus.
+"""
 
 import argparse
 import hashlib
@@ -11,9 +17,9 @@ from datasets import load_dataset
 from llama_index.core.schema import TextNode
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.corpus import (
+from hkpl_agent.rag.corpus import (
     DISTRACTOR_CORPUS_ROLE,
     VECTOR_TABLE_NAME,
     replace_dataset_vectors,

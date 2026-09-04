@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Rebuild registered HKPL sources, synchronize evaluations, or audit chunks.
+
+Registered crawler and upload sources are rebuilt from their durable copies in
+``uploads/``. The shared readers, chunker, embedding client, registry, and
+vector store are used so a rebuild follows the same pipeline as ingestion.
+"""
 
 import argparse
 import csv
@@ -6,63 +12,44 @@ import os
 import re
 import sys
 from pathlib import Path
-from uuid import uuid5, NAMESPACE_URL
 
 from sqlalchemy import text
 
-from llama_index.core import (
-    Document,
-    StorageContext,
-    VectorStoreIndex,
-)
-from llama_index.core.vector_stores import (
-    FilterOperator,
-    MetadataFilter,
-    MetadataFilters,
-)
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from src.infrastructure.embedding import (
-    embed_model,
+from hkpl_agent.evaluation.schema import (
+    EVALUATION_DATASET_COLUMNS,
+    has_supported_evaluation_columns,
+    parse_json_string_array,
+    parse_parallel_evidence,
+    serialize_string_array,
 )
-from src.infrastructure.vector_store import (
+from hkpl_agent.infrastructure.table_names import configured_table_name
+from hkpl_agent.infrastructure.vector_store import (
     EMBED_DIM,
-    VECTOR_TABLE,
-    vector_store,
+    VECTOR_TABLE_NAME,
+    ensure_hybrid_search_schema,
 )
-from src.infrastructure.db import engine
-from src.ingestion.chunking import (
+from hkpl_agent.infrastructure.db import engine
+from hkpl_agent.ingestion.chunking import (
     chunk_documents,
 )
-from src.ingestion.registry import (
+from hkpl_agent.ingestion.config import OCR_LANGUAGES, UPLOAD_DIR
+from hkpl_agent.ingestion.document_types import normalize_document_type
+from hkpl_agent.ingestion.registry import (
     ensure_registry_schema,
     list_documents,
 )
-from src.ingestion.readers import file_content_hash, load_file
-from src.ingestion.service import (
-    OCR_LANGUAGES,
-    UPLOAD_DIR,
+from hkpl_agent.ingestion.readers import load_file
+from hkpl_agent.ingestion.service import (
     reindex_registered_document,
 )
-
-
-EVALUATION_DATASET_TABLE = os.getenv(
+from hkpl_agent.ingestion.write_guard import ensure_corpus_writable
+EVALUATION_DATASET_TABLE = configured_table_name(
     "EVALUATION_DATASET_TABLE",
     "evaluation_dataset",
 )
-EVALUATION_DATASET_COLUMNS = [
-    "domain",
-    "query",
-    "expected_answer_text",
-    "expected_context_snippet",
-    "source_title",
-    "source_url",
-    "source_type",
-    "source_document_id",
-    "source_chunk_id",
-]
 
 
 def create_evaluation_dataset_table() -> None:
@@ -75,13 +62,42 @@ def create_evaluation_dataset_table() -> None:
                     query TEXT NOT NULL,
                     expected_answer_text TEXT NOT NULL DEFAULT '',
                     expected_context_snippet TEXT NOT NULL DEFAULT '',
+                    expected_context_snippets_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    accepted_answers_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                     source_title TEXT NOT NULL DEFAULT '',
                     source_url TEXT NOT NULL DEFAULT '',
-                    source_type TEXT NOT NULL DEFAULT '',
                     source_document_id TEXT NOT NULL DEFAULT '',
                     source_chunk_id TEXT NOT NULL DEFAULT '',
+                    source_chunk_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+            """)
+        )
+        connection.execute(
+            text(f"""
+                ALTER TABLE {EVALUATION_DATASET_TABLE}
+                ADD COLUMN IF NOT EXISTS accepted_answers_json JSONB
+                NOT NULL DEFAULT '[]'::jsonb
+            """)
+        )
+        connection.execute(
+            text(f"""
+                ALTER TABLE {EVALUATION_DATASET_TABLE}
+                ADD COLUMN IF NOT EXISTS expected_context_snippets_json JSONB
+                NOT NULL DEFAULT '[]'::jsonb
+            """)
+        )
+        connection.execute(
+            text(f"""
+                ALTER TABLE {EVALUATION_DATASET_TABLE}
+                ADD COLUMN IF NOT EXISTS source_chunk_ids_json JSONB
+                NOT NULL DEFAULT '[]'::jsonb
+            """)
+        )
+        connection.execute(
+            text(f"""
+                ALTER TABLE {EVALUATION_DATASET_TABLE}
+                DROP COLUMN IF EXISTS source_type
             """)
         )
         connection.execute(
@@ -115,23 +131,100 @@ def create_evaluation_dataset_table() -> None:
         )
 
 
-def ingest_evaluation_dataset(csv_path: str) -> int:
+def ingest_evaluation_dataset(csv_path: str) -> tuple[int, int, int]:
     path = Path(csv_path)
     if not path.exists():
         print(f"Evaluation dataset not found, skipping: {path}")
-        return 0
+        return 0, 0, 0
 
     create_evaluation_dataset_table()
 
-    with path.open("r", newline="", encoding="utf-8") as file:
-        rows = [
-            {
-                column: (row.get(column) or "")
+    with path.open("r", newline="", encoding="utf-8-sig") as file:
+        reader = csv.DictReader(file)
+        actual_columns = list(reader.fieldnames or [])
+        if not has_supported_evaluation_columns(actual_columns):
+            raise ValueError(
+                "Evaluation CSV columns must exactly match, in order: "
+                f"{list(EVALUATION_DATASET_COLUMNS)}. Found: {actual_columns}"
+            )
+
+        rows = []
+        seen_queries: set[str] = set()
+        for line_number, row in enumerate(reader, start=2):
+            if None in row:
+                raise ValueError(
+                    f"Malformed evaluation CSV row {line_number}: too many fields"
+                )
+            missing_values = [
+                column
+                for column in EVALUATION_DATASET_COLUMNS
+                if column not in {
+                    "accepted_answers_json",
+                    "expected_context_snippets_json",
+                    "source_chunk_ids_json",
+                    "source_url",
+                }
+                and not str(row.get(column) or "").strip()
+            ]
+            if missing_values:
+                raise ValueError(
+                    f"Evaluation CSV row {line_number} has empty required fields: "
+                    + ", ".join(missing_values)
+                )
+
+            item = {
+                column: str(row.get(column) or "").strip()
                 for column in EVALUATION_DATASET_COLUMNS
             }
-            for row in csv.DictReader(file)
-            if row.get("query")
-        ]
+            query_key = re.sub(r"\s+", " ", item["query"]).casefold()
+            if query_key in seen_queries:
+                raise ValueError(
+                    f"Duplicate evaluation question at row {line_number}: "
+                    f"{item['query']!r}"
+                )
+            seen_queries.add(query_key)
+
+            document_id = item["source_document_id"]
+            chunk_id = item["source_chunk_id"]
+            if not re.fullmatch(
+                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+                document_id,
+            ):
+                raise ValueError(
+                    f"Invalid source_document_id at row {line_number}: "
+                    f"{document_id!r}"
+                )
+            if not chunk_id.startswith(f"{document_id}:"):
+                raise ValueError(
+                    f"source_chunk_id does not belong to source_document_id "
+                    f"at row {line_number}: {chunk_id!r}"
+                )
+            evidence = parse_parallel_evidence(
+                item,
+                context=f"row {line_number} ({item['query']!r})",
+                deduplicate_pairs=True,
+            )
+            item["expected_context_snippets_json"] = serialize_string_array(
+                evidence.snippets
+            )
+            item["source_chunk_ids_json"] = serialize_string_array(
+                evidence.chunk_ids
+            )
+            try:
+                aliases = parse_json_string_array(
+                    item.get("accepted_answers_json"),
+                    field_name="accepted_answers_json",
+                    strict=True,
+                    deduplicate=True,
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f"Invalid accepted_answers_json for {item['query']!r}: "
+                    f"{error}"
+                ) from error
+            item["accepted_answers_json"] = serialize_string_array(aliases)
+            rows.append(item)
 
     with engine.begin() as connection:
         if rows:
@@ -142,177 +235,85 @@ def ingest_evaluation_dataset(csv_path: str) -> int:
                         query,
                         expected_answer_text,
                         expected_context_snippet,
+                        expected_context_snippets_json,
+                        accepted_answers_json,
                         source_title,
                         source_url,
-                        source_type,
                         source_document_id,
-                        source_chunk_id
+                        source_chunk_id,
+                        source_chunk_ids_json
                     )
                     VALUES (
                         :domain,
                         :query,
                         :expected_answer_text,
                         :expected_context_snippet,
+                        CAST(:expected_context_snippets_json AS jsonb),
+                        CAST(:accepted_answers_json AS jsonb),
                         :source_title,
                         :source_url,
-                        :source_type,
                         :source_document_id,
-                        :source_chunk_id
+                        :source_chunk_id,
+                        CAST(:source_chunk_ids_json AS jsonb)
                     )
                     ON CONFLICT (query) DO UPDATE SET
                         domain = EXCLUDED.domain,
                         expected_answer_text = EXCLUDED.expected_answer_text,
                         expected_context_snippet = EXCLUDED.expected_context_snippet,
+                        expected_context_snippets_json = EXCLUDED.expected_context_snippets_json,
+                        accepted_answers_json = EXCLUDED.accepted_answers_json,
                         source_title = EXCLUDED.source_title,
                         source_url = EXCLUDED.source_url,
-                        source_type = EXCLUDED.source_type,
                         source_document_id = EXCLUDED.source_document_id,
-                        source_chunk_id = EXCLUDED.source_chunk_id
+                        source_chunk_id = EXCLUDED.source_chunk_id,
+                        source_chunk_ids_json = EXCLUDED.source_chunk_ids_json
                     WHERE (
                         {EVALUATION_DATASET_TABLE}.domain,
                         {EVALUATION_DATASET_TABLE}.expected_answer_text,
                         {EVALUATION_DATASET_TABLE}.expected_context_snippet,
+                        {EVALUATION_DATASET_TABLE}.expected_context_snippets_json,
+                        {EVALUATION_DATASET_TABLE}.accepted_answers_json,
                         {EVALUATION_DATASET_TABLE}.source_title,
                         {EVALUATION_DATASET_TABLE}.source_url,
-                        {EVALUATION_DATASET_TABLE}.source_type,
                         {EVALUATION_DATASET_TABLE}.source_document_id,
-                        {EVALUATION_DATASET_TABLE}.source_chunk_id
+                        {EVALUATION_DATASET_TABLE}.source_chunk_id,
+                        {EVALUATION_DATASET_TABLE}.source_chunk_ids_json
                     ) IS DISTINCT FROM (
                         EXCLUDED.domain,
                         EXCLUDED.expected_answer_text,
                         EXCLUDED.expected_context_snippet,
+                        EXCLUDED.expected_context_snippets_json,
+                        EXCLUDED.accepted_answers_json,
                         EXCLUDED.source_title,
                         EXCLUDED.source_url,
-                        EXCLUDED.source_type,
                         EXCLUDED.source_document_id,
-                        EXCLUDED.source_chunk_id
+                        EXCLUDED.source_chunk_id,
+                        EXCLUDED.source_chunk_ids_json
                     )
                 """),
                 rows,
             )
-            return int(result.rowcount or 0)
-
-    return 0
-
-
-def load_faq_documents(
-    csv_path: str,
-) -> list[Document]:
-    documents: list[Document] = []
-
-    with open(
-        csv_path,
-        newline="",
-        encoding="utf-8",
-    ) as file:
-        reader = csv.DictReader(file)
-
-        for row_index, row in enumerate(reader):
-            question = row.get(
-                "query",
-                "",
-            ).strip()
-            answer = row.get(
-                "expected_answer_text",
-                "",
-            ).strip()
-
-            if not question or not answer:
-                continue
-
-            source_url = row.get(
-                "source_url",
-                "https://www.hkpl.gov.hk/en/ask-a-librarian/faq.html",
-            ).strip()
-            row_id = row.get(
-                "source_row_id",
-                str(row_index),
-            ).strip()
-
-            document_id = str(
-                uuid5(
-                    NAMESPACE_URL,
-                    f"{source_url}#faq-{row_id}",
-                )
+            delete_result = connection.execute(
+                text(f"""
+                    DELETE FROM {EVALUATION_DATASET_TABLE}
+                    WHERE NOT (
+                        query = ANY(CAST(:queries AS text[]))
+                    )
+                """),
+                {"queries": [row["query"] for row in rows]},
+            )
+            return (
+                int(result.rowcount or 0),
+                int(delete_result.rowcount or 0),
+                len(rows),
             )
 
-            document = Document(
-                text=(
-                    f"Question: {question}\n"
-                    f"Answer: {answer}"
-                ),
-                metadata={
-                    "document_id": document_id,
-                    "original_file_name": (
-                        Path(csv_path).name
-                    ),
-                    "file_name": (
-                        Path(csv_path).name
-                    ),
-                    "file_type": "csv",
-                    "source_title": row.get(
-                        "source_title",
-                        "HKPL Ask a Librarian FAQ",
-                    ).strip(),
-                    "source": row.get(
-                        "source_title",
-                        "HKPL Ask a Librarian FAQ",
-                    ).strip(),
-                    "source_url": source_url,
-                    "url": source_url,
-                    "source_type": row.get(
-                        "source_type",
-                        "official_website",
-                    ).strip(),
-                    "access_level": "public",
-                    "document_version": 1,
-                    "domain": row.get(
-                        "domain",
-                        "",
-                    ).strip(),
-                    "question": question,
-                    "snippet": row.get(
-                        "expected_context_snippet",
-                        "",
-                    ).strip(),
-                    "row_id": row_id,
-                    "row_number": row_index + 2,
-                    "section_index": row_index,
-                    "chunk_strategy": "atomic",
-                },
-            )
-            document.id_ = (
-                f"{document_id}:v1:section:0"
-            )
-            documents.append(document)
-
-    return documents
-
-
-
-def delete_existing_faq_chunks() -> int:
-    filters = MetadataFilters(
-        filters=[
-            MetadataFilter(
-                key="source_title",
-                value="HKPL Ask a Librarian FAQ",
-                operator=FilterOperator.EQ,
-            )
-        ]
-    )
-    nodes = vector_store.get_nodes(filters=filters)
-    if not nodes:
-        return 0
-
-    vector_store.delete_nodes(
-        node_ids=[node.node_id for node in nodes]
-    )
-    return len(nodes)
+    return 0, 0, 0
 
 
 def clear_hkpl_chunks() -> int:
     """Clear HKPL chunks while preserving benchmark rows in the shared table."""
-    table_name = f"data_{VECTOR_TABLE}"
+    table_name = VECTOR_TABLE_NAME
     with engine.begin() as connection:
         result = connection.execute(
             text(f"""
@@ -329,6 +330,11 @@ def registered_documents_for_rebuild() -> list[dict]:
     """Return rebuildable registry rows, failing before vectors are cleared."""
     ensure_registry_schema()
     documents = list_documents()
+    if not documents:
+        raise RuntimeError(
+            "Full rebuild aborted before clearing vectors because "
+            "knowledge_documents contains no registered sources."
+        )
     missing_sources = [
         document
         for document in documents
@@ -357,6 +363,9 @@ def registered_documents_for_rebuild() -> list[dict]:
             f"{document['original_file_name']} ({document_id})"
         )
         try:
+            if normalize_document_type(document.get("document_type")) == "skip":
+                print("  Ready: discovery-only source (no chunks)")
+                continue
             extracted = load_file(
                 stored_path,
                 document_id=document_id,
@@ -377,6 +386,7 @@ def registered_documents_for_rebuild() -> list[dict]:
                     or "upload"
                 ),
                 document_type=document.get("document_type") or "auto",
+                classification_source=document.get("classification_source") or None,
             )
             if not extracted:
                 raise ValueError("No readable content was extracted")
@@ -426,7 +436,8 @@ def rebuild_registered_documents(documents: list[dict]) -> tuple[int, list[str]]
 
 
 def audit_knowledge_chunks() -> bool:
-    table_name = f"data_{VECTOR_TABLE}"
+    ensure_hybrid_search_schema()
+    table_name = VECTOR_TABLE_NAME
     with engine.connect() as connection:
         summary = connection.execute(
             text(f"""
@@ -438,13 +449,26 @@ def audit_knowledge_chunks() -> bool:
                         WHERE embedding IS NOT NULL
                           AND vector_dims(embedding) <> :embed_dim
                     ) AS wrong_dimensions,
-                    COUNT(*) FILTER (WHERE length(trim(text)) < 50) AS short_chunks,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(metadata_->>'token_count', '0')::integer > 512
+                    ) AS over_limit_chunks,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(trim(metadata_->>'evidence_text'), '') = ''
+                    ) AS empty_evidence,
                     COUNT(*) FILTER (
                         WHERE COALESCE(metadata_->>'document_id', '') = ''
                            OR COALESCE(metadata_->>'kb_document_id', '') = ''
                            OR COALESCE(metadata_->>'chunk_id', '') = ''
-                           OR COALESCE(metadata_->>'document_type', '') = ''
-                           OR COALESCE(metadata_->>'chunk_strategy', '') = ''
+                           OR COALESCE(metadata_->>'record_kind', '') = ''
+                           OR COALESCE(metadata_->>'chunk_policy', '') = ''
+                           OR COALESCE(metadata_->>'parent_record_id', '') = ''
+                           OR COALESCE(metadata_->>'parser_version', '') = ''
+                           OR COALESCE(metadata_->>'search_text', '') = ''
+                           OR COALESCE(metadata_->>'token_count', '') = ''
+                           OR COALESCE(
+                               (metadata_->'locator')::jsonb,
+                               '{{}}'::jsonb
+                           ) = '{{}}'::jsonb
                            OR COALESCE(metadata_->>'document_version', '') = ''
                     ) AS missing_metadata
                 FROM {table_name}
@@ -455,15 +479,17 @@ def audit_knowledge_chunks() -> bool:
         type_rows = connection.execute(
             text(f"""
                 SELECT
-                    COALESCE(metadata_->>'document_type', '(missing)') AS document_type,
-                    COALESCE(metadata_->>'chunk_strategy', '(missing)') AS strategy,
+                    COALESCE(metadata_->>'record_kind', '(missing)') AS record_kind,
+                    COALESCE(metadata_->>'chunk_policy', '(missing)') AS policy,
                     COUNT(*) AS chunks,
+                    ROUND(AVG(COALESCE(metadata_->>'token_count', '0')::integer), 1)
+                        AS average_tokens,
                     ROUND(AVG(length(text)), 1) AS average_characters,
                     MIN(length(text)) AS minimum_characters,
                     MAX(length(text)) AS maximum_characters
                 FROM {table_name}
-                GROUP BY document_type, strategy
-                ORDER BY document_type, strategy
+                GROUP BY record_kind, policy
+                ORDER BY record_kind, policy
             """)
         ).mappings().all()
 
@@ -525,16 +551,15 @@ def audit_knowledge_chunks() -> bool:
             """),
         ).scalars().all()
 
-        split_records = connection.execute(
+        locator_collisions = connection.execute(
             text(f"""
                 SELECT
-                    metadata_->>'kb_document_id' AS document_id,
-                    metadata_->>'original_file_name' AS file_name,
-                    metadata_->>'section_index' AS section_index,
+                    metadata_->>'source_version_id' AS source_version_id,
+                    (metadata_->'locator')::jsonb AS locator,
+                    metadata_->>'part_number' AS part_number,
                     COUNT(*) AS chunks
                 FROM {table_name}
-                WHERE metadata_->>'document_type' = 'record_based'
-                GROUP BY document_id, file_name, section_index
+                GROUP BY source_version_id, locator, part_number
                 HAVING COUNT(*) > 1
                 ORDER BY chunks DESC
             """)
@@ -543,16 +568,19 @@ def audit_knowledge_chunks() -> bool:
         duplicate_groups = connection.execute(
             text(f"""
                 SELECT
-                    md5(text) AS content_hash,
+                    md5(metadata_->>'evidence_text') AS content_hash,
                     COUNT(*) AS copies,
                     COUNT(DISTINCT metadata_->>'kb_document_id') AS documents,
                     STRING_AGG(
                         DISTINCT COALESCE(NULLIF(metadata_->>'dataset', ''), 'hkpl'),
                         ', '
                     ) AS datasets,
-                    LEFT(MIN(regexp_replace(text, '\\s+', ' ', 'g')), 180) AS preview
+                    LEFT(
+                        MIN(regexp_replace(metadata_->>'evidence_text', '\\s+', ' ', 'g')),
+                        180
+                    ) AS preview
                 FROM {table_name}
-                GROUP BY md5(text)
+                GROUP BY md5(metadata_->>'evidence_text')
                 HAVING COUNT(*) > 1
                 ORDER BY copies DESC
                 LIMIT 20
@@ -563,64 +591,48 @@ def audit_knowledge_chunks() -> bool:
             text(f"""
                 SELECT node_id, text, metadata_
                 FROM {table_name}
-                WHERE metadata_->>'document_type' IN ('faq', 'directory', 'announcement')
+                WHERE metadata_->>'record_kind' IN ('faq', 'table')
             """)
         ).mappings().all()
 
     faq_issues: list[dict] = []
-    directory_issues: list[str] = []
-    announcement_issues: list[str] = []
-    dated_entry = re.compile(r"(?m)^\(?\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s*\)?")
+    table_header_issues: list[str] = []
 
     for row in typed_chunks:
         node_id = row["node_id"]
-        content = row["text"] or ""
         metadata = row["metadata_"] or {}
-        document_type = metadata.get("document_type")
+        evidence = metadata.get("evidence_text") or ""
+        record_kind = metadata.get("record_kind")
 
-        if document_type == "faq":
-            questions = set(re.findall(r"(?i)\bQ(\d+)\s*[:.)]", content))
-            answers = set(re.findall(r"(?i)\bA(\d+)\s*[:.)]", content))
-            labelled_question = bool(re.search(r"(?i)\bquestion\s*:", content))
-            labelled_answer = bool(re.search(r"(?i)\banswer\s*:", content))
-            issue_reason = ""
-            if (questions or answers) and questions != answers:
-                issue_reason = (
-                    f"numbered labels differ: Q={sorted(questions)} "
-                    f"A={sorted(answers)}"
-                )
-            elif labelled_question != labelled_answer:
-                issue_reason = "Question:/Answer: labels are not paired"
-
-            if issue_reason:
+        if record_kind == "faq" and metadata.get("structural_kind") == "faq_pair":
+            question = metadata.get("question") or ""
+            answer = metadata.get("answer_text") or evidence[len(question):].strip()
+            if not question or not answer or not evidence.startswith(question):
                 faq_issues.append({
                     "node_id": node_id,
-                    "reason": issue_reason,
+                    "reason": "missing or detached question/answer evidence",
                     "title": metadata.get("source_title", ""),
                     "url": metadata.get("source_url") or metadata.get("url", ""),
-                    "preview": re.sub(r"\s+", " ", content).strip()[:240],
+                    "preview": re.sub(r"\s+", " ", evidence).strip()[:240],
                 })
-        elif document_type == "directory":
-            if not metadata.get("library_name"):
-                directory_issues.append(node_id)
         elif (
-            document_type == "announcement"
-            and metadata.get("announcement_entry_index") is not None
-            and not dated_entry.search(content)
+            record_kind == "table"
+            and metadata.get("chunk_policy") == "oversized_leaf"
+            and not (metadata.get("table_header") or metadata.get("repeat_context"))
         ):
-            announcement_issues.append(node_id)
+            table_header_issues.append(node_id)
 
     checks = {
         "missing embeddings": int(summary["missing_embeddings"]),
         "wrong embedding dimensions": int(summary["wrong_dimensions"]),
-        "chunks shorter than 50 characters": int(summary["short_chunks"]),
+        "chunks over 512 tokens": int(summary["over_limit_chunks"]),
+        "chunks with empty evidence": int(summary["empty_evidence"]),
         "chunks missing required metadata": int(summary["missing_metadata"]),
         "registry chunk-count mismatches": len(registry_mismatches),
         "stale or orphaned chunks": len(stale_or_orphaned),
-        "record rows split across chunks": len(split_records),
+        "source/version/locator/part collisions": len(locator_collisions),
         "FAQ pairing issues": len(faq_issues),
-        "directory chunks missing library metadata": len(directory_issues),
-        "dated announcement chunks missing a date": len(announcement_issues),
+        "headerless split tables": len(table_header_issues),
     }
 
     print("=" * 80)
@@ -635,11 +647,12 @@ def audit_knowledge_chunks() -> bool:
             f"- {row['dataset']}/{row['corpus_role']}: "
             f"{row['chunks']} chunks"
         )
-    print("\nDocument type and strategy distribution:")
+    print("\nRecord kind and chunk policy distribution:")
     for row in type_rows:
         print(
-            f"- {row['document_type']}/{row['strategy']}: "
-            f"{row['chunks']} chunks, chars avg={row['average_characters']} "
+            f"- {row['record_kind']}/{row['policy']}: "
+            f"{row['chunks']} chunks, tokens avg={row['average_tokens']} "
+            f"chars avg={row['average_characters']} "
             f"min={row['minimum_characters']} max={row['maximum_characters']}"
         )
 
@@ -648,12 +661,12 @@ def audit_knowledge_chunks() -> bool:
         status = "PASS" if count == 0 else "FAIL"
         print(f"- {status}: {label} ({count})")
 
-    if split_records:
-        print("\nSplit record rows:")
-        for row in split_records[:20]:
+    if locator_collisions:
+        print("\nLocator collisions:")
+        for row in locator_collisions[:20]:
             print(
-                f"- {row['file_name']} section={row['section_index']} "
-                f"chunks={row['chunks']} document={row['document_id']}"
+                f"- source_version={row['source_version_id']} locator={row['locator']} "
+                f"part={row['part_number']} chunks={row['chunks']}"
             )
     if faq_issues:
         print("\nFAQ pairing issues:")
@@ -663,6 +676,10 @@ def audit_knowledge_chunks() -> bool:
                 f"title={issue['title']} url={issue['url']}"
             )
             print(f"  preview={issue['preview']}")
+    if table_header_issues:
+        print("\nHeaderless split table chunks:")
+        for node_id in table_header_issues[:20]:
+            print(f"- {node_id}")
     if duplicate_groups:
         print("\nReview warning: exact duplicate chunk text exists:")
         for row in duplicate_groups:
@@ -683,7 +700,9 @@ def audit_knowledge_chunks() -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ingest FAQ knowledge and/or synchronize the evaluation dataset.",
+        description=(
+            "Rebuild registered knowledge, synchronize evaluations, or audit chunks."
+        ),
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -692,16 +711,11 @@ def parse_args() -> argparse.Namespace:
         help="Synchronize evaluation_dataset.csv without changing knowledge chunks.",
     )
     mode.add_argument(
-        "--faq-only",
-        action="store_true",
-        help="Rebuild the FAQ CSV knowledge chunks without importing evaluation rows.",
-    )
-    mode.add_argument(
         "--rebuild-all",
         action="store_true",
         help=(
-            "Clear and rebuild FAQ chunks plus every non-deleted document in "
-            "knowledge_documents, including saved crawler HTML."
+            "Clear HKPL primary chunks and rebuild every non-deleted document "
+            "registered in knowledge_documents, including saved crawler HTML."
         ),
     )
     mode.add_argument(
@@ -719,10 +733,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    data_path = os.getenv(
-        "DATA_PATH",
-        "/app/data/hkpl_faq_clean.csv",
-    )
     evaluation_dataset_path = os.getenv(
         "EVALUATION_DATASET_PATH",
         "/app/data/evaluation_dataset.csv",
@@ -734,10 +744,6 @@ def main() -> None:
         return
 
     if args.check_rebuild:
-        if not Path(data_path).is_file():
-            raise FileNotFoundError(
-                f"FAQ source file is missing: {data_path}"
-            )
         registered_documents = registered_documents_for_rebuild()
         source_counts: dict[str, int] = {}
         for document in registered_documents:
@@ -748,7 +754,6 @@ def main() -> None:
             )
             source_counts[source_kind] = source_counts.get(source_kind, 0) + 1
 
-        print(f"FAQ source: {data_path}")
         print(f"Registered documents ready: {len(registered_documents)}")
         for source_kind, count in sorted(source_counts.items()):
             print(f"- {source_kind}: {count}")
@@ -765,71 +770,20 @@ def main() -> None:
     rebuild_all = args.rebuild_all or (
         rebuild_all_from_env
         and not args.evaluation_only
-        and not args.faq_only
     )
 
     registered_documents: list[dict] = []
-    faq_is_registered = False
     if rebuild_all:
-        if not Path(data_path).is_file():
-            raise FileNotFoundError(
-                f"FAQ source file is missing: {data_path}"
-            )
+        ensure_corpus_writable("rebuild registered knowledge chunks")
         registered_documents = registered_documents_for_rebuild()
-        faq_hash = file_content_hash(Path(data_path))
-        faq_is_registered = any(
-            document.get("content_hash") == faq_hash
-            for document in registered_documents
-        )
         print(
-            f"Full rebuild preflight passed: FAQ source plus "
+            "Full rebuild preflight passed: "
             f"{len(registered_documents)} registered documents are available."
         )
         removed_chunks = clear_hkpl_chunks()
         print(
-            f"Removed {removed_chunks} HKPL chunks from data_{VECTOR_TABLE}; "
+            f"Removed {removed_chunks} HKPL chunks from {VECTOR_TABLE_NAME}; "
             "distractor corpus chunks were preserved."
-        )
-
-    if not args.evaluation_only and not (rebuild_all and faq_is_registered):
-        removed = delete_existing_faq_chunks()
-        print(f"Removed {removed} existing FAQ chunks")
-
-        documents = load_faq_documents(
-            data_path
-        )
-        print(
-            f"Loaded {len(documents)} FAQ documents"
-        )
-
-        nodes = chunk_documents(
-            documents
-        )
-        print(
-            f"Created {len(nodes)} FAQ chunks"
-        )
-
-        storage_context = (
-            StorageContext.from_defaults(
-                vector_store=vector_store
-            )
-        )
-
-        VectorStoreIndex(
-            nodes,
-            storage_context=storage_context,
-            embed_model=embed_model,
-            show_progress=True,
-        )
-
-        print(
-            "Ingested FAQ data into "
-            f"data_{VECTOR_TABLE}"
-        )
-    elif rebuild_all and faq_is_registered:
-        print(
-            "Skipped standalone FAQ ingestion because the same FAQ source is "
-            "registered in knowledge_documents and will be rebuilt there."
         )
 
     if rebuild_all:
@@ -850,13 +804,14 @@ def main() -> None:
             "from the rebuilt knowledge base before evaluating."
         )
 
-    if not args.faq_only and not rebuild_all:
-        evaluation_rows = ingest_evaluation_dataset(
+    if not rebuild_all:
+        changed_rows, deleted_rows, csv_rows = ingest_evaluation_dataset(
             evaluation_dataset_path
         )
         print(
-            f"Inserted or updated {evaluation_rows} evaluation rows in "
-            f"{EVALUATION_DATASET_TABLE}; unchanged rows were skipped"
+            f"Synchronized {csv_rows} CSV rows to {EVALUATION_DATASET_TABLE}: "
+            f"inserted or updated {changed_rows}, deleted {deleted_rows}; "
+            "unchanged rows were skipped"
         )
 
 
