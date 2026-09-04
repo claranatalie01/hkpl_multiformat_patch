@@ -9,10 +9,7 @@ Libraries (HKPL) webpages and documents. It covers ingestion, retrieval,
 reranking, grounded generation, input safety, evaluation, and tracing.
 
 **Scope:** The measured results focus on the RAG path: ingestion, retrieval,
-reranking, context construction, and answer generation. The guardrail figures
-come from a separate input-safety benchmark. They do not yet validate the full
-agentic workflow, including intent routing, multi-turn context, clarification,
-branch resolution, integrated safety decisions, and fallback handling.
+reranking, context construction, and answer generation. 
 
 The tests support the following configuration:
 
@@ -263,11 +260,8 @@ QE = Qwen3 Embedding 0.6B and QR = Qwen3 Reranker 0.6B. Both are Q8_0.
 pass rate, so dense top-10 retrieval was retained.
 
 The [ACM retrieval study](https://dl.acm.org/doi/10.1145/3816713.3818802)
-reports strong overall retrieval and recommendation performance from dense
-retrieval, while hybrid retrieval mainly improves robustness over lexical
-retrieval. The HKPL results align with that finding. Dense retrieval achieved
-higher retrieval and reranker hit rates, slightly better answer quality, lower
-token use, and much lower latency than the tested hybrid configuration.
+compares lexical, dense, and hybrid retrieval but does not identify one winner
+for every corpus. The PoC decision follows the HKPL result above.
 
 ### 2.2 Embedding and reranker comparison
 
@@ -294,21 +288,33 @@ and Qwen3 Reranker 0.6B Q8_0 for the current baseline.
 
 ### 2.3 Why Jina's published ranking differs from this PoC
 
-Published Jina results and this PoC are not directly comparable. They use
-different datasets, candidate counts, hardware, inference backends, and model
-configurations. Published tests generally use official full-weight
-implementations on high-end hardware. This PoC used Q8_0 GGUF models on RTX
-2080 Ti hardware and reranked only ten candidates.
+Published rankings and this PoC measure different systems. The
+[Jina model page](https://jina.ai/models/jina-embeddings-v5-text-small/)
+reports strong aggregate MTEB results, and the AIMultiple
+[embedding](https://aimultiple.com/open-source-embedding-models) and
+[reranker](https://aimultiple.com/rerankers) studies also rank Jina highly.
+Their experimental conditions differ from this PoC:
 
-Jina v5 also depends on the correct query/document prefixes, pooling,
-normalization, tokenizer, and task configuration. Differences in the GGUF
-adapter may have affected close rankings.
+| Factor | Published benchmark | HKPL PoC |
+|---|---|---|
+| Data | General multilingual/English benchmarks, legal contracts, technical documents, medical abstracts, or English Amazon reviews | HKPL webpages and PDFs containing branch names, event schedules, tables, URLs, English, and Chinese |
+| Candidate flow | Embedding ranking across large corpora; reranking top 100 into top 10 | Dense top 10 reranked into top 5 |
+| Metrics | Aggregate MTEB, nDCG, MRR, Recall, or product-level hits | Exact labelled HKPL chunk hits, answer correctness, faithfulness, tokens, and end-to-end latency |
+| Runtime | Full Hugging Face weights through vLLM or Transformers/PyTorch on an H100 80 GB | Q8_0 GGUF services on RTX 2080 Ti hardware |
+| Model recipe | Official task adapter, pooling, query/document prefixes, and backend | PoC GGUF adapter path, whose parity with the official recipe must be checked |
 
-**Limitation:** Qwen found only four more labelled chunks than Jina v5 across
-128 questions, and no confidence interval was calculated. The result supports
-Qwen for the tested HKPL configuration; it does not prove that Qwen is always
-better. A stronger comparison would verify Jina's official inference recipe
-and repeat the experiment several times.
+Jina v5 expects its retrieval configuration and asymmetric query/document
+treatment. Adapter, prefix, pooling, normalization, or tokenizer differences
+can reduce quality even when the server returns valid vectors. Q8_0 and a
+different backend can also shift close rankings. The reranker article compares
+Jina v3 with Qwen 4B; this PoC uses Qwen3 Reranker 0.6B Q8_0.
+
+Only four retrieval hits separate Qwen and Jina v5, and no confidence interval
+was calculated. Jina also had a higher answer pass rate in some runs. The
+result supports Qwen for this setup; it does not prove that Qwen is always
+better. A follow-up should verify Jina's official recipe and use repeated,
+paired per-question runs. External benchmarks shortlist models; the HKPL
+benchmark selects the deployment model.
 
 ### 2.4 Context and answer generation
 
